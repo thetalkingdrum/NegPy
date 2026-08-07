@@ -104,6 +104,58 @@ def uint16_to_float32(img: np.ndarray) -> np.ndarray:
     return res
 
 
+BIT_DEPTH_CEILINGS: tuple[int, ...] = (8, 10, 12, 14, 16)
+
+
+def detect_clipping(arr: np.ndarray, ceiling: int, spike_threshold: float = 0.001) -> bool:
+    """True if a meaningful fraction of samples sit exactly at `ceiling` -- the signature
+    of real sensor/ADC saturation, not a couple of stray hot pixels."""
+    at_ceiling = np.count_nonzero(arr == ceiling)
+    return bool((at_ceiling / arr.size) >= spike_threshold)
+
+
+def suggest_source_bit_depth(
+    arr: np.ndarray,
+    candidates: tuple[int, ...] = BIT_DEPTH_CEILINGS,
+    outlier_tolerance: float = 1e-5,
+) -> dict:
+    """Smallest candidate ceiling that accommodates `arr` (raw uint16, not normalized),
+    tolerant of a tiny fraction of outlier pixels (hot pixels) exceeding it."""
+    total = arr.size
+    for bits in candidates:
+        ceiling = (1 << bits) - 1
+        over = int(np.count_nonzero(arr > ceiling))
+        if over / total <= outlier_tolerance:
+            return {
+                "bits": bits,
+                "ceiling": ceiling,
+                "outliers_ignored": over,
+                "clipping_detected": detect_clipping(arr, ceiling),
+            }
+    bits = candidates[-1]
+    ceiling = (1 << bits) - 1
+    return {"bits": bits, "ceiling": ceiling, "outliers_ignored": 0, "clipping_detected": detect_clipping(arr, ceiling)}
+
+
+def safe_expansion_factor(
+    observed_max: int, requested_factor: float, margin: float = 0.999, report_threshold: float = 0.01
+) -> tuple[float, bool]:
+    """Hard ceiling on `requested_factor` (a format default or a manual override) so
+    raw-domain data (0-65535) can never be pushed past the container ceiling once
+    expansion is applied. Returns (applied_factor, was_capped); was_capped only fires
+    for a reduction >report_threshold -- an exact-ceiling file sitting just inside the
+    margin isn't a real cap, so it snaps back to `requested_factor` unchanged rather
+    than reporting a false positive and perturbing normal exports."""
+    if observed_max <= 0:
+        return requested_factor, False
+    max_safe = (65535 * margin) / observed_max
+    applied = min(requested_factor, max_safe)
+    was_capped = applied < requested_factor * (1 - report_threshold)
+    if not was_capped:
+        return requested_factor, False
+    return applied, True
+
+
 def srgb_to_linear(img: np.ndarray) -> np.ndarray:
     """Convert sRGB gamma-encoded float32 image to linear light (IEC 61966-2-1)."""
     return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4).astype(np.float32)

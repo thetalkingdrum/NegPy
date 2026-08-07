@@ -37,8 +37,9 @@ def _is_dng(file_path: str) -> bool:
     return os.path.splitext(file_path)[1].lower() == ".dng"
 
 
-def _peek_linearraw_4ch(file_path: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """Inspect a DNG. If it carries 4 linear samples (RGB + IR), return (rgb, ir) as float32 [0,1].
+def _peek_linearraw_4ch(file_path: str) -> Optional[Tuple[np.ndarray, np.ndarray, Optional[int]]]:
+    """Inspect a DNG. If it carries 4 linear samples (RGB + IR), return (rgb, ir, raw_max) --
+    rgb/ir as float32 [0,1], raw_max the pre-normalization uint16 max (None for other dtypes).
 
     NegPy's own `write_dng_linear` produces a single-IFD DNG; VueScan and Adobe-style DNGs
     put the full-res data in a SubIFD behind a reduced-resolution thumbnail IFD0 — both are
@@ -59,6 +60,7 @@ def _peek_linearraw_4ch(file_path: str) -> Optional[Tuple[np.ndarray, np.ndarray
     if arr.ndim != 3 or arr.shape[2] != 4:
         return None
 
+    raw_max = int(arr.max()) if arr.dtype == np.uint16 else None
     if arr.dtype == np.uint16:
         scale = 1.0 / 65535.0
     elif arr.dtype == np.uint8:
@@ -68,7 +70,7 @@ def _peek_linearraw_4ch(file_path: str) -> Optional[Tuple[np.ndarray, np.ndarray
     full = np.clip(arr.astype(np.float32) * scale, 0.0, 1.0)
     rgb = np.ascontiguousarray(full[:, :, :3])
     ir = np.ascontiguousarray(full[:, :, 3])
-    return rgb, ir
+    return rgb, ir, raw_max
 
 
 def _peek_hdri_ir_page(file_path: str) -> Optional[np.ndarray]:
@@ -108,7 +110,7 @@ class RawpyLoader(IImageLoader):
     def load(self, file_path: str) -> Tuple[ContextManager[Any], dict]:
         peeked = _peek_linearraw_4ch(file_path)
         if peeked is not None:
-            rgb, ir = peeked
+            rgb, ir, _raw_max = peeked
             metadata = {
                 "orientation": read_orientation(file_path),
                 "raw_flip": 0,

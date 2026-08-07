@@ -60,8 +60,8 @@ def _make_linearraw_dng_3ch(tmp_dir: str, h: int = 100, w: int = 150) -> str:
 
 
 def _make_pakon_raw(tmp_dir: str, h: int = 1000, w: int = 1500) -> str:
-    """Create a minimal synthetic Pakon RAW file (F135 Plus Low Res, 9 MB)."""
-    data = np.random.RandomState(42).randint(0, 32768, size=(h, w, 3), dtype=np.uint16)
+    """Create a minimal synthetic Pakon RAW file (F135 Plus Low Res, 9 MB), real 14-bit range."""
+    data = np.random.RandomState(42).randint(0, 16384, size=(h, w, 3), dtype=np.uint16)
     path = os.path.join(tmp_dir, "test_scan.raw")
     data.tofile(path)
     assert os.path.getsize(path) == h * w * 3 * 2  # 9000000
@@ -1151,7 +1151,7 @@ class TestTiffLinearOutput:
         data = rng.randint(0, 65535, size=(10, 10, 3), dtype=np.uint16)
         path = os.path.join(str(tmp_path), "rgb.tif")
         tifffile.imwrite(path, data)
-        rgb, ir = _decode_tiff(path)
+        rgb, ir, _guard = _decode_tiff(path)
         assert rgb.shape == (10, 10, 3)
         assert rgb.dtype == np.float32
         assert ir is None
@@ -1162,7 +1162,7 @@ class TestTiffLinearOutput:
         data = np.ones((8, 8, 4), dtype=np.uint16) * 32768
         path = os.path.join(str(tmp_path), "4ch.tif")
         tifffile.imwrite(path, data, extrasamples=[0])
-        rgb, ir = _decode_tiff(path)
+        rgb, ir, _guard = _decode_tiff(path)
         assert rgb.shape == (8, 8, 3)
         assert ir is not None
         assert ir.shape[:2] == (8, 8)
@@ -1173,7 +1173,7 @@ class TestTiffLinearOutput:
         data = np.ones((8, 8, 4), dtype=np.uint16) * 32768
         path = os.path.join(str(tmp_path), "4ch_alpha.tif")
         tifffile.imwrite(path, data, extrasamples=[2])
-        rgb, ir = _decode_tiff(path)
+        rgb, ir, _guard = _decode_tiff(path)
         assert rgb.shape == (8, 8, 3)
         assert ir is None
 
@@ -1183,8 +1183,8 @@ class TestTiffLinearOutput:
         data = np.full((4, 4, 3), 32768, dtype=np.uint16)
         path = os.path.join(str(tmp_path), "gamma.tif")
         tifffile.imwrite(path, data)
-        rgb_lin, _ = _decode_tiff(path, gamma_key="linear")
-        rgb_22, _ = _decode_tiff(path, gamma_key="2.2")
+        rgb_lin, _, _guard = _decode_tiff(path, gamma_key="linear")
+        rgb_22, _, _guard2 = _decode_tiff(path, gamma_key="2.2")
         assert np.all(rgb_22 < rgb_lin)
 
     def test_export_tiff_with_gamma(self, tmp_path: str) -> None:
@@ -1204,8 +1204,8 @@ class TestTiffLinearOutput:
         data = np.full((4, 4, 3), 16384, dtype=np.uint16)
         path = os.path.join(str(tmp_path), "dim.tif")
         tifffile.imwrite(path, data)
-        rgb_no_exp, _ = _decode_tiff(path)
-        rgb_2x, _ = _decode_tiff(path, expansion=2.0)
+        rgb_no_exp, _, _guard = _decode_tiff(path)
+        rgb_2x, _, _guard2 = _decode_tiff(path, expansion=2.0)
         np.testing.assert_allclose(rgb_2x, np.clip(rgb_no_exp * 2.0, 0.0, 1.0), atol=1e-6)
 
     def test_export_tiff_with_expansion(self, tmp_path: str) -> None:
@@ -1799,3 +1799,111 @@ class TestNoritsuRaw:
         pakon_48m = next(s for s in PakonLoader.PAKON_SPECS if s["size"] == 48000000)
         assert abs(collision_size - pakon_48m["size"]) < 1024
         assert 1777 < 3000  # well below any real scan width
+
+
+class TestClippingGuard:
+    """The expansion factor (format default or override) must never push real data past
+    the 16-bit ceiling -- the guard scales the factor down instead of letting the
+    post-multiply clip flatten highlights to pure white."""
+
+    def test_pakon_normal_case_unaffected(self, tmp_path: str) -> None:
+        path = _make_pakon_raw(str(tmp_path))
+        out = os.path.join(str(tmp_path), "out.tiff")
+        result = export_linear_output(path, out)
+        assert result.expansion_capped is False
+        assert result.applied_expansion == 4.0
+
+    def test_pakon_caps_mismatched_expansion(self, tmp_path: str) -> None:
+        # Data already filling most of the 16-bit range -- the x4 default would blow past it.
+        h, w = 1000, 1500
+        data = np.random.RandomState(7).randint(30000, 32768, size=(h, w, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "mismatched.raw")
+        data.tofile(path)
+        assert os.path.getsize(path) == h * w * 3 * 2  # matches the F135 Plus Low Res spec
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        result = export_linear_output(path, out)
+
+        assert result.expansion_capped is True
+        assert result.applied_expansion < 4.0
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "clipping guard capped" in desc
+            arr = tf.pages[0].asarray()
+        assert arr.max() <= 65535
+        # Unguarded, the true max (~32767) x 4 would blow past 65535 and every such pixel
+        # would flatten to pure white; the guard keeps the top of the range meaningful.
+        assert arr.max() < 65535
+
+    def test_noritsu_normal_case_unaffected(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        out = os.path.join(str(tmp_path), "out.tiff")
+        result = export_linear_output(path, out)
+        assert result.expansion_capped is False
+        assert result.applied_expansion == 16.0
+
+    def test_noritsu_caps_mismatched_expansion(self, tmp_path: str) -> None:
+        # A Noritsu file already 14-bit (already-processed source), not the assumed 12-bit,
+        # exported with the 16x default -- the guard must cap it.
+        w, h = 4042, 6391
+        data = np.random.RandomState(9).randint(0, 16384, size=(h, w, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "FULL000000030000.RAW")
+        data.astype("<u2").tofile(path)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        result = export_linear_output(path, out)
+
+        assert result.expansion_capped is True
+        assert result.applied_expansion < 16.0
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "clipping guard capped" in desc
+            arr = tf.pages[0].asarray()
+        assert arr.max() <= 65535
+
+    def test_dng_3ch_caps_mismatched_expansion(self, tmp_path: str) -> None:
+        # _make_linearraw_dng_3ch's synthetic data already fills close to 16-bit;
+        # an explicit x4 override (as offered in the Expansion combo) would overflow.
+        path = _make_linearraw_dng_3ch(str(tmp_path))
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        result = export_linear_output(path, out, expansion=4.0)
+
+        assert result.expansion_capped is True
+        assert result.applied_expansion < 4.0
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "clipping guard capped" in desc
+            arr = tf.pages[0].asarray()
+        assert arr.max() <= 65535
+
+    def test_dng_no_expansion_unaffected(self, tmp_path: str) -> None:
+        path = _make_linearraw_dng_3ch(str(tmp_path))
+        out = os.path.join(str(tmp_path), "out.tiff")
+        result = export_linear_output(path, out)
+        assert result.expansion_capped is False
+        assert result.applied_expansion == 1.0
+
+    def test_tiff_caps_mismatched_expansion(self, tmp_path: str) -> None:
+        # Real max near the top of the 16-bit range -- a x4 override would overflow.
+        data = np.random.RandomState(11).randint(30000, 65535, size=(20, 20, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "mismatched.tif")
+        tifffile.imwrite(path, data)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        result = export_linear_output(path, out, expansion=4.0)
+
+        assert result.expansion_capped is True
+        assert result.applied_expansion < 4.0
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "clipping guard capped" in desc
+
+    def test_tiff_normal_case_unaffected(self, tmp_path: str) -> None:
+        data = np.full((4, 4, 3), 16384, dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "dim.tif")
+        tifffile.imwrite(path, data)
+        out = os.path.join(str(tmp_path), "out.tiff")
+        result = export_linear_output(path, out, expansion=2.0)
+        assert result.expansion_capped is False
+        assert result.applied_expansion == 2.0

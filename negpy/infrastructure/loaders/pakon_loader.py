@@ -3,7 +3,7 @@ import numpy as np
 from typing import Any, List, Dict, ContextManager, Tuple
 from negpy.domain.interfaces import IImageLoader
 from negpy.infrastructure.loaders.tiff_loader import NonStandardFileWrapper
-from negpy.kernel.image.logic import uint16_to_float32
+from negpy.kernel.image.logic import suggest_source_bit_depth, uint16_to_float32
 
 
 class PakonLoader(IImageLoader):
@@ -59,7 +59,12 @@ class PakonLoader(IImageLoader):
             else:
                 data = data.reshape((3, h, w)).transpose((1, 2, 0))
 
-            metadata = {"orientation": 0, "ir": None}
+            metadata = {
+                "orientation": 0,
+                "ir": None,
+                "raw_max": int(data.max()),
+                "bit_depth_info": suggest_source_bit_depth(data),
+            }
             return NonStandardFileWrapper(uint16_to_float32(np.ascontiguousarray(data))), metadata
         except Exception as e:
             # Fallback to Rawpy or re-raise to be caught by worker

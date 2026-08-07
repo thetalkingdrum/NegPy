@@ -2,7 +2,14 @@ import numpy as np
 from negpy.features.exposure.logic import (
     apply_characteristic_curve,
 )
-from negpy.kernel.image.logic import apply_exif_orientation, float_to_uint8, float_to_uint16
+from negpy.kernel.image.logic import (
+    apply_exif_orientation,
+    detect_clipping,
+    float_to_uint8,
+    float_to_uint16,
+    safe_expansion_factor,
+    suggest_source_bit_depth,
+)
 
 
 def test_apply_exif_orientation_noop():
@@ -80,3 +87,69 @@ def test_float_to_uint_does_not_mutate_input():
     float_to_uint8(img)
     float_to_uint16(img)
     assert np.array_equal(img, img_before)
+
+
+def test_safe_expansion_factor_normal_case_unchanged():
+    # A real 12-bit-max file (4095) requesting the matching x16 factor should not be
+    # perturbed by the safety margin -- it's not a meaningful cap.
+    applied, was_capped = safe_expansion_factor(4095, 16.0)
+    assert applied == 16.0
+    assert was_capped is False
+
+
+def test_safe_expansion_factor_caps_real_mismatch():
+    # Mirrors the real-world anecdote: a Noritsu scan already processed by Photoshop/ACR
+    # with a true max around 37929 instead of the assumed ~4095.
+    applied, was_capped = safe_expansion_factor(37929, 16.0)
+    assert was_capped is True
+    assert applied < 16.0
+    assert applied * 37929 <= 65535.0
+
+
+def test_safe_expansion_factor_zero_max_noop():
+    applied, was_capped = safe_expansion_factor(0, 16.0)
+    assert applied == 16.0
+    assert was_capped is False
+
+
+def test_safe_expansion_factor_no_expansion_requested():
+    applied, was_capped = safe_expansion_factor(4095, 1.0)
+    assert applied == 1.0
+    assert was_capped is False
+
+
+def test_suggest_source_bit_depth_detects_12bit():
+    rng = np.random.default_rng(1)
+    arr = rng.integers(0, 4096, size=(64, 64, 3), dtype=np.uint16)
+    info = suggest_source_bit_depth(arr)
+    assert info["bits"] == 12
+    assert info["ceiling"] == 4095
+
+
+def test_suggest_source_bit_depth_detects_14bit():
+    rng = np.random.default_rng(2)
+    arr = rng.integers(0, 16384, size=(64, 64, 3), dtype=np.uint16)
+    info = suggest_source_bit_depth(arr)
+    assert info["bits"] == 14
+    assert info["ceiling"] == 16383
+
+
+def test_suggest_source_bit_depth_tolerates_hot_pixels():
+    rng = np.random.default_rng(3)
+    arr = rng.integers(0, 4096, size=(1000, 1000, 3), dtype=np.uint16)
+    arr[0, 0, 0] = 60000  # a couple of stray hot pixels well above the 12-bit ceiling
+    arr[0, 1, 0] = 60000
+    info = suggest_source_bit_depth(arr)
+    assert info["bits"] == 12
+    assert info["outliers_ignored"] == 2
+
+
+def test_detect_clipping_true_for_spike():
+    arr = np.zeros((100, 100), dtype=np.uint16)
+    arr[:5, :] = 4095  # 5% of samples at the ceiling
+    assert detect_clipping(arr, 4095) is True
+
+
+def test_detect_clipping_false_for_no_spike():
+    arr = np.random.default_rng(4).integers(0, 4000, size=(100, 100), dtype=np.uint16)
+    assert detect_clipping(arr, 4095) is False

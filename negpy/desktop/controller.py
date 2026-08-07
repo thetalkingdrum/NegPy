@@ -3482,6 +3482,7 @@ class AppController(QObject):
             return
 
         exported = 0
+        capped = 0
         expansion = self.state.linear_expansion
         for f in supported:
             params = self._batch_params_for(f)
@@ -3493,7 +3494,7 @@ class AppController(QObject):
                 out_path = os.path.join(export_path, f"{stem}_linear_{counter}.tiff")
                 counter += 1
             try:
-                export_linear_output(
+                result = export_linear_output(
                     f["path"],
                     out_path,
                     geometry=params.geometry,
@@ -3510,12 +3511,17 @@ class AppController(QObject):
                     gamma_key=self.state.linear_gamma_key,
                 )
                 exported += 1
+                if result.expansion_capped:
+                    capped += 1
             except Exception as e:
                 logger.warning("Linear output failed for %s: %s", f.get("name"), e)
                 self.set_status(f"Linear Output failed: {os.path.basename(f['path'])}: {e}", 4000)
 
         if exported:
-            self.set_status(f"Linear Output: exported {exported} file(s)", 4000)
+            msg = f"Linear Output: exported {exported} file(s)"
+            if capped:
+                msg += f", clipping guard capped expansion on {capped}"
+            self.set_status(msg, 6000 if capped else 4000)
 
     def request_export(self) -> None:
         """Exports the current file using the settings currently shown in the Export panel."""

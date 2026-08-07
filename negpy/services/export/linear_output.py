@@ -39,7 +39,14 @@ from negpy.infrastructure.loaders.rawpy_loader import (
     _peek_hdri_ir_page,
     _peek_linearraw_4ch,
 )
-from negpy.kernel.image.logic import _to_uint16_jit, apply_exif_orientation, ensure_rgb, uint16_to_float32
+from negpy.kernel.image.logic import (
+    _to_uint16_jit,
+    apply_exif_orientation,
+    ensure_rgb,
+    safe_expansion_factor,
+    suggest_source_bit_depth,
+    uint16_to_float32,
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,35 @@ class _SourceMeta:
     make: Optional[str] = None
     model: Optional[str] = None
     datetime: Optional[str] = None
+    applied_expansion: Optional[float] = None
+    expansion_capped: bool = False
+    bit_depth_info: Optional[dict] = None
+
+
+@dataclass(frozen=True)
+class _ExpansionGuard:
+    """Result of running the clipping guard against a decode function's requested factor."""
+
+    applied: float
+    capped: bool
+    bit_depth_info: Optional[dict] = None
+
+
+def _apply_expansion_guard(raw_max: Optional[int], requested: float, bit_depth_info: Optional[dict] = None) -> _ExpansionGuard:
+    if raw_max is not None and requested > 1.0:
+        applied, capped = safe_expansion_factor(raw_max, requested)
+    else:
+        applied, capped = requested, False
+    return _ExpansionGuard(applied, capped, bit_depth_info)
+
+
+@dataclass(frozen=True)
+class LinearOutputResult:
+    """Returned by `export_linear_output`: the factor actually written, and whether the
+    clipping guard reduced it from what was requested."""
+
+    applied_expansion: float
+    expansion_capped: bool
 
 
 def _read_source_meta_tiff(file_path: str) -> _SourceMeta:
@@ -323,13 +359,27 @@ def _decode_linear(
             rgb = _apply_white_balance(rgb, wb)
         return rgb, ir, wb, meta
     if PakonLoader.can_handle(file_path):
-        rgb, ir = _decode_pakon(file_path, geometry, expansion=expansion)
-        meta = _SourceMeta(make="Pakon", model=_pakon_spec_desc(file_path))
+        rgb, ir, guard = _decode_pakon(file_path, geometry, expansion=expansion)
+        meta = _SourceMeta(
+            make="Pakon",
+            model=_pakon_spec_desc(file_path),
+            applied_expansion=guard.applied,
+            expansion_capped=guard.capped,
+            bit_depth_info=guard.bit_depth_info,
+        )
         return rgb, ir, None, meta
     if _is_dng(file_path):
         meta = _read_source_meta_tiff(file_path)
         if _is_linearraw_dng(file_path):
-            rgb, ir = _decode_dng(file_path, geometry, expansion=expansion)
+            rgb, ir, guard = _decode_dng(file_path, geometry, expansion=expansion)
+            meta = _SourceMeta(
+                make=meta.make,
+                model=meta.model,
+                datetime=meta.datetime,
+                applied_expansion=guard.applied,
+                expansion_capped=guard.capped,
+                bit_depth_info=guard.bit_depth_info,
+            )
             return rgb, ir, None, meta
         if _is_camera_raw(file_path):
             rgb, ir, wb = _decode_camera_raw(file_path, geometry)
@@ -343,8 +393,13 @@ def _decode_linear(
         rgb, ir = _decode_fff(file_path, geometry)
         return rgb, ir, None, meta
     if is_noritsu_raw(file_path):
-        rgb, ir = _decode_noritsu(file_path, geometry, expansion=expansion)
-        meta = _SourceMeta(make="Noritsu")
+        rgb, ir, guard = _decode_noritsu(file_path, geometry, expansion=expansion)
+        meta = _SourceMeta(
+            make="Noritsu",
+            applied_expansion=guard.applied,
+            expansion_capped=guard.capped,
+            bit_depth_info=guard.bit_depth_info,
+        )
         return rgb, ir, None, meta
     if _is_camera_raw(file_path):
         if rgbscan is not None and is_rgb_triplet(rgbscan):
@@ -370,7 +425,15 @@ def _decode_linear(
         return rgb, ir, wb, merged
     if _is_tiff(file_path):
         meta = _read_source_meta_tiff(file_path)
-        rgb, ir = _decode_tiff(file_path, geometry, gamma_key=gamma_key, expansion=expansion)
+        rgb, ir, guard = _decode_tiff(file_path, geometry, gamma_key=gamma_key, expansion=expansion)
+        meta = _SourceMeta(
+            make=meta.make,
+            model=meta.model,
+            datetime=meta.datetime,
+            applied_expansion=guard.applied,
+            expansion_capped=guard.capped,
+            bit_depth_info=guard.bit_depth_info,
+        )
         return rgb, ir, None, meta
     raise ValueError(f"Linear Output is not supported for this file type: {file_path}")
 
@@ -406,14 +469,16 @@ def _decode_tiff(
     geometry: Optional[GeometryConfig] = None,
     gamma_key: str = "linear",
     expansion: Optional[float] = None,
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
-    """Read a TIFF, optionally linearize. Returns (rgb, ir_or_none)."""
+) -> tuple[np.ndarray, Optional[np.ndarray], _ExpansionGuard]:
+    """Read a TIFF, optionally linearize. Returns (rgb, ir_or_none, expansion_guard)."""
     from negpy.infrastructure.loaders.ir_planes import find_ir_plane
     from negpy.infrastructure.loaders.tiff_loader import _extract_ir_from_extrasamples, _read_sidecar_ir
 
     with _tifffile.TiffFile(file_path) as tif:
         page = tif.pages[0]
         arr = page.asarray()
+    raw_max = int(arr.max()) if arr.dtype == np.uint16 else None
+    bit_depth_info = suggest_source_bit_depth(arr) if raw_max is not None else None
     if arr.dtype == np.uint16:
         scale = 1.0 / 65535.0
     elif arr.dtype == np.uint8:
@@ -444,27 +509,32 @@ def _decode_tiff(
     f32 = np.clip(f32, 0.0, 1.0)
     if gamma_key != "linear":
         f32 = _linearize(f32, gamma_key)
-    if expansion is not None and expansion > 1.0:
-        f32 = np.clip(f32 * expansion, 0.0, 1.0)
+    requested = expansion if (expansion is not None and expansion > 1.0) else 1.0
+    guard = _apply_expansion_guard(raw_max, requested, bit_depth_info)
+    if guard.applied > 1.0:
+        f32 = np.clip(f32 * guard.applied, 0.0, 1.0)
     orientation = read_orientation(file_path)
     f32 = _apply_geometry(f32, orientation, geometry)
     if ir is not None:
         ir = _apply_geometry(ir, orientation, geometry)
-    return f32, ir
+    return f32, ir, guard
 
 
-def _decode_pakon(file_path: str, geometry: Optional[GeometryConfig] = None, expansion: Optional[float] = None) -> tuple[np.ndarray, None]:
+def _decode_pakon(
+    file_path: str, geometry: Optional[GeometryConfig] = None, expansion: Optional[float] = None
+) -> tuple[np.ndarray, None, _ExpansionGuard]:
     loader = PakonLoader()
     ctx_mgr, metadata = loader.load(file_path)
     with ctx_mgr as wrapper:
         if not isinstance(wrapper, NonStandardFileWrapper):
             raise TypeError("Expected NonStandardFileWrapper from PakonLoader")
         f32 = wrapper.data
-    factor = expansion if expansion is not None else _default_pakon_expansion(file_path)
-    if factor > 1.0:
-        f32 = np.clip(f32 * factor, 0.0, 1.0)
+    requested = expansion if expansion is not None else _default_pakon_expansion(file_path)
+    guard = _apply_expansion_guard(metadata.get("raw_max"), requested, metadata.get("bit_depth_info"))
+    if guard.applied > 1.0:
+        f32 = np.clip(f32 * guard.applied, 0.0, 1.0)
     f32 = _apply_geometry(f32, metadata.get("orientation", 0), geometry)
-    return f32, None
+    return f32, None, guard
 
 
 def _decode_via_loader(
@@ -516,8 +586,8 @@ def _decode_noritsu(
     file_path: str,
     geometry: Optional[GeometryConfig] = None,
     expansion: Optional[float] = None,
-) -> tuple[np.ndarray, None]:
-    """Read a headerless Noritsu EZController RAW. Returns (rgb, None)."""
+) -> tuple[np.ndarray, None, _ExpansionGuard]:
+    """Read a headerless Noritsu EZController RAW. Returns (rgb, None, expansion_guard)."""
     dims = detect_noritsu_dims(file_path)
     if dims is None:
         raise ValueError(f"Unknown Noritsu dimensions for {file_path}")
@@ -526,25 +596,28 @@ def _decode_noritsu(
         data = np.fromfile(f, dtype="<u2", count=w * h * 3)
     arr = data.reshape(h, w, 3)[:, :, ::-1]  # BGR → RGB
     f32 = arr.astype(np.float32) / 65535.0
-    factor = expansion if expansion is not None else NORITSU_EXPANSION
-    if factor > 1.0:
-        f32 = np.clip(f32 * factor, 0.0, 1.0)
+    requested = expansion if expansion is not None else NORITSU_EXPANSION
+    guard = _apply_expansion_guard(int(arr.max()), requested, suggest_source_bit_depth(arr))
+    if guard.applied > 1.0:
+        f32 = np.clip(f32 * guard.applied, 0.0, 1.0)
     f32 = _apply_geometry(f32, 0, geometry)
-    return f32, None
+    return f32, None, guard
 
 
 def _decode_dng(
     file_path: str, geometry: Optional[GeometryConfig] = None, expansion: Optional[float] = None
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
+) -> tuple[np.ndarray, Optional[np.ndarray], _ExpansionGuard]:
     peeked_4ch = _peek_linearraw_4ch(file_path)
     if peeked_4ch is not None:
-        rgb, ir = peeked_4ch
-        if expansion is not None and expansion > 1.0:
-            rgb = np.clip(rgb * expansion, 0.0, 1.0)
+        rgb, ir, raw_max = peeked_4ch
+        requested = expansion if (expansion is not None and expansion > 1.0) else 1.0
+        guard = _apply_expansion_guard(raw_max, requested)
+        if guard.applied > 1.0:
+            rgb = np.clip(rgb * guard.applied, 0.0, 1.0)
         orientation = read_orientation(file_path)
         rgb = _apply_geometry(rgb, orientation, geometry)
         ir = _apply_geometry(ir, orientation, geometry)
-        return rgb, ir
+        return rgb, ir, guard
 
     # 3-channel LinearRaw (SilverFast HDRi): read directly via tifffile.
     try:
@@ -558,6 +631,8 @@ def _decode_dng(
     except Exception as e:
         raise ValueError(f"Failed to read LinearRaw data from {file_path}: {e}") from e
 
+    raw_max = int(arr.max()) if arr.dtype == np.uint16 else None
+    bit_depth_info = suggest_source_bit_depth(arr) if raw_max is not None else None
     if arr.dtype == np.uint16:
         scale = 1.0 / 65535.0
     elif arr.dtype == np.uint8:
@@ -565,15 +640,17 @@ def _decode_dng(
     else:
         scale = 1.0
     rgb = np.clip(arr.astype(np.float32) * scale, 0.0, 1.0)
-    if expansion is not None and expansion > 1.0:
-        rgb = np.clip(rgb * expansion, 0.0, 1.0)
+    requested = expansion if (expansion is not None and expansion > 1.0) else 1.0
+    guard = _apply_expansion_guard(raw_max, requested, bit_depth_info)
+    if guard.applied > 1.0:
+        rgb = np.clip(rgb * guard.applied, 0.0, 1.0)
 
     ir = _peek_hdri_ir_page(file_path)
     orientation = read_orientation(file_path)
     rgb = _apply_geometry(rgb, orientation, geometry)
     if ir is not None:
         ir = _apply_geometry(ir, orientation, geometry)
-    return rgb, ir
+    return rgb, ir, guard
 
 
 def _decode_camera_raw_buffer(file_path: str) -> tuple[np.ndarray, _CameraWB, _SourceMeta]:
@@ -823,6 +900,7 @@ def _write_tiff(
     source_path: Optional[str] = None,
     source_meta: Optional[_SourceMeta] = None,
     expansion: float = 1.0,
+    requested_expansion: Optional[float] = None,
     source_format: str = "",
     wb_applied: bool = False,
     flatfield_applied: bool = False,
@@ -830,12 +908,20 @@ def _write_tiff(
     ice_applied: bool = False,
     gamma_key: str = "linear",
 ) -> None:
-    """Write a float32 buffer as an untagged 16-bit TIFF to *dest* (path or file-like)."""
+    """Write a float32 buffer as an untagged 16-bit TIFF to *dest* (path or file-like).
+
+    *requested_expansion*, when set, means the clipping guard reduced *expansion* from
+    what was actually requested -- recorded in the description so a capped export isn't
+    silent.
+    """
     u16 = _to_uint16_jit(np.ascontiguousarray(f32, dtype=np.float32))
     photometric = "rgb" if f32.ndim == 3 else "minisblack"
     parts = [f"source: {source_format or source_name}"]
     if expansion > 1.0:
-        parts.append(f"expansion: x{expansion:g}")
+        if requested_expansion is not None:
+            parts.append(f"expansion: x{expansion:g} (clipping guard capped from x{requested_expansion:g})")
+        else:
+            parts.append(f"expansion: x{expansion:g}")
     else:
         parts.append("no scaling")
     if gamma_key != "linear":
@@ -916,7 +1002,7 @@ def export_linear_output(
     apply_ice: bool = False,
     retouch: Optional[RetouchConfig] = None,
     gamma_key: str = "linear",
-) -> None:
+) -> LinearOutputResult:
     """Decode *file_path* and write an untagged linear 16-bit TIFF to *output_path*.
 
     Lossless geometry (90-degree rotation, horizontal/vertical flip) from *geometry*
@@ -924,6 +1010,8 @@ def export_linear_output(
 
     *expansion* scales the linear data before writing (e.g. 4.0 for Pakon's 14-bit
     sensor → 16-bit range). ``None`` uses the source-type default; values <= 1.0 disable.
+    For Pakon/Noritsu/LinearRaw-DNG/TIFF sources, a clipping guard caps the factor to
+    whatever the source's actual data can safely support -- see the returned result.
 
     *rgbscan*, when a valid triplet config, merges three narrowband exposures into
     one combined RGB buffer before writing.
@@ -940,8 +1028,11 @@ def export_linear_output(
 
     If the source has an IR channel, it is written as a separate grayscale TIFF
     with an ``_ir`` suffix next to the RGB output.
+
+    Returns a `LinearOutputResult` recording the expansion factor actually written and
+    whether the clipping guard reduced it from what was requested.
     """
-    eff = _effective_expansion(file_path, expansion)
+    requested_eff = _effective_expansion(file_path, expansion)
     fmt = _source_format_label(file_path, rgbscan, stitch)
     f32, ir, camera_wb, meta = _decode_linear(
         file_path,
@@ -956,6 +1047,8 @@ def export_linear_output(
         apply_sensor=apply_sensor,
         gamma_key=gamma_key,
     )
+    applied_eff = meta.applied_expansion if meta.applied_expansion is not None else requested_eff
+    was_capped = meta.expansion_capped
     ice_applied = False
     if apply_ice and ir is not None:
         ret = retouch if retouch is not None else RetouchConfig()
@@ -970,7 +1063,8 @@ def export_linear_output(
         camera_wb,
         source_path=file_path,
         source_meta=meta,
-        expansion=eff,
+        expansion=applied_eff,
+        requested_expansion=requested_eff if was_capped else None,
         source_format=fmt,
         wb_applied=apply_wb,
         flatfield_applied=apply_flatfield or is_stitch,
@@ -984,16 +1078,29 @@ def export_linear_output(
         ir_path = f"{stem}_ir{ext}"
         _write_ir_tiff(ir, ir_path, os.path.basename(file_path))
 
+    return LinearOutputResult(applied_expansion=applied_eff, expansion_capped=was_capped)
+
 
 def export_linear_output_bytes(file_path: str, geometry: Optional[GeometryConfig] = None) -> tuple[bytes, str]:
     """Like export_linear_output but returns (tiff_bytes, filename_stem) for in-memory use.
 
     IR is not included in the returned bytes (use export_linear_output for IR).
     """
-    eff = _effective_expansion(file_path, None)
+    requested_eff = _effective_expansion(file_path, None)
     fmt = _source_format_label(file_path)
     f32, _ir, camera_wb, meta = _decode_linear(file_path, geometry)
+    applied_eff = meta.applied_expansion if meta.applied_expansion is not None else requested_eff
     buf = io.BytesIO()
-    _write_tiff(f32, buf, os.path.basename(file_path), camera_wb, source_path=file_path, source_meta=meta, expansion=eff, source_format=fmt)
+    _write_tiff(
+        f32,
+        buf,
+        os.path.basename(file_path),
+        camera_wb,
+        source_path=file_path,
+        source_meta=meta,
+        expansion=applied_eff,
+        requested_expansion=requested_eff if meta.expansion_capped else None,
+        source_format=fmt,
+    )
     stem = os.path.splitext(os.path.basename(file_path))[0]
     return buf.getvalue(), stem
