@@ -30,8 +30,12 @@ KNOWN_NORITSU_DIMS: list[tuple[int, int]] = [
 KNOWN_NORITSU_HEIGHTS: list[int] = sorted({h for _, h in KNOWN_NORITSU_DIMS})
 
 
+# Floor for tier-3 candidate dimensions; conservative margin below the narrowest known
+# real Noritsu scan width (3551), not a tight bound derived from it.
 _MIN_SCAN_WIDTH = 2000
 _MAX_SCAN_WIDTH = 15000
+# aspect = max(w, h) / min(w, h) is always >= 1 by construction, so this lower bound
+# is a no-op; kept as a named, self-documenting bound rather than removed.
 _MIN_ASPECT = 1.0
 _MAX_ASPECT = 4.5
 
