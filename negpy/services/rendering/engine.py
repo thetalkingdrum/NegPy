@@ -205,8 +205,11 @@ class DarkroomEngine:
 
             paper = PrintService.effective_paper_linear(settings.finish, settings.toning)
             current_img = FinishProcessor(settings.finish, settings.export.export_print_size, paper).process(current_img, context)
-            # Output transform: scene-linear -> display-encoded (flat master skips this).
-            current_img = ensure_image(working_oetf_encode(current_img))
+            if context.skip_terminal_encode:
+                current_img = ensure_image(current_img)
+            else:
+                # Output transform: scene-linear -> display-encoded (flat master skips this).
+                current_img = ensure_image(working_oetf_encode(current_img))
 
         if context.wants_uv_grid:
             try:

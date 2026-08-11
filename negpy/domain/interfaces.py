@@ -35,6 +35,12 @@ class PipelineContext:
     # As-shot WB multipliers, folded into the camera matrix when the buffer was decoded
     # without white balance (Linear RAW). None when WB was applied at decode.
     camera_wb: Optional[list] = None
+    # Linear-boundary prototype (see infrastructure/display/boundary_transform.py):
+    # skips DarkroomEngine's terminal working_oetf_encode, so process() returns
+    # scene-linear output instead of display-encoded. Not a persisted setting -- the
+    # caller takes over responsibility for encoding, via the boundary transform's own
+    # destination step. False everywhere except that prototype's own call sites.
+    skip_terminal_encode: bool = False
 
 
 class IImageSource(Protocol):

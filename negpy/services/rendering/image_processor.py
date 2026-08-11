@@ -62,6 +62,7 @@ from negpy.kernel.image.logic import (
     uint16_to_float32,
     float_to_uint_luma,
     working_oetf_decode,
+    working_oetf_encode,
 )
 from negpy.infrastructure.loaders.factory import loader_factory
 from negpy.infrastructure.loaders.helpers import (
@@ -74,10 +75,19 @@ from negpy.infrastructure.loaders.helpers import (
 from negpy.services.export.print import PrintService
 from negpy.infrastructure.display.color_spaces import ColorSpaceRegistry, WORKING_COLOR_SPACE
 from negpy.infrastructure.display.icc_lut import apply_icc_u16_rgb
+from negpy.infrastructure.display.boundary_transform import Primaries, apply_boundary_transform, load_boundary_transform
 
 # Preview soft-proof LUT grid. Finer than the display LUT because the proof clips at
 # the output gamut boundary, and interpolating across that kink is where the error is.
 PROOF_LUT_SIZE = 65
+
+# Linear-boundary prototype (infrastructure/display/boundary_transform.py), dev-only:
+# `NEGPY_LINEAR_BOUNDARY=1 make run` routes TIFF RGB export through it instead of the
+# legacy full-CMS path. Off by default; no UI, no WorkspaceConfig field, no persisted
+# state -- purely a live-testing toggle. CPU-only (forces prefer_gpu=False, same as
+# flat_intent), and only the TIFF RGB export branch is wired -- other formats and the
+# interactive preview are untouched.
+_LINEAR_BOUNDARY_PROTOTYPE = os.environ.get("NEGPY_LINEAR_BOUNDARY") == "1"
 
 logger = get_logger(__name__)
 
@@ -416,11 +426,14 @@ class ImageProcessor:
         skip_flatfield: bool = False,
         cam_xyz: Optional[list] = None,
         camera_wb: Optional[list] = None,
+        skip_terminal_encode: bool = False,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Executes rendering pipeline. Returns result (ndarray/GPUTexture) and metrics.
 
         ``skip_flatfield``: the export CPU fallbacks pass an already-flat-fielded buffer.
+        ``skip_terminal_encode``: linear-boundary prototype only (see
+        ``_LINEAR_BOUNDARY_PROTOTYPE``) -- every other caller leaves this False.
         """
         # Flat-field is a source pre-correction (before geometry/crop); folding its token
         # into source_hash invalidates the engine cache when it changes. Stitch buffers
@@ -498,6 +511,7 @@ class ImageProcessor:
             wants_uv_grid=wants_uv_grid,
             cam_xyz=cam_xyz,
             camera_wb=camera_wb,
+            skip_terminal_encode=skip_terminal_encode,
         )
         if metrics:
             context.metrics.update(metrics)
@@ -782,7 +796,7 @@ class ImageProcessor:
             h_raw, w_raw = f32_buffer.shape[:2]
             export_scale = max(h_raw, w_raw) / float(APP_CONFIG.preview_render_size)
 
-            if self._is_flat(params):
+            if self._is_flat(params) or _LINEAR_BOUNDARY_PROTOTYPE:
                 prefer_gpu = False
 
             if prefer_gpu and self.engine_gpu:
@@ -807,12 +821,15 @@ class ImageProcessor:
                     skip_flatfield=True,  # f32_buffer already flat-fielded by _load_source_f32
                     cam_xyz=self._cam_xyz_by_path.get(file_path, (None, None))[0],
                     camera_wb=self._cam_xyz_by_path.get(file_path, (None, None))[1],
+                    skip_terminal_encode=_LINEAR_BOUNDARY_PROTOTYPE,
                 )
                 buffer = self._apply_scaling_and_border_f32(buffer, params, params.export)
                 # Release full-res arrays pinned in the CPU stage cache.
                 self.engine_cpu.cache.clear()
 
-            return self._encode_export(buffer, export_settings, color_space, working_color_space)
+            return self._encode_export(
+                buffer, export_settings, color_space, working_color_space, buffer_is_linear=_LINEAR_BOUNDARY_PROTOTYPE
+            )
 
         except Exception as e:
             logger.error(f"Export pipeline failed: {e}")
@@ -824,11 +841,18 @@ class ImageProcessor:
         export_settings,
         color_space: str,
         working_color_space: str = WORKING_COLOR_SPACE,
+        buffer_is_linear: bool = False,
     ) -> Tuple[bytes, str]:
         """Encodes a processed float buffer to the target format's file bytes.
 
         Input ICC overrides the source, output ICC the destination; both are always
         applied so the file matches the preview.
+
+        ``buffer_is_linear``: linear-boundary prototype only (``_LINEAR_BOUNDARY_PROTOTYPE``)
+        -- ``buffer`` is scene-linear, not display-encoded. Only the TIFF RGB branch
+        below exercises the prototype path; every other combination just needs the
+        terminal encode it would otherwise have gotten from DarkroomEngine, applied
+        here, then proceeds exactly as before.
         """
         fmt = export_settings.export_fmt
         icc_input = export_settings.icc_input_path
@@ -844,12 +868,18 @@ class ImageProcessor:
 
         is_greyscale = color_space == ColorSpace.GREYSCALE.value
 
+        if buffer_is_linear and (fmt != ExportFormat.TIFF or is_greyscale):
+            buffer = working_oetf_encode(buffer)
+            buffer_is_linear = False
+
         if fmt == ExportFormat.TIFF:
             if is_greyscale:
                 img_int = float_to_uint_luma(np.ascontiguousarray(buffer), bit_depth=16)
                 img_out, icc_bytes = self._apply_color_management_u16_greyscale(
                     img_int, working_color_space, color_space, icc_output, icc_input
                 )
+            elif buffer_is_linear:
+                img_out, icc_bytes = self._apply_linear_boundary_u16(buffer, working_color_space, color_space, icc_output, icc_input)
             else:
                 img_int = float_to_uint16(buffer)
                 img_out, icc_bytes = self._apply_color_management_u16(img_int, working_color_space, color_space, icc_output, icc_input)
@@ -1243,6 +1273,47 @@ class ImageProcessor:
         except Exception as e:
             logger.error(f"CMS transformation failed: {e}")
             return img_u16, None
+
+    def _apply_linear_boundary_u16(
+        self,
+        buffer: np.ndarray,
+        working_color_space: str,
+        color_space: str,
+        output_icc_path: Optional[str],
+        input_icc_path: Optional[str] = None,
+    ) -> Tuple[np.ndarray, Optional[bytes]]:
+        """Linear-boundary prototype only (see ``_LINEAR_BOUNDARY_PROTOTYPE``):
+        ``buffer`` is scene-linear (DarkroomEngine skipped its terminal encode).
+        Resolves the effective source profile exactly like ``_apply_color_management_u16``
+        (input override if present, else the working space), loads it via
+        ``boundary_transform.py``, and applies whichever branch it resolves to.
+        Falls back to the ordinary encode + legacy full-CMS path on any failure, so
+        a bad prototype profile degrades instead of producing a blank export.
+        """
+        src_bytes = self._get_target_icc_bytes(working_color_space, input_icc_path)
+        if src_bytes is None:
+            encoded = working_oetf_encode(buffer)
+            return self._apply_color_management_u16(float_to_uint16(encoded), working_color_space, color_space, output_icc_path, None)
+
+        try:
+            transform = load_boundary_transform(src_bytes)
+            if isinstance(transform, Primaries):
+                # Resolves to scene-linear working RGB; finish exactly like today's
+                # path does for "no input override" -- encode, then the ordinary
+                # working->dst CMS step (input already consumed, pass None onward).
+                encoded = working_oetf_encode(apply_boundary_transform(buffer, transform))
+                return self._apply_color_management_u16(float_to_uint16(encoded), working_color_space, color_space, output_icc_path, None)
+
+            dst_bytes = self._get_target_icc_bytes(color_space, output_icc_path)
+            if dst_bytes is None:
+                logger.warning("Linear-boundary prototype: no destination ICC profile found for '%s'", color_space)
+                return float_to_uint16(working_oetf_encode(buffer)), None
+
+            result = apply_boundary_transform(buffer, transform, dst_profile_bytes=dst_bytes)
+            return float_to_uint16(result), dst_bytes
+        except Exception as e:
+            logger.error(f"Linear-boundary CMS transform failed: {e}")
+            return float_to_uint16(working_oetf_encode(buffer)), None
 
     def apply_color_management(
         self,
