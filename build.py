@@ -104,6 +104,7 @@ params = [
     "--add-data=icc:icc",
     "--add-data=media:media",
     "--add-data=crosstalk:crosstalk",
+    "--add-data=fade:fade",
     "--add-data=gear:gear",
     "--add-data=VERSION:.",
     # The panel guides (section_help_dialog.py) render slices of it at runtime.

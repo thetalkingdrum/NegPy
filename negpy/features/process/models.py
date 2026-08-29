@@ -122,6 +122,19 @@ class ProcessConfig:
     # E-6, so a mismatch resolves to identity instead of mixing in the wrong matrix.
     crosstalk_process: str = ProcessMode.C41
 
+    # Dye-fade restoration for faded transparencies. Inverts a fade operator on
+    # NEGATIVE densities in the same domain as the crosstalk unmix, and composes
+    # with it rather than running as its own stage. `fade_alpha` is per-layer dye
+    # survival, `fade_delta` the six side-absorption ratios in
+    # (gr, br, rg, bg, rb, gb) order. Strength scales the parameters, not the
+    # output: a scaled parameter set is a less-faded film, a blended output is
+    # not a state of the material.
+    fade_strength: float = 0.0
+    fade_alpha: Optional[tuple] = None
+    fade_delta: Optional[tuple] = None
+    fade_profile: str = "None"
+    fade_process: str = ProcessMode.E6
+
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
     # per-setup property calibrated from three bare-light R/G/B exposures
     # (features/process/sensor.py). 9 floats row-major; None = off.
@@ -149,6 +162,10 @@ class ProcessConfig:
         object.__setattr__(self, "local_ceils", tuple(self.local_ceils))
         if self.crosstalk_matrix is not None:
             object.__setattr__(self, "crosstalk_matrix", tuple(self.crosstalk_matrix))
+        if self.fade_alpha is not None:
+            object.__setattr__(self, "fade_alpha", tuple(self.fade_alpha))
+        if self.fade_delta is not None:
+            object.__setattr__(self, "fade_delta", tuple(self.fade_delta))
         if self.sensor_matrix is not None:
             object.__setattr__(self, "sensor_matrix", tuple(self.sensor_matrix))
         if self.analysis_rect is not None:
