@@ -209,6 +209,11 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     densities of the film the crosstalk unmix already recovered as *faded*, so it applies
     after: `fade @ unmix`. Neither gate implies the other, so either factor, both or
     neither can be None.
+
+    When both are active for the same dye set, `fade_delta` is dropped (survival ratios
+    still apply): a crosstalk profile and `fade_delta` both describe the same physical
+    quantity -- a dye set's inherent side absorption -- so composing both would apply it
+    twice. See `fade_delta_conflict_reason`.
     """
     from negpy.features.process.models import ProcessMode
 
@@ -220,11 +225,40 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     fade_mode = str(getattr(process, "fade_process", ProcessMode.E6) or ProcessMode.E6)
     fade = None
     if process_mode is None or fade_mode == str(process_mode):
-        fade = resolve_fade_matrix(process.fade_strength, process.fade_ratio_g, process.fade_ratio_b, process.fade_delta)
+        delta = None if (unmix is not None and fade_delta_conflict_reason(process, process_mode)) else process.fade_delta
+        fade = resolve_fade_matrix(process.fade_strength, process.fade_ratio_g, process.fade_ratio_b, delta)
 
     if fade is None:
         return unmix
     return fade if unmix is None else fade @ unmix
+
+
+def fade_delta_conflict_reason(process: "ProcessConfig", process_mode: Optional[str]) -> str:
+    """Why `fade_delta` is being dropped from the composition in favor of the crosstalk
+    unmix already active for this dye set, or "" when there is no conflict.
+
+    Every bundled crosstalk matrix is "read off published spectral dye-density spec
+    sheets ... describing the dyes alone" (crosstalk/README.md) -- the same physical
+    quantity `fade_delta` represents. A crosstalk profile and a non-zero fade profile
+    active for the same mode would apply that side-absorption correction twice; this is
+    currently prevented only by accident (the bundled fade profile is all-zero, and no
+    crosstalk profile is E-6), which breaks the moment either changes. Survival ratios
+    have no crosstalk equivalent and are never affected.
+    """
+    from negpy.features.process.models import ProcessMode
+
+    profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
+    crosstalk_active = (process_mode is None or profile_mode == str(process_mode)) and (
+        resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix) is not None
+    )
+    if not crosstalk_active:
+        return ""
+    fade_mode = str(getattr(process, "fade_process", ProcessMode.E6) or ProcessMode.E6)
+    fade_mode_matches = process_mode is None or fade_mode == str(process_mode)
+    delta_nonzero = process.fade_delta is not None and any(float(v) != 0.0 for v in process.fade_delta)
+    if fade_mode_matches and delta_nonzero and float(process.fade_strength) > 0.0:
+        return "a crosstalk profile is already active for this dye set — its side-absorption profile is ignored to avoid double-correcting (survival ratios still apply)"
+    return ""
 
 
 def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Optional[np.ndarray]:
@@ -269,12 +303,22 @@ def resolve_fade_matrix(strength: float, ratio_g: float, ratio_b: float, delta: 
     """
     if float(strength) <= 0.0:
         return None
+    f = _fade_forward_matrix(strength, ratio_g, ratio_b, delta)
+    det = np.linalg.det(f)
+    if abs(det) < 1e-6 or np.linalg.cond(f) > FADE_CONDITION_LIMIT:
+        return None
+    return np.linalg.inv(f)
+
+
+def _fade_forward_matrix(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> np.ndarray:
+    """The forward fade operator F for (strength-scaled) parameters, shared by
+    resolve_fade_matrix and fade_reject_reason so the two cannot disagree on what F is."""
     s = float(strength)
     ag = 1.0 + s * (float(ratio_g) - 1.0)
     ab = 1.0 + s * (float(ratio_b) - 1.0)
     d = delta if delta is not None else (0.0,) * 6
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (s * float(x) for x in d)
-    f = np.array(
+    return np.array(
         [
             [1.0, ag * d_gr, ab * d_br],
             [d_rg, ag, ab * d_bg],
@@ -282,10 +326,22 @@ def resolve_fade_matrix(strength: float, ratio_g: float, ratio_b: float, delta: 
         ],
         dtype=np.float64,
     )
+
+
+def fade_reject_reason(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> str:
+    """Why resolve_fade_matrix declined to build a restoration operator for these
+    parameters, or "" when it didn't. Strength <= 0 is not reported: that is the
+    ordinary off state, not a rejection."""
+    if float(strength) <= 0.0:
+        return ""
+    f = _fade_forward_matrix(strength, ratio_g, ratio_b, delta)
     det = np.linalg.det(f)
-    if abs(det) < 1e-6 or np.linalg.cond(f) > FADE_CONDITION_LIMIT:
-        return None
-    return np.linalg.inv(f)
+    if abs(det) < 1e-6:
+        return f"the restoration matrix is singular for this strength and profile (det≈{det:.2g})"
+    cond = np.linalg.cond(f)
+    if cond > FADE_CONDITION_LIMIT:
+        return f"the restoration matrix is too ill-conditioned to invert safely (condition {cond:.0f}, limit {FADE_CONDITION_LIMIT:.0f})"
+    return ""
 
 
 def unmix_log_image(img_log: ImageBuffer, matrix: Optional[np.ndarray]) -> ImageBuffer:
