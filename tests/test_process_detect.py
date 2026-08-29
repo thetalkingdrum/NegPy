@@ -60,13 +60,6 @@ def test_detects_e6():
     assert detect_process_mode(_e6_scan()) == ProcessMode.E6
 
 
-def test_ambiguous_fallback_is_overridable():
-    """The thumbnail placeholder passes C41 here: a scanner that already thins a negative's
-    mask (e.g. a Pakon-converted TIFF) starves the orange-mask test, and an un-inverted
-    negative thumbnail is a worse failure than a wrongly-inverted slide thumbnail."""
-    assert detect_process_mode(_e6_scan(), ambiguous=ProcessMode.C41) == ProcessMode.C41
-
-
 def test_invalid_input_falls_back_to_c41():
     assert detect_process_mode(None) == ProcessMode.C41
     assert detect_process_mode(np.zeros((4, 4), dtype=np.float32)) == ProcessMode.C41

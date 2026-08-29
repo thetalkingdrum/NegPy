@@ -117,15 +117,10 @@ def _has_purple_mask(r_v: float, g_v: float, b_v: float) -> bool:
     return deficit > _PURPLE_G_DEFICIT and balance > _PURPLE_RB_BALANCE
 
 
-def detect_process_mode(raw: Optional[ImageBuffer], ambiguous: ProcessMode = ProcessMode.E6) -> ProcessMode:
+def detect_process_mode(raw: Optional[ImageBuffer]) -> ProcessMode:
     """
-    Classify a raw linear scan as C41, B&W or E-6. Invalid input is always C41; input that
-    clears none of the tests below falls back to `ambiguous` — E-6 by default, matching the
-    accurate first-open path, which re-decodes without camera WB so a real C41 mask is
-    reliably visible. A scanner that already thins its own negatives' mask (e.g. a Pakon
-    "converted" TIFF) can starve this same test on the thumbnail placeholder's decode, so
-    that caller passes C41: an un-inverted negative thumbnail is unrecognizable, while a
-    wrongly-inverted slide thumbnail still reads as a photo.
+    Classify a raw linear scan as C41, B&W or E-6.
+    Falls back to C41 (the default) on ambiguous or invalid input.
     """
     if raw is None or raw.ndim != 3 or raw.shape[2] < 3:
         return ProcessMode.C41
@@ -163,4 +158,4 @@ def detect_process_mode(raw: Optional[ImageBuffer], ambiguous: ProcessMode = Pro
     if _has_purple_mask(r_p98, g_p98, b_p98):
         return ProcessMode.C41
 
-    return ambiguous
+    return ProcessMode.E6

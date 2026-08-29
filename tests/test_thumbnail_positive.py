@@ -50,31 +50,15 @@ class TestPreviewPositive(unittest.TestCase):
         channel_means = result.reshape(-1, 3).mean(axis=0)
         self.assertLess(float(channel_means.max() - channel_means.min()), 5.0)
 
-    def test_stored_transparency_is_left_alone(self):
-        """A slide is already a positive; inverting it would be the bug this replaces.
-        The heuristic has no positive signal for "slide" — only BW correlation and an
-        orange/purple mask for C41 — so a real slide is protected by its stored mode,
-        not by the ambiguous-input fallback below."""
+    def test_transparency_is_left_alone(self):
+        """A slide is already a positive; inverting it would be the bug this replaces."""
         rng = np.random.default_rng(3)
         arr = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
         slide = Image.fromarray(arr)
 
-        result = preview_positive(slide, "Transparency")
+        result = preview_positive(slide)
 
         self.assertTrue(np.array_equal(np.asarray(result), arr))
-
-    def test_ambiguous_input_inverts_as_a_negative(self):
-        """No orange mask survives a scanner that already thins its own negatives' mask
-        (e.g. a Pakon "converted" TIFF), so the placeholder must not fall back to treating
-        an unidentified scan as an already-positive slide: an un-inverted negative
-        thumbnail is unrecognizable, while a wrongly-inverted slide still reads as a photo."""
-        rng = np.random.default_rng(3)
-        arr = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
-        unidentified = Image.fromarray(arr)
-
-        result = preview_positive(unidentified)
-
-        self.assertFalse(np.array_equal(np.asarray(result), arr))
 
     def test_stored_transparency_beats_the_heuristic(self):
         """The reported bug: a warm slide reads as an orange mask, so detection called it a
