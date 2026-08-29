@@ -67,6 +67,8 @@ _SENSOR_FIELDS = (
     "sensor_profile",
     "crosstalk_profile",
     "crosstalk_strength",
+    "fade_profile",
+    "fade_strength",
     "hue_trim",
 )
 # ProcessConfig is split across five cards. Each tuple is both the card's reset scope and

@@ -735,6 +735,11 @@ To tune a matrix, adjust its six off-diagonal terms in the editor and save it as
 
 Grayed out unless **Linear RAW** is on (profiles assume neutral white balance) and on **Transparency**; skipped for RGB-triplet assets. The selection is remembered. **Re-run Roll Analysis** after changing it.
 
+**Fade Restoration** (Transparency only) inverts a fade operator on the negative densities, built from each dye layer's surviving fraction and the dye set's side-absorption ratios, and composes it with Crosstalk rather than running as a separate step. Labelled *restoration*, not *correction*, because it undoes fading — a real change to the material — rather than the ordinary channel bleed every scan already has.
+
+*   **Profile**: the dye-fade parameters to apply. *None* means no correction; *Generic E6* ships as an exact identity (no fade assumed), so the control is visibly present and inert until a real profile exists for your stock. Custom `.toml` profiles live in `<Documents>/NegPy/fade/`. The slider button opens an editor: the diagonal is **Survival**, each layer's surviving dye fraction (1.0 = no fade); the off-diagonal terms are the dye set's side-absorption ratios.
+*   **Strength** (0.0 to 1.0): how much of the restoration to apply. It changes what the analysis reads, so **re-run Batch Analysis** after changing it.
+
 **Light source:**
 
 *   **Hue Trim** (-30° to 30°, default 0): rotates every hue by a fixed angle, to undo narrowband LED and odd-phosphor lights, which turn every color by about the same angle (yellows read orange, greens go olive) and leave neutrals alone. White balance cannot fix a rotation. Judge it on a known color (foliage, blue sky, skin); leave it at 0 for broadband light. It is **sticky** and carries to the next file. Neutrals are untouched, so the color-balance clip in **Metering** is unaffected.
