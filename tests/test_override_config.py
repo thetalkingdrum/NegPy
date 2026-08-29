@@ -36,6 +36,7 @@ def _make_app_config(**kwargs) -> AppConfig:
         cache_dir="/tmp/cache",
         user_icc_dir="/tmp/icc",
         crosstalk_dir="/tmp/crosstalk",
+        fade_dir="/tmp/fade",
         sensor_dir="/tmp/sensor",
         flatfield_dir="/tmp/flatfield",
         gear_dir="/tmp/gear",

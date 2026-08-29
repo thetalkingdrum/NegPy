@@ -153,6 +153,10 @@ class DarkroomEngine:
             settings.process.crosstalk_strength,
             settings.process.crosstalk_matrix,
             settings.process.crosstalk_process,
+            settings.process.fade_strength,
+            settings.process.fade_alpha,
+            settings.process.fade_delta,
+            settings.process.fade_process,
             settings.process.lock_bounds,
             distortion_k1,
             # The transparency branch meters its neutral axis only when Cast Removal is on.

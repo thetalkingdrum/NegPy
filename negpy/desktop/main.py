@@ -143,6 +143,7 @@ def _bootstrap_environment() -> None:
         APP_CONFIG.cache_dir,
         APP_CONFIG.user_icc_dir,
         APP_CONFIG.crosstalk_dir,
+        APP_CONFIG.fade_dir,
         APP_CONFIG.sensor_dir,
         APP_CONFIG.gear_dir,
         APP_CONFIG.contact_sheet_templates_dir,

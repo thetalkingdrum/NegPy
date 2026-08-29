@@ -872,6 +872,8 @@ class ControlsPanel(QWidget):
                 proc.sensor_profile != _proc.sensor_profile,
                 proc.crosstalk_profile != _proc.crosstalk_profile,
                 proc.crosstalk_strength != _proc.crosstalk_strength,
+                proc.fade_profile != _proc.fade_profile,
+                proc.fade_strength != _proc.fade_strength,
                 proc.hue_trim != _proc.hue_trim,
             ]
         )

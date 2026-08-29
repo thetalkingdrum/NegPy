@@ -203,13 +203,28 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     negative stock, so without this gate a slide silently gets a negative's correction.
     Legacy configs carry no `crosstalk_process` and default to C-41, which is what every
     profile that predates the field actually is.
+
+    Also composes in fade restoration, gated the same way on `fade_process`: a C-41 and
+    an E-6 dye set do not share side absorptions either. Fade restores the *original*
+    densities of the film the crosstalk unmix already recovered as *faded*, so it applies
+    after: `fade @ unmix`. Neither gate implies the other, so either factor, both or
+    neither can be None.
     """
     from negpy.features.process.models import ProcessMode
 
     profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
-    if process_mode is not None and profile_mode != str(process_mode):
-        return None
-    return resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix)
+    unmix = None
+    if process_mode is None or profile_mode == str(process_mode):
+        unmix = resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix)
+
+    fade_mode = str(getattr(process, "fade_process", ProcessMode.E6) or ProcessMode.E6)
+    fade = None
+    if process_mode is None or fade_mode == str(process_mode):
+        fade = resolve_fade_matrix(process.fade_strength, process.fade_alpha, process.fade_delta)
+
+    if fade is None:
+        return unmix
+    return fade if unmix is None else fade @ unmix
 
 
 def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Optional[np.ndarray]:
@@ -229,6 +244,42 @@ def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Option
     applied = np.eye(3) * (1.0 - float(strength)) + cal * float(strength)
     row_sums = np.sum(applied, axis=1, keepdims=True)
     return applied / np.maximum(row_sums, 1e-6)
+
+
+#: Above this condition number the restoration matrix is refused rather than inverted:
+#: the fade estimate for those (alpha, delta) is undetermined enough that inverting it
+#: would amplify noise rather than recover signal.
+FADE_CONDITION_LIMIT = 50.0
+
+
+def resolve_fade_matrix(strength: float, alpha: Optional[tuple], delta: Optional[tuple]) -> Optional[np.ndarray]:
+    """Restoration operator inv(F) for a faded dye set, or None when off.
+
+    Deliberately not row-normalized, unlike resolve_crosstalk_matrix: fade changes each
+    layer's neutral density and that difference is the entire signal. F is built from
+    per-layer dye survival `alpha` and side-absorption ratios `delta`; strength scales
+    the parameters toward the identity (a less-faded film) before F is built, not the
+    output, so a partial application stays a physically coherent state of the material.
+    Refuses (returns None) rather than inverting when F is singular or ill-conditioned
+    for the requested parameters.
+    """
+    if float(strength) <= 0.0 or alpha is None or delta is None:
+        return None
+    s = float(strength)
+    ar, ag, ab = (1.0 + s * (float(a) - 1.0) for a in alpha)
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (s * float(d) for d in delta)
+    f = np.array(
+        [
+            [ar, ag * d_gr, ab * d_br],
+            [ar * d_rg, ag, ab * d_bg],
+            [ar * d_rb, ag * d_gb, ab],
+        ],
+        dtype=np.float64,
+    )
+    det = np.linalg.det(f)
+    if abs(det) < 1e-6 or np.linalg.cond(f) > FADE_CONDITION_LIMIT:
+        return None
+    return np.linalg.inv(f)
 
 
 def unmix_log_image(img_log: ImageBuffer, matrix: Optional[np.ndarray]) -> ImageBuffer:

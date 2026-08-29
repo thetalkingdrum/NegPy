@@ -7,6 +7,7 @@ from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.features.process.models import ProcessMode, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.services.assets.crosstalk import CrosstalkProfiles
+from negpy.services.assets.fade import FadeProfiles
 from negpy.services.assets.sensor import SensorProfiles
 
 
@@ -138,6 +139,38 @@ class SensorSidebar(BaseSidebar):
         self.crosstalk_strength_slider = CompactSlider("Strength", 0.0, 1.0, conf.crosstalk_strength, has_neutral=True)
         self.layout.addWidget(self.crosstalk_strength_slider)
 
+        # E-6 only: a fade operator is fitted to one dye set, and a color negative's differs.
+        self.fade_header = section_subheader("FADE RESTORATION")
+        self.layout.addWidget(self.fade_header)
+
+        fade_row = QHBoxLayout()
+        self.fade_label = field_label("Profile")
+        self.fade_combo = QComboBox()
+        self._fill_fade_combo()
+        self.fade_combo.setCurrentText(conf.fade_profile)
+        self.fade_combo.setToolTip(
+            "<table width='280'><tr><td>"
+            "Restores a faded transparency's original per-layer densities: inverts a fade operator "
+            "built from each layer's surviving dye fraction and the dye set's side-absorption "
+            "ratios, composed with the crosstalk unmix. Labelled restoration rather than "
+            "correction, because it undoes fading rather than the ordinary channel bleed a fresh "
+            "scan already has.<br><br>"
+            "<b>Generic E6 ships as an exact identity</b> — visibly present, inert until you (or a "
+            "measured profile) supply real numbers for a stock. Custom .toml profiles live in the "
+            "NegPy/fade folder."
+            "</td></tr></table>"
+        )
+        self.manage_fade_btn = self._icon_action(
+            "fa5s.sliders-h", "Open the fade restoration editor — view, copy and edit dye-survival profiles", width=32
+        )
+        fade_row.addWidget(self.fade_label)
+        fade_row.addWidget(self.fade_combo, 1)
+        fade_row.addWidget(self.manage_fade_btn)
+        self.layout.addLayout(fade_row)
+
+        self.fade_strength_slider = CompactSlider("Strength", 0.0, 1.0, conf.fade_strength, has_neutral=True)
+        self.layout.addWidget(self.fade_strength_slider)
+
         self.layout.addWidget(section_subheader("LIGHT SOURCE"))
 
         self.hue_trim_slider = CompactSlider("Hue Trim", -30.0, 30.0, conf.hue_trim, step=0.5, precision=10, has_neutral=True, unit="°")
@@ -181,6 +214,26 @@ class SensorSidebar(BaseSidebar):
                 item.setEnabled(False)
             for name in names:
                 self.crosstalk_combo.addItem(name)
+
+    def _expected_fade_rows(self, process_mode=None) -> list:
+        """The rows _fill_fade_combo would produce, for change detection."""
+        rows: list = [FadeProfiles.NONE_NAME]
+        for heading, names in FadeProfiles.grouped_profiles(process_mode):
+            rows.append(self._heading_row(heading))
+            rows.extend(names)
+        return rows
+
+    def _fill_fade_combo(self, process_mode=None) -> None:
+        self.fade_combo.clear()
+        # Ungrouped: "None" is the absence of a profile, not a provenance bucket like the others.
+        self.fade_combo.addItem(FadeProfiles.NONE_NAME)
+        for heading, names in FadeProfiles.grouped_profiles(process_mode):
+            self.fade_combo.addItem(self._heading_row(heading))
+            item = self.fade_combo.model().item(self.fade_combo.count() - 1)
+            if item is not None:
+                item.setEnabled(False)
+            for name in names:
+                self.fade_combo.addItem(name)
 
     def _crosstalk_names(self) -> list:
         """Selectable profile names currently in the combo, headings excluded."""
@@ -240,6 +293,11 @@ class SensorSidebar(BaseSidebar):
         self.manage_crosstalk_btn.clicked.connect(self._open_crosstalk_editor)
         self.crosstalk_strength_slider.valueChanged.connect(lambda v: self._on_crosstalk_strength_changed(v, persist=False))
         self.crosstalk_strength_slider.valueCommitted.connect(lambda v: self._on_crosstalk_strength_changed(v, persist=True))
+
+        self.fade_combo.currentTextChanged.connect(self._on_fade_profile_changed)
+        self.manage_fade_btn.clicked.connect(self._open_fade_editor)
+        self.fade_strength_slider.valueChanged.connect(lambda v: self._on_fade_strength_changed(v, persist=False))
+        self.fade_strength_slider.valueCommitted.connect(lambda v: self._on_fade_strength_changed(v, persist=True))
 
         self.hue_trim_slider.valueChanged.connect(lambda v: self._on_hue_trim_changed(v, persist=False))
         self.hue_trim_slider.valueCommitted.connect(lambda v: self._on_hue_trim_changed(v, persist=True))
@@ -375,6 +433,87 @@ class SensorSidebar(BaseSidebar):
             )
         self.sync_ui()
 
+    def _on_fade_profile_changed(self, name: str) -> None:
+        # Bake alpha/delta like crosstalk bakes its matrix, and clear the per-frame bounds
+        # analyzed under the previous fade state.
+        found = FadeProfiles.get_alpha_delta(name)
+        self.update_config_section(
+            "process",
+            persist=True,
+            render=True,
+            fade_profile=name,
+            fade_alpha=found[0] if found is not None else None,
+            fade_delta=found[1] if found is not None else None,
+            fade_process=FadeProfiles.get_process(name),
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_fade_strength_changed(self, val: float, persist: bool = True) -> None:
+        self.update_config_section(
+            "process",
+            persist=persist,
+            render=True,
+            readback_metrics=persist,
+            fade_strength=val,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _open_fade_editor(self) -> None:
+        from negpy.desktop.view.widgets.fade_editor_dialog import FadeEditorDialog
+
+        conf = self.state.config.process
+        self._fade_snapshot = (conf.fade_profile, conf.fade_alpha, conf.fade_delta, conf.fade_strength, conf.fade_process)
+        dlg = FadeEditorDialog(conf.fade_profile, conf.fade_strength, parent=self)
+        dlg.fade_previewed.connect(self._on_fade_preview)
+        dlg.profiles_changed.connect(self.sync_ui)
+        dlg.finished.connect(lambda result: self._on_fade_editor_finished(dlg, result))
+        self._fade_dialog = dlg  # keep a reference so the modeless dialog isn't GC'd
+        dlg.show()
+
+    def _on_fade_preview(self, alpha: object, delta: object, strength: float) -> None:
+        self.update_config_section(
+            "process",
+            persist=False,
+            render=True,
+            fade_alpha=tuple(alpha),
+            fade_delta=tuple(delta),
+            fade_strength=strength,
+            fade_process=ProcessMode.E6,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_fade_editor_finished(self, dlg, result: int) -> None:
+        if result == QDialog.DialogCode.Accepted:
+            name = dlg.selected_name() or FadeProfiles.NONE_NAME
+            found = FadeProfiles.get_alpha_delta(name)
+            snap_strength = self._fade_snapshot[3]
+            self.update_config_section(
+                "process",
+                persist=True,
+                render=True,
+                fade_profile=name,
+                fade_alpha=found[0] if found is not None else None,
+                fade_delta=found[1] if found is not None else None,
+                # Preview strength is view-only; only adopt it if the edit had fade off.
+                fade_strength=dlg.preview_strength() if snap_strength == 0 else snap_strength,
+                fade_process=FadeProfiles.get_process(name),
+                **invalidate_local_bounds(self.state.config.process),
+            )
+        else:
+            profile, alpha, delta, strength, process = self._fade_snapshot
+            self.update_config_section(
+                "process",
+                persist=True,
+                render=True,
+                fade_profile=profile,
+                fade_alpha=alpha,
+                fade_delta=delta,
+                fade_strength=strength,
+                fade_process=process,
+                **invalidate_local_bounds(self.state.config.process),
+            )
+        self.sync_ui()
+
     def _on_hue_trim_changed(self, val: float, persist: bool = True) -> None:
         # Sticky on commit only, so a drag doesn't write every intermediate value.
         self.update_config_section("process", hue_trim=val, persist=persist, readback_metrics=persist)
@@ -459,6 +598,15 @@ class SensorSidebar(BaseSidebar):
             self.crosstalk_combo.setEnabled(has_profiles)
             self.crosstalk_strength_slider.setEnabled(has_profiles)
 
+            # E-6 only: a fade operator is fitted to one dye set, and every other process
+            # either has no dye layers to fade (B&W) or no fade profile yet (C-41).
+            if self._expected_fade_rows(conf.process_mode) != [self.fade_combo.itemText(i) for i in range(self.fade_combo.count())]:
+                self._fill_fade_combo(conf.process_mode)
+            self.fade_combo.setCurrentText(conf.fade_profile)
+            self.fade_strength_slider.setValue(conf.fade_strength)
+            for w in (self.fade_header, self.fade_label, self.fade_combo, self.manage_fade_btn, self.fade_strength_slider):
+                w.setVisible(e6)
+
             self.hue_trim_slider.setValue(conf.hue_trim)
         finally:
             self.block_signals(False)
@@ -470,6 +618,8 @@ class SensorSidebar(BaseSidebar):
             self.sensor_combo,
             self.crosstalk_combo,
             self.crosstalk_strength_slider,
+            self.fade_combo,
+            self.fade_strength_slider,
             self.hue_trim_slider,
         ):
             w.blockSignals(blocked)

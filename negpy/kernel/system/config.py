@@ -34,6 +34,7 @@ APP_CONFIG = AppConfig(
     cache_dir=os.path.join(BASE_USER_DIR, "cache"),
     user_icc_dir=os.path.join(BASE_USER_DIR, "icc"),
     crosstalk_dir=os.path.join(BASE_USER_DIR, "crosstalk"),
+    fade_dir=os.path.join(BASE_USER_DIR, "fade"),
     sensor_dir=os.path.join(BASE_USER_DIR, "sensor"),
     flatfield_dir=os.path.join(BASE_USER_DIR, "flatfield"),
     gear_dir=os.path.join(BASE_USER_DIR, "gear"),

@@ -127,6 +127,7 @@ def test_override_parsing_and_apply():
         cache_dir="",
         user_icc_dir="",
         crosstalk_dir="",
+        fade_dir="",
         sensor_dir="",
         flatfield_dir="",
         gear_dir="",
