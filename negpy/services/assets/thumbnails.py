@@ -179,7 +179,7 @@ def preview_positive(img: Image.Image, process_mode: str = "") -> Image.Image:
     arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
     linear = srgb_to_linear(uint8_to_float32(arr))
     # ProcessMode("") would resolve to C41 via _missing_, so an unknown mode must not reach it.
-    mode = ProcessMode(process_mode) if process_mode else detect_process_mode(linear)
+    mode = ProcessMode(process_mode) if process_mode else detect_process_mode(linear, ambiguous=ProcessMode.C41)
     if mode is ProcessMode.E6:
         return img
 
