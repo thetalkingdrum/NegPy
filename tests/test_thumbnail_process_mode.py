@@ -15,10 +15,11 @@ SLIDE = {"name": "a.nef", "path": "/f/a.nef", "hash": "hash-a"}
 FRESH = {"name": "b.nef", "path": "/f/b.nef", "hash": "hash-b"}
 
 
-def _controller(stored: dict):
+def _controller(stored: dict, autodetect_enabled: bool = True):
     c = MagicMock()
     c.state.uploaded_files = [dict(SLIDE), dict(FRESH)]
     c.state.thumbnails = {}
+    c.state.autodetect_enabled = autodetect_enabled
     c._begin_batch.return_value = 1
     c.session.stored_process_mode = lambda asset: stored.get(asset["hash"], "")
     return c
@@ -37,6 +38,25 @@ class BatchRequest(unittest.TestCase):
 
         modes = {f["hash"]: f["process_mode"] for f in _emitted(controller)}
         self.assertEqual(modes, {"hash-a": "Transparency", "hash-b": ""})
+
+    def test_unstored_frame_skips_the_heuristic_when_autodetect_is_off(self):
+        """A real open never runs the heuristic either when autodetect is off — it takes
+        ProcessConfig's own C41 default outright — so the filmstrip must not second-guess
+        that choice with its own detection on an unstored frame."""
+        controller = _controller({}, autodetect_enabled=False)
+
+        AppController.generate_missing_thumbnails(controller)
+
+        modes = {f["hash"]: f["process_mode"] for f in _emitted(controller)}
+        self.assertEqual(modes, {"hash-a": "Color Negative", "hash-b": "Color Negative"})
+
+    def test_stored_mode_still_wins_when_autodetect_is_off(self):
+        controller = _controller({"hash-a": "Transparency"}, autodetect_enabled=False)
+
+        AppController.generate_missing_thumbnails(controller)
+
+        modes = {f["hash"]: f["process_mode"] for f in _emitted(controller)}
+        self.assertEqual(modes, {"hash-a": "Transparency", "hash-b": "Color Negative"})
 
     def test_the_session_assets_are_not_touched(self):
         """The dicts cross to a worker thread, and a mode written back here would outlive

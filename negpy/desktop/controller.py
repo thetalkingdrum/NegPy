@@ -755,7 +755,11 @@ class AppController(QObject):
             # tell a slide from a negative reliably, and inverting a positive is what put
             # negatives in the filmstrip. They are copies because these dicts cross to a
             # worker thread and uploaded_files must not grow a stale mode.
-            self.thumbnail_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f)} for f in missing])
+            # With autodetect off, a real open never runs the heuristic either — it takes
+            # ProcessConfig's own C41 default outright — so an unstored frame here does the
+            # same, rather than letting the heuristic guess against the user's own setting.
+            fallback = "" if self.state.autodetect_enabled else str(ProcessMode.C41)
+            self.thumbnail_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f) or fallback} for f in missing])
 
     def clear_thumbnail_cache(self) -> None:
         """Drops cached thumbnails on disk and in memory, then regenerates loaded ones."""
