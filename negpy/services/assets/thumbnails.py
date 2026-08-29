@@ -33,26 +33,33 @@ async def generate_batch_thumbnails(
     async def _worker(f_info: Dict[str, str]) -> Tuple[str, Optional[Image.Image]]:
         nonlocal completed
         async with semaphore:
-            thumb = await asyncio.to_thread(
-                get_thumbnail_worker,
-                f_info["path"],
-                f_info["hash"],
-                asset_store,
-                int(f_info.get("half") or 0),
-                float(f_info.get("split_x") or 0.5),
-                f_info.get("green_path") or "",
-                f_info.get("blue_path") or "",
-                tuple(f_info["crop_rect"]) if f_info.get("crop_rect") else None,
-                float(f_info.get("gutter_thickness") or 0.0),
-                str(f_info.get("process_mode") or ""),
-            )
+            # One file's failure must not sink the batch: get_thumbnail_worker already
+            # catches its own decode errors, but this guards the bookkeeping around it
+            # (key derivation, malformed entries) so gather() never aborts the rest.
+            try:
+                thumb = await asyncio.to_thread(
+                    get_thumbnail_worker,
+                    f_info["path"],
+                    f_info["hash"],
+                    asset_store,
+                    int(f_info.get("half") or 0),
+                    float(f_info.get("split_x") or 0.5),
+                    f_info.get("green_path") or "",
+                    f_info.get("blue_path") or "",
+                    tuple(f_info["crop_rect"]) if f_info.get("crop_rect") else None,
+                    float(f_info.get("gutter_thickness") or 0.0),
+                    str(f_info.get("process_mode") or ""),
+                )
+                key = asset_thumbnail_key(f_info)
+            except Exception as e:
+                logger.error(f"Thumbnail worker failed for {f_info.get('path')}: {e}")
+                thumb, key = None, f_info.get("path", "")
             completed += 1
             if progress_callback:
                 if inspect.iscoroutinefunction(progress_callback):
                     await progress_callback(completed, f_info["name"])
                 else:
                     progress_callback(completed, f_info["name"])
-            key = asset_thumbnail_key(f_info)
             if ready_callback and isinstance(thumb, Image.Image):
                 ready_callback(key, thumb)
             return key, thumb

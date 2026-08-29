@@ -120,5 +120,31 @@ class TestThumbnailWorker(unittest.TestCase):
         self.assertEqual(thumb.size, (ts, ts))
 
 
+class TestGenerateBatchThumbnails(unittest.IsolatedAsyncioTestCase):
+    async def test_one_bad_file_does_not_abort_the_batch(self):
+        """A failure in the async worker itself (not just inside get_thumbnail_worker's own
+        guard) must not abort gather() and lose every other file already in flight — the
+        reported bug where a dropped batch inverts a few frames, then stops."""
+        from negpy.services.assets import thumbnails as thumb_service
+
+        good = Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8))
+
+        def _fake_worker(path, *_args, **_kwargs):
+            if path == "bad.dng":
+                raise RuntimeError("boom")
+            return good
+
+        files = [
+            {"path": "bad.dng", "hash": "h1", "name": "bad.dng"},
+            {"path": "good.dng", "hash": "h2", "name": "good.dng"},
+        ]
+
+        with patch("negpy.services.assets.thumbnails.get_thumbnail_worker", side_effect=_fake_worker):
+            result = await thumb_service.generate_batch_thumbnails(files, asset_store=None)
+
+        self.assertIn(thumb_service.thumbnail_cache_key("h2", False), result)
+        self.assertNotIn(thumb_service.thumbnail_cache_key("h1", False), result)
+
+
 if __name__ == "__main__":
     unittest.main()

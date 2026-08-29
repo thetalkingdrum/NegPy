@@ -617,14 +617,19 @@ class AssetDiscoveryWorker(QObject):
                 continue
             f_hash, legacy = digest
             if not f_hash.startswith("err_"):
-                # Stamped once here so sorting and date search never stat per row.
+                try:
+                    # Stamped once here so sorting and date search never stat per row.
+                    mtime = os.path.getmtime(path)
+                except OSError as e:
+                    logger.error(f"Skipping invalid file {path}: {e}")
+                    continue
                 valid_assets.append(
                     {
                         "name": os.path.basename(path),
                         "path": path,
                         "hash": f_hash,
                         "legacy_hash": legacy,
-                        "mtime": os.path.getmtime(path),
+                        "mtime": mtime,
                     }
                 )
 
