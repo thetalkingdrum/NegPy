@@ -4,11 +4,17 @@ from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import field_label, hint_label, section_subheader, wrap_tooltip
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider
+from negpy.features.exposure.normalization import fade_delta_conflict_reason, fade_reject_reason
+from negpy.features.process.fade import RATIO_BOUNDS
 from negpy.features.process.models import ProcessMode, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.services.assets.crosstalk import CrosstalkProfiles
 from negpy.services.assets.fade import FadeProfiles
 from negpy.services.assets.sensor import SensorProfiles
+
+#: The manual sliders share the estimator's sane bounds: a hand-set value the estimator
+#: itself could never produce (and vice versa) is exactly the inconsistency to avoid.
+_RATIO_SLIDER_RANGE = RATIO_BOUNDS
 
 
 class SensorSidebar(BaseSidebar):
@@ -171,18 +177,29 @@ class SensorSidebar(BaseSidebar):
         self.fade_strength_slider = CompactSlider("Strength", 0.0, 1.0, conf.fade_strength, has_neutral=True)
         self.layout.addWidget(self.fade_strength_slider)
 
+        # Muted, not a warning: reports why the composition dropped or declined a factor
+        # (a same-mode crosstalk profile already active, or the restoration matrix too
+        # ill-conditioned to invert), so a silent no-op is never mistaken for a dead slider.
+        self.fade_reject_hint = hint_label("")
+        self.fade_reject_hint.setVisible(False)
+        self.layout.addWidget(self.fade_reject_hint)
+
         # The dye set's own six side absorptions live in the profile above; these two are
         # the only per-image unknowns -- how much this particular slide's green/blue layers
         # have faded relative to red. A uniform survival scale is redundant (absorbed by
         # per-channel normalization downstream), which is why there are two sliders, not three.
-        self.fade_ratio_g_slider = CompactSlider("Green Survival", 0.4, 2.0, conf.fade_ratio_g, step=0.01, precision=1000, has_neutral=True)
+        self.fade_ratio_g_slider = CompactSlider(
+            "Green Survival", *_RATIO_SLIDER_RANGE, conf.fade_ratio_g, step=0.01, precision=1000, has_neutral=True
+        )
         self.fade_ratio_g_slider.setToolTip(
             "Green layer's surviving dye fraction, relative to red. 1.0 = green and red have faded "
             "equally. Below 1.0, green has faded more than red; above, less"
         )
         self.layout.addWidget(self.fade_ratio_g_slider)
 
-        self.fade_ratio_b_slider = CompactSlider("Blue Survival", 0.4, 2.0, conf.fade_ratio_b, step=0.01, precision=1000, has_neutral=True)
+        self.fade_ratio_b_slider = CompactSlider(
+            "Blue Survival", *_RATIO_SLIDER_RANGE, conf.fade_ratio_b, step=0.01, precision=1000, has_neutral=True
+        )
         self.fade_ratio_b_slider.setToolTip(
             "Blue layer's surviving dye fraction, relative to red. 1.0 = blue and red have faded "
             "equally. Below 1.0, blue has faded more than red; above, less"
@@ -525,6 +542,8 @@ class SensorSidebar(BaseSidebar):
 
         image = self.state.preview_raw
         if image is None:
+            self.fade_estimate_hint.setText("No image loaded to estimate from.")
+            self.fade_estimate_hint.setVisible(True)
             return
         conf = self.state.config.process
         roi, buffer = resolve_analysis_region(image.shape, None, conf.analysis_buffer, conf.analysis_rect)
@@ -692,6 +711,11 @@ class SensorSidebar(BaseSidebar):
             ):
                 w.setVisible(e6)
             self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
+            reject_reason = fade_delta_conflict_reason(conf, conf.process_mode) or fade_reject_reason(
+                conf.fade_strength, conf.fade_ratio_g, conf.fade_ratio_b, conf.fade_delta
+            )
+            self.fade_reject_hint.setText(reject_reason)
+            self.fade_reject_hint.setVisible(e6 and bool(reject_reason))
 
             self.hue_trim_slider.setValue(conf.hue_trim)
         finally:
