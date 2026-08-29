@@ -917,6 +917,8 @@ class ControlsPanel(QWidget):
                 proc.crosstalk_strength != _proc.crosstalk_strength,
                 proc.fade_profile != _proc.fade_profile,
                 proc.fade_strength != _proc.fade_strength,
+                proc.fade_ratio_g != _proc.fade_ratio_g,
+                proc.fade_ratio_b != _proc.fade_ratio_b,
                 proc.hue_trim != _proc.hue_trim,
             ]
         )

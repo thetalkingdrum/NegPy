@@ -151,17 +151,17 @@ class SensorSidebar(BaseSidebar):
         self.fade_combo.setToolTip(
             "<table width='280'><tr><td>"
             "Restores a faded transparency's original per-layer densities: inverts a fade operator "
-            "built from each layer's surviving dye fraction and the dye set's side-absorption "
-            "ratios, composed with the crosstalk unmix. Labelled restoration rather than "
-            "correction, because it undoes fading rather than the ordinary channel bleed a fresh "
-            "scan already has.<br><br>"
-            "<b>Generic E6 ships as an exact identity</b> — visibly present, inert until you (or a "
-            "measured profile) supply real numbers for a stock. Custom .toml profiles live in the "
+            "built from the dye set's six side-absorption ratios (this profile) and the Green/Blue "
+            "Survival sliders below (how much this particular slide has faded), composed with the "
+            "crosstalk unmix. Labelled restoration rather than correction, because it undoes fading "
+            "rather than the ordinary channel bleed a fresh scan already has.<br><br>"
+            "<b>Generic E6 ships with zero side absorption</b> — visibly present, inert until a "
+            "measured profile supplies real numbers for a stock. Custom .toml profiles live in the "
             "NegPy/fade folder."
             "</td></tr></table>"
         )
         self.manage_fade_btn = self._icon_action(
-            "fa5s.sliders-h", "Open the fade restoration editor — view, copy and edit dye-survival profiles", width=32
+            "fa5s.sliders-h", "Open the fade restoration editor — view, copy and edit dye-set side-absorption profiles", width=32
         )
         fade_row.addWidget(self.fade_label)
         fade_row.addWidget(self.fade_combo, 1)
@@ -170,6 +170,44 @@ class SensorSidebar(BaseSidebar):
 
         self.fade_strength_slider = CompactSlider("Strength", 0.0, 1.0, conf.fade_strength, has_neutral=True)
         self.layout.addWidget(self.fade_strength_slider)
+
+        # The dye set's own six side absorptions live in the profile above; these two are
+        # the only per-image unknowns -- how much this particular slide's green/blue layers
+        # have faded relative to red. A uniform survival scale is redundant (absorbed by
+        # per-channel normalization downstream), which is why there are two sliders, not three.
+        self.fade_ratio_g_slider = CompactSlider("Green Survival", 0.4, 2.0, conf.fade_ratio_g, step=0.01, precision=1000, has_neutral=True)
+        self.fade_ratio_g_slider.setToolTip(
+            "Green layer's surviving dye fraction, relative to red. 1.0 = green and red have faded "
+            "equally. Below 1.0, green has faded more than red; above, less"
+        )
+        self.layout.addWidget(self.fade_ratio_g_slider)
+
+        self.fade_ratio_b_slider = CompactSlider("Blue Survival", 0.4, 2.0, conf.fade_ratio_b, step=0.01, precision=1000, has_neutral=True)
+        self.fade_ratio_b_slider.setToolTip(
+            "Blue layer's surviving dye fraction, relative to red. 1.0 = blue and red have faded "
+            "equally. Below 1.0, blue has faded more than red; above, less"
+        )
+        self.layout.addWidget(self.fade_ratio_b_slider)
+
+        estimate_row = QHBoxLayout()
+        self.estimate_fade_btn = self._icon_action(
+            "fa5s.magic",
+            "Estimate Green/Blue Survival from this frame's own per-channel density span. "
+            "A suggestion, not a lock: it populates the sliders above and can be overridden, "
+            "and re-running it overwrites rather than accumulates",
+            width=28,
+        )
+        self.estimate_fade_label = field_label("Estimate")
+        estimate_row.addWidget(self.estimate_fade_label)
+        estimate_row.addWidget(self.estimate_fade_btn)
+        estimate_row.addStretch()
+        self.layout.addLayout(estimate_row)
+
+        # Muted, not a warning: reports which fail-closed condition fired, or the estimate
+        # itself, so a silent identity is never mistaken for a broken feature.
+        self.fade_estimate_hint = hint_label("")
+        self.fade_estimate_hint.setVisible(False)
+        self.layout.addWidget(self.fade_estimate_hint)
 
         self.layout.addWidget(section_subheader("LIGHT SOURCE"))
 
@@ -298,6 +336,19 @@ class SensorSidebar(BaseSidebar):
         self.manage_fade_btn.clicked.connect(self._open_fade_editor)
         self.fade_strength_slider.valueChanged.connect(lambda v: self._on_fade_strength_changed(v, persist=False))
         self.fade_strength_slider.valueCommitted.connect(lambda v: self._on_fade_strength_changed(v, persist=True))
+        self.fade_ratio_g_slider.valueChanged.connect(
+            lambda v: self._on_fade_ratio_changed(v, self.fade_ratio_b_slider.value(), persist=False)
+        )
+        self.fade_ratio_g_slider.valueCommitted.connect(
+            lambda v: self._on_fade_ratio_changed(v, self.fade_ratio_b_slider.value(), persist=True)
+        )
+        self.fade_ratio_b_slider.valueChanged.connect(
+            lambda v: self._on_fade_ratio_changed(self.fade_ratio_g_slider.value(), v, persist=False)
+        )
+        self.fade_ratio_b_slider.valueCommitted.connect(
+            lambda v: self._on_fade_ratio_changed(self.fade_ratio_g_slider.value(), v, persist=True)
+        )
+        self.estimate_fade_btn.clicked.connect(self._on_estimate_fade)
 
         self.hue_trim_slider.valueChanged.connect(lambda v: self._on_hue_trim_changed(v, persist=False))
         self.hue_trim_slider.valueCommitted.connect(lambda v: self._on_hue_trim_changed(v, persist=True))
@@ -434,16 +485,15 @@ class SensorSidebar(BaseSidebar):
         self.sync_ui()
 
     def _on_fade_profile_changed(self, name: str) -> None:
-        # Bake alpha/delta like crosstalk bakes its matrix, and clear the per-frame bounds
-        # analyzed under the previous fade state.
-        found = FadeProfiles.get_alpha_delta(name)
+        # Bake delta like crosstalk bakes its matrix, and clear the per-frame bounds
+        # analyzed under the previous fade state. The survival ratios are per-image, not
+        # part of the profile, so they are untouched here.
         self.update_config_section(
             "process",
             persist=True,
             render=True,
             fade_profile=name,
-            fade_alpha=found[0] if found is not None else None,
-            fade_delta=found[1] if found is not None else None,
+            fade_delta=FadeProfiles.get_delta(name),
             fade_process=FadeProfiles.get_process(name),
             **invalidate_local_bounds(self.state.config.process),
         )
@@ -458,24 +508,50 @@ class SensorSidebar(BaseSidebar):
             **invalidate_local_bounds(self.state.config.process),
         )
 
+    def _on_fade_ratio_changed(self, ratio_g: float, ratio_b: float, persist: bool = True) -> None:
+        self.update_config_section(
+            "process",
+            persist=persist,
+            render=True,
+            readback_metrics=persist,
+            fade_ratio_g=ratio_g,
+            fade_ratio_b=ratio_b,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_estimate_fade(self) -> None:
+        from negpy.features.exposure.normalization import resolve_analysis_region
+        from negpy.features.process.fade import estimate_fade_ratios
+
+        image = self.state.preview_raw
+        if image is None:
+            return
+        conf = self.state.config.process
+        roi, buffer = resolve_analysis_region(image.shape, None, conf.analysis_buffer, conf.analysis_rect)
+        ratio_g, ratio_b, reason = estimate_fade_ratios(image, conf.process_mode, roi, buffer)
+        self.fade_ratio_g_slider.setValue(ratio_g)
+        self.fade_ratio_b_slider.setValue(ratio_b)
+        self._on_fade_ratio_changed(ratio_g, ratio_b, persist=True)
+        self.fade_estimate_hint.setText(reason or f"Estimated: green {ratio_g:.2f}, blue {ratio_b:.2f}")
+        self.fade_estimate_hint.setVisible(True)
+
     def _open_fade_editor(self) -> None:
         from negpy.desktop.view.widgets.fade_editor_dialog import FadeEditorDialog
 
         conf = self.state.config.process
-        self._fade_snapshot = (conf.fade_profile, conf.fade_alpha, conf.fade_delta, conf.fade_strength, conf.fade_process)
+        self._fade_snapshot = (conf.fade_profile, conf.fade_delta, conf.fade_strength, conf.fade_process)
         dlg = FadeEditorDialog(conf.fade_profile, conf.fade_strength, parent=self)
-        dlg.fade_previewed.connect(self._on_fade_preview)
+        dlg.delta_previewed.connect(self._on_fade_preview)
         dlg.profiles_changed.connect(self.sync_ui)
         dlg.finished.connect(lambda result: self._on_fade_editor_finished(dlg, result))
         self._fade_dialog = dlg  # keep a reference so the modeless dialog isn't GC'd
         dlg.show()
 
-    def _on_fade_preview(self, alpha: object, delta: object, strength: float) -> None:
+    def _on_fade_preview(self, delta: object, strength: float) -> None:
         self.update_config_section(
             "process",
             persist=False,
             render=True,
-            fade_alpha=tuple(alpha),
             fade_delta=tuple(delta),
             fade_strength=strength,
             fade_process=ProcessMode.E6,
@@ -485,28 +561,25 @@ class SensorSidebar(BaseSidebar):
     def _on_fade_editor_finished(self, dlg, result: int) -> None:
         if result == QDialog.DialogCode.Accepted:
             name = dlg.selected_name() or FadeProfiles.NONE_NAME
-            found = FadeProfiles.get_alpha_delta(name)
-            snap_strength = self._fade_snapshot[3]
+            snap_strength = self._fade_snapshot[2]
             self.update_config_section(
                 "process",
                 persist=True,
                 render=True,
                 fade_profile=name,
-                fade_alpha=found[0] if found is not None else None,
-                fade_delta=found[1] if found is not None else None,
+                fade_delta=FadeProfiles.get_delta(name),
                 # Preview strength is view-only; only adopt it if the edit had fade off.
                 fade_strength=dlg.preview_strength() if snap_strength == 0 else snap_strength,
                 fade_process=FadeProfiles.get_process(name),
                 **invalidate_local_bounds(self.state.config.process),
             )
         else:
-            profile, alpha, delta, strength, process = self._fade_snapshot
+            profile, delta, strength, process = self._fade_snapshot
             self.update_config_section(
                 "process",
                 persist=True,
                 render=True,
                 fade_profile=profile,
-                fade_alpha=alpha,
                 fade_delta=delta,
                 fade_strength=strength,
                 fade_process=process,
@@ -604,8 +677,21 @@ class SensorSidebar(BaseSidebar):
                 self._fill_fade_combo(conf.process_mode)
             self.fade_combo.setCurrentText(conf.fade_profile)
             self.fade_strength_slider.setValue(conf.fade_strength)
-            for w in (self.fade_header, self.fade_label, self.fade_combo, self.manage_fade_btn, self.fade_strength_slider):
+            self.fade_ratio_g_slider.setValue(conf.fade_ratio_g)
+            self.fade_ratio_b_slider.setValue(conf.fade_ratio_b)
+            for w in (
+                self.fade_header,
+                self.fade_label,
+                self.fade_combo,
+                self.manage_fade_btn,
+                self.fade_strength_slider,
+                self.fade_ratio_g_slider,
+                self.fade_ratio_b_slider,
+                self.estimate_fade_label,
+                self.estimate_fade_btn,
+            ):
                 w.setVisible(e6)
+            self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
 
             self.hue_trim_slider.setValue(conf.hue_trim)
         finally:
@@ -620,6 +706,8 @@ class SensorSidebar(BaseSidebar):
             self.crosstalk_strength_slider,
             self.fade_combo,
             self.fade_strength_slider,
+            self.fade_ratio_g_slider,
+            self.fade_ratio_b_slider,
             self.hue_trim_slider,
         ):
             w.blockSignals(blocked)

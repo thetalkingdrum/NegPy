@@ -124,13 +124,19 @@ class ProcessConfig:
 
     # Dye-fade restoration for faded transparencies. Inverts a fade operator on
     # NEGATIVE densities in the same domain as the crosstalk unmix, and composes
-    # with it rather than running as its own stage. `fade_alpha` is per-layer dye
-    # survival, `fade_delta` the six side-absorption ratios in
-    # (gr, br, rg, bg, rb, gb) order. Strength scales the parameters, not the
-    # output: a scaled parameter set is a less-faded film, a blended output is
-    # not a state of the material.
+    # with it rather than running as its own stage. `fade_delta` is the six
+    # side-absorption ratios in (gr, br, rg, bg, rb, gb) order, a property of the
+    # dye set set once per stock by a profile. `fade_ratio_g`/`fade_ratio_b` are
+    # the surviving-dye-fraction ratios (green/red, blue/red) — a property of one
+    # faded slide, not the stock, so they live per-image rather than in the
+    # profile; only ratios are meaningful, since a uniform scale of all three
+    # survival fractions is exactly absorbed by per-channel normalization
+    # downstream. Strength scales the parameters, not the output: a scaled
+    # parameter set is a less-faded film, a blended output is not a state of the
+    # material.
     fade_strength: float = 0.0
-    fade_alpha: Optional[tuple] = None
+    fade_ratio_g: float = 1.0
+    fade_ratio_b: float = 1.0
     fade_delta: Optional[tuple] = None
     fade_profile: str = "None"
     fade_process: str = ProcessMode.E6
@@ -162,8 +168,6 @@ class ProcessConfig:
         object.__setattr__(self, "local_ceils", tuple(self.local_ceils))
         if self.crosstalk_matrix is not None:
             object.__setattr__(self, "crosstalk_matrix", tuple(self.crosstalk_matrix))
-        if self.fade_alpha is not None:
-            object.__setattr__(self, "fade_alpha", tuple(self.fade_alpha))
         if self.fade_delta is not None:
             object.__setattr__(self, "fade_delta", tuple(self.fade_delta))
         if self.sensor_matrix is not None:
