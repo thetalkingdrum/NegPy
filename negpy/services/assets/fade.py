@@ -8,29 +8,31 @@ from negpy.services.assets.crosstalk import GROUP_ORDER, CrosstalkType
 from negpy.services.assets.naming import escape_toml_string, slugify
 
 #: No profile selected: no correction, same as fade_strength = 0. Distinct from the
-#: bundled "Generic E6" profile, which is a real (alpha, delta) pair that happens to
-#: be an identity.
+#: bundled "Generic E6" profile, which is a real (if all-zero) delta.
 NONE_NAME = "None"
 
 
 class FadeProfiles:
     """
-    TOML I/O for dye-fade restoration profiles: per-layer survival `alpha` (3 floats)
-    and side-absorption ratios `delta` (6 floats, gr/br/rg/bg/rb/gb order), the
-    parameters `resolve_fade_matrix` builds a restoration operator from.
+    TOML I/O for dye-fade restoration profiles: the six side-absorption ratios `delta`
+    (gr/br/rg/bg/rb/gb order) `resolve_fade_matrix` builds a restoration operator from.
+
+    Delta is a property of the dye set, set once per stock here. The two surviving-dye
+    ratios are a property of one faded slide instead, and live on ProcessConfig directly
+    (`fade_ratio_g`/`fade_ratio_b`), not in a profile — see IMPLEMENT_FADE_AUTO.md §1-2.
 
     Files live in APP_CONFIG.fade_dir; bundled read-only profiles in the packaged
-    `fade/` resource dir. "None" means no profile — no built-in fallback numbers,
-    unlike crosstalk's "Generic C41": a fade profile only exists once someone supplies
-    dye-survival data. Disk I/O only happens on dropdown build and on selection --
-    never per render (alpha/delta are baked into ProcessConfig).
+    `fade/` resource dir. "None" means no profile — no built-in fallback numbers, unlike
+    crosstalk's "Generic C41": a fade profile only exists once someone supplies real
+    dye-spectral data. Disk I/O only happens on dropdown build and on selection -- never
+    per render (delta is baked into ProcessConfig).
     """
 
     NONE_NAME = NONE_NAME
 
     @staticmethod
     def _scan_dir(directory: str) -> dict:
-        """Maps display-name -> (alpha, delta) for valid .toml files in a directory."""
+        """Maps display-name -> delta (6-float list) for valid .toml files in a directory."""
         result: dict = {}
         if not os.path.isdir(directory):
             return result
@@ -40,10 +42,10 @@ class FadeProfiles:
             parsed = FadeProfiles._parse_file(os.path.join(directory, fname))
             if parsed is None:
                 continue
-            name, alpha, delta = parsed
+            name, delta = parsed
             name = name or fname[:-5]
             if name != NONE_NAME:
-                result[name] = (alpha, delta)
+                result[name] = delta
         return result
 
     @staticmethod
@@ -63,24 +65,20 @@ class FadeProfiles:
 
     @staticmethod
     def _parse_file(path: str) -> Optional[tuple]:
-        """Parses a .toml file to (name, alpha 3-float list, delta 6-float list), or
-        None if invalid. `type`/`process` are read separately: callers unpack this
-        tuple positionally."""
+        """Parses a .toml file to (name, delta 6-float list), or None if invalid.
+        `type`/`process` are read separately: callers unpack this tuple positionally."""
         try:
             with open(path, "rb") as f:
                 data = tomllib.load(f)
-            alpha = data.get("alpha")
             delta = data.get("delta")
-            if not isinstance(alpha, list) or len(alpha) != 3:
-                return None
             if not isinstance(delta, list) or len(delta) != 6:
                 return None
-            for v in (*alpha, *delta):
+            for v in delta:
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     return None
             raw_name = data.get("name")
             name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
-            return name, [float(v) for v in alpha], [float(v) for v in delta]
+            return name, [float(v) for v in delta]
         except Exception:
             return None
 
@@ -176,16 +174,15 @@ class FadeProfiles:
         return [NONE_NAME, *sorted(FadeProfiles._scan().keys())]
 
     @staticmethod
-    def get_alpha_delta(name: str) -> Optional[tuple]:
-        """(alpha 3-tuple, delta 6-tuple) for a profile, or None for "None" / missing /
-        invalid (= no fade correction)."""
+    def get_delta(name: str) -> Optional[tuple]:
+        """Delta 6-tuple for a profile, or None for "None" / missing / invalid (=
+        resolve_fade_matrix treats it as zero side-absorption)."""
         if name == NONE_NAME:
             return None
         found = FadeProfiles._scan().get(name)
         if found is None:
             return None
-        alpha, delta = found
-        return tuple(alpha), tuple(delta)
+        return tuple(found)
 
     @staticmethod
     def is_bundled(name: str) -> bool:
@@ -198,9 +195,7 @@ class FadeProfiles:
         return os.path.join(APP_CONFIG.fade_dir, f"{slugify(name, 'fade')}.toml")
 
     @staticmethod
-    def save(
-        name: str, alpha: List[float], delta: List[float], profile_type: str = CrosstalkType.TUNED, process: Optional[str] = None
-    ) -> str:
+    def save(name: str, delta: List[float], profile_type: str = CrosstalkType.TUNED, process: Optional[str] = None) -> str:
         """Write a user profile TOML and return its path.
 
         Defaults to `tuned` so editor saves are not grouped with the spec-sheet
@@ -209,13 +204,11 @@ class FadeProfiles:
         from negpy.features.process.models import ProcessMode
 
         os.makedirs(APP_CONFIG.fade_dir, exist_ok=True)
-        alpha_row = "[{:.6g}, {:.6g}, {:.6g}]".format(*alpha)
         delta_row = "[{:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}]".format(*delta)
         content = (
             f'name = "{escape_toml_string(name)}"\n'
             f'type = "{escape_toml_string(profile_type)}"\n'
             f'process = "{escape_toml_string(str(ProcessMode(process or ProcessMode.E6)))}"\n'
-            f"alpha = {alpha_row}\n"
             f"delta = {delta_row}\n"
         )
         path = FadeProfiles.path_for_name(name)
