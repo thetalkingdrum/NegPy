@@ -1,5 +1,4 @@
 name = "Generic E6"
 type = "built-in"
 process = "Transparency"
-alpha = [1.0, 1.0, 1.0]
 delta = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

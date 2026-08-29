@@ -41,24 +41,12 @@ _TYPE_CHOICES: tuple[tuple[str, str], ...] = (
 _DELTA_POSITIONS: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1))
 
 
-def alpha_delta_to_grid(alpha: List[float], delta: List[float]) -> List[List[float]]:
-    grid = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
-    for r in range(3):
-        grid[r][r] = alpha[r]
-    for (r, c), d in zip(_DELTA_POSITIONS, delta):
-        grid[r][c] = d
-    return grid
-
-
-def grid_to_alpha_delta(grid: List[List[float]]) -> tuple:
-    alpha = [grid[r][r] for r in range(3)]
-    delta = [grid[r][c] for r, c in _DELTA_POSITIONS]
-    return alpha, delta
-
-
 class FadeEditorDialog(QDialog):
-    """Modeless editor for dye-fade restoration profiles (per-layer survival `alpha`,
-    on the diagonal, and side-absorption ratios `delta`, off-diagonal).
+    """Modeless editor for dye-fade side-absorption profiles (`delta`).
+
+    The diagonal is fixed at 1.0: a profile is only the dye set's side absorptions.
+    The two surviving-dye ratios that vary per slide are not profile data -- they are
+    sidebar sliders, not edited here (see IMPLEMENT_FADE_AUTO.md §1-2).
 
     Bundled profiles and "None" are read-only (view + copy); user profiles live as
     TOMLs in the docs folder. Emits live previews as sliders move; the sidebar
@@ -66,7 +54,7 @@ class FadeEditorDialog(QDialog):
     profile saved here describes a transparency dye set.
     """
 
-    fade_previewed = pyqtSignal(object, object, float)  # (alpha 3-list, delta 6-list, strength)
+    delta_previewed = pyqtSignal(object, float)  # (delta 6-list, strength)
     profiles_changed = pyqtSignal()
 
     def __init__(self, current_profile: str, current_strength: float, parent=None):
@@ -109,7 +97,7 @@ class FadeEditorDialog(QDialog):
         left_layout.addWidget(self.profile_list)
 
         btns = QHBoxLayout()
-        self.new_btn = self._tool_btn("fa5s.plus", "New profile (starts from identity — no fade)", self._on_new)
+        self.new_btn = self._tool_btn("fa5s.plus", "New profile (starts from identity — no side absorption)", self._on_new)
         self.copy_btn = self._tool_btn("fa5s.copy", "Make an editable copy of the selected profile", self._on_copy)
         self.delete_btn = self._tool_btn("fa5s.trash-alt", "Delete the selected profile", self._on_delete)
         btns.addWidget(self.new_btn)
@@ -152,15 +140,16 @@ class FadeEditorDialog(QDialog):
         rl.addLayout(type_row)
 
         info = QLabel(
-            "<b>Dye-fade restoration</b><br>"
-            "A faded dye set loses density unevenly per layer and leaks a little into the "
-            "channels it shouldn't.<br>"
+            "<b>Dye-fade restoration — side absorptions</b><br>"
+            "A faded dye set leaks a little of one layer's density into the channels it "
+            "shouldn't. That leak (δ) is a property of the dye set, not of any one frame.<br>"
             "<br>"
-            "• The diagonal is <b>Survival</b> (α) — the surviving fraction of dye in that layer; "
-            "1.0 means no fade.<br>"
-            "• Each off-diagonal slider is a <b>side-absorption ratio</b> (δ) — a property of the "
-            "dye set, not of any one frame; column is the source layer, row the one it leaks into.<br>"
-            "• Raise <b>Strength</b> in the sidebar to dial the correction in."
+            "• The diagonal is fixed: this profile is <b>δ only</b>.<br>"
+            "• Each off-diagonal slider is a side-absorption ratio — column is the source "
+            "layer, row the one it leaks into.<br>"
+            "• The two per-frame survival ratios (how much this slide itself has faded) are "
+            "<b>not</b> edited here — they're the Green/Blue Survival sliders in the sidebar, "
+            "or the Estimate action next to them."
         )
         info.setWordWrap(True)
         info.setStyleSheet(
@@ -210,7 +199,10 @@ class FadeEditorDialog(QDialog):
         root.addWidget(splitter)
 
     def _build_grid(self) -> QWidget:
-        self._cells: List[List[CompactSlider]] = []
+        # The diagonal is fixed (a profile is delta only), so only off-diagonal cells
+        # are sliders. self._cells is 3x3 with None on the diagonal, mirroring the
+        # crosstalk grid exactly.
+        self._cells: List[List[Optional[CompactSlider]]] = []
         container = _MatrixGridWidget(self._cells)
         grid = QGridLayout(container)
         grid.setSpacing(10)
@@ -239,14 +231,19 @@ class FadeEditorDialog(QDialog):
             row_lbl.setFixedWidth(22)
             row_lbl.setStyleSheet(f"background: {_CH_COLORS[r]}; border-radius: 4px;")
             grid.addWidget(row_lbl, r + 2, 1)
-            row_cells: List[CompactSlider] = []
+            row_cells: List[Optional[CompactSlider]] = []
             for c in range(3):
                 if r == c:
-                    sld = CompactSlider("", 0.05, 1.0, 1.0, step=0.001, precision=1000, has_neutral=False)
-                    sld.setToolTip("Survival (α) — the surviving fraction of dye in this layer. 1.0 = no fade.")
-                else:
-                    sld = CompactSlider("", -0.3, 0.3, 0.0, step=0.001, precision=1000, has_neutral=True)
-                    sld.setToolTip("Side-absorption ratio (δ) — a property of the dye set, small in magnitude.")
+                    dash = QLabel("—")
+                    dash.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    dash.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                    dash.setStyleSheet(f"color: {THEME.text_muted};")
+                    dash.setToolTip("Diagonal is fixed — a profile is side absorptions only. Survival ratios are the sidebar sliders.")
+                    grid.addWidget(dash, r + 2, c + 2)
+                    row_cells.append(None)
+                    continue
+                sld = CompactSlider("", -0.3, 0.3, 0.0, step=0.001, precision=1000, has_neutral=True)
+                sld.setToolTip("Side-absorption ratio (δ) — a property of the dye set, small in magnitude.")
                 sld.spin.setDecimals(3)
                 sld.valueChanged.connect(lambda _v: self._emit_preview())
                 grid.addWidget(sld, r + 2, c + 2)
@@ -264,9 +261,11 @@ class FadeEditorDialog(QDialog):
 
     # ------------------------------------------------------------- helpers
 
-    def working_alpha_delta(self) -> tuple:
-        grid = [[self._cells[r][c].value() for c in range(3)] for r in range(3)]
-        return grid_to_alpha_delta(grid)
+    def working_delta(self) -> List[float]:
+        return [
+            self._cells[r][c].value()  # type: ignore[union-attr]
+            for r, c in _DELTA_POSITIONS
+        ]
 
     def preview_strength(self) -> float:
         return self.preview_strength_slider.value()
@@ -274,12 +273,9 @@ class FadeEditorDialog(QDialog):
     def selected_name(self) -> Optional[str]:
         return self._selected_name
 
-    def _alpha_delta_for(self, name: str) -> tuple:
-        found = FadeProfiles.get_alpha_delta(name)
-        if found is None:
-            return [1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        alpha, delta = found
-        return list(alpha), list(delta)
+    def _delta_for(self, name: str) -> List[float]:
+        found = FadeProfiles.get_delta(name)
+        return list(found) if found is not None else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     def _all_names(self) -> list:
         return FadeProfiles.list_profiles()
@@ -294,22 +290,20 @@ class FadeEditorDialog(QDialog):
         idx = self.type_combo.findData(str(value))
         self.type_combo.setCurrentIndex(idx if idx >= 0 else self.type_combo.findData(str(CrosstalkType.TUNED)))
 
-    def _set_grid(self, alpha: List[float], delta: List[float]) -> None:
-        grid = alpha_delta_to_grid(alpha, delta)
-        for r in range(3):
-            for c in range(3):
-                self._cells[r][c].setValue(grid[r][c])
+    def _set_grid(self, delta: List[float]) -> None:
+        for (r, c), v in zip(_DELTA_POSITIONS, delta):
+            self._cells[r][c].setValue(v)  # type: ignore[union-attr]
 
     def _set_grid_enabled(self, enabled: bool) -> None:
         for row in self._cells:
             for cell in row:
-                cell.setEnabled(enabled)
+                if cell is not None:
+                    cell.setEnabled(enabled)
 
     def _emit_preview(self) -> None:
         if self._updating:
             return
-        alpha, delta = self.working_alpha_delta()
-        self.fade_previewed.emit(alpha, delta, self.preview_strength())
+        self.delta_previewed.emit(self.working_delta(), self.preview_strength())
 
     # ------------------------------------------------------------- list
 
@@ -341,8 +335,7 @@ class FadeEditorDialog(QDialog):
         editable = not FadeProfiles.is_bundled(name)
 
         self._updating = True
-        alpha, delta = self._alpha_delta_for(name)
-        self._set_grid(alpha, delta)
+        self._set_grid(self._delta_for(name))
         self.name_edit.setText(name)
         self._set_type(FadeProfiles.get_type(name))
         self._updating = False
@@ -369,7 +362,7 @@ class FadeEditorDialog(QDialog):
         while name in existing:
             name = f"New Profile {i}"
             i += 1
-        FadeProfiles.save(name, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        FadeProfiles.save(name, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.profiles_changed.emit()
         self._reload_list(select=name)
 
@@ -377,8 +370,7 @@ class FadeEditorDialog(QDialog):
         if self._selected_name is None:
             return
         new_name = unique_copy_name(self._selected_name, self._all_names())
-        alpha, delta = self.working_alpha_delta()
-        FadeProfiles.save(new_name, alpha, delta)
+        FadeProfiles.save(new_name, self.working_delta())
         self.profiles_changed.emit()
         self._reload_list(select=new_name)
 
@@ -389,8 +381,7 @@ class FadeEditorDialog(QDialog):
         old = self._selected_name
         if old and old != name and not FadeProfiles.is_bundled(old):
             FadeProfiles.delete(old)
-        alpha, delta = self.working_alpha_delta()
-        FadeProfiles.save(name, alpha, delta, self.selected_type())
+        FadeProfiles.save(name, self.working_delta(), self.selected_type())
         self.profiles_changed.emit()
         self._reload_list(select=name)
 

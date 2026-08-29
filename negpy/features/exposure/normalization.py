@@ -220,7 +220,7 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     fade_mode = str(getattr(process, "fade_process", ProcessMode.E6) or ProcessMode.E6)
     fade = None
     if process_mode is None or fade_mode == str(process_mode):
-        fade = resolve_fade_matrix(process.fade_strength, process.fade_alpha, process.fade_delta)
+        fade = resolve_fade_matrix(process.fade_strength, process.fade_ratio_g, process.fade_ratio_b, process.fade_delta)
 
     if fade is None:
         return unmix
@@ -247,32 +247,38 @@ def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Option
 
 
 #: Above this condition number the restoration matrix is refused rather than inverted:
-#: the fade estimate for those (alpha, delta) is undetermined enough that inverting it
+#: the fade parameters at that point are undetermined enough that inverting it
 #: would amplify noise rather than recover signal.
 FADE_CONDITION_LIMIT = 50.0
 
 
-def resolve_fade_matrix(strength: float, alpha: Optional[tuple], delta: Optional[tuple]) -> Optional[np.ndarray]:
+def resolve_fade_matrix(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> Optional[np.ndarray]:
     """Restoration operator inv(F) for a faded dye set, or None when off.
 
     Deliberately not row-normalized, unlike resolve_crosstalk_matrix: fade changes each
-    layer's neutral density and that difference is the entire signal. F is built from
-    per-layer dye survival `alpha` and side-absorption ratios `delta`; strength scales
+    layer's neutral density and that difference is the entire signal. F pins the red
+    layer's survival at 1.0 -- only `ratio_g`/`ratio_b` (green/red, blue/red surviving-dye
+    fraction) are physically meaningful, since a uniform scale of all three survival
+    fractions is exactly absorbed by per-channel normalization downstream. `delta` (the
+    six side-absorption ratios) is treated as zero when no profile supplies one, so the
+    ratio sliders alone still give a real, if purely diagonal, correction. Strength scales
     the parameters toward the identity (a less-faded film) before F is built, not the
     output, so a partial application stays a physically coherent state of the material.
     Refuses (returns None) rather than inverting when F is singular or ill-conditioned
     for the requested parameters.
     """
-    if float(strength) <= 0.0 or alpha is None or delta is None:
+    if float(strength) <= 0.0:
         return None
     s = float(strength)
-    ar, ag, ab = (1.0 + s * (float(a) - 1.0) for a in alpha)
-    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (s * float(d) for d in delta)
+    ag = 1.0 + s * (float(ratio_g) - 1.0)
+    ab = 1.0 + s * (float(ratio_b) - 1.0)
+    d = delta if delta is not None else (0.0,) * 6
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (s * float(x) for x in d)
     f = np.array(
         [
-            [ar, ag * d_gr, ab * d_br],
-            [ar * d_rg, ag, ab * d_bg],
-            [ar * d_rb, ag * d_gb, ab],
+            [1.0, ag * d_gr, ab * d_br],
+            [d_rg, ag, ab * d_bg],
+            [d_rb, ag * d_gb, ab],
         ],
         dtype=np.float64,
     )
