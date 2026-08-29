@@ -15,13 +15,14 @@ SLIDE = {"name": "a.nef", "path": "/f/a.nef", "hash": "hash-a"}
 FRESH = {"name": "b.nef", "path": "/f/b.nef", "hash": "hash-b"}
 
 
-def _controller(stored: dict, autodetect_enabled: bool = True):
+def _controller(stored: dict, autodetect_enabled: bool = True, new_file_default: str = "Color Negative"):
     c = MagicMock()
     c.state.uploaded_files = [dict(SLIDE), dict(FRESH)]
     c.state.thumbnails = {}
     c.state.autodetect_enabled = autodetect_enabled
     c._begin_batch.return_value = 1
     c.session.stored_process_mode = lambda asset: stored.get(asset["hash"], "")
+    c.session.default_process_mode_for_new_file = lambda: new_file_default
     return c
 
 
@@ -41,8 +42,8 @@ class BatchRequest(unittest.TestCase):
 
     def test_unstored_frame_skips_the_heuristic_when_autodetect_is_off(self):
         """A real open never runs the heuristic either when autodetect is off — it takes
-        ProcessConfig's own C41 default outright — so the filmstrip must not second-guess
-        that choice with its own detection on an unstored frame."""
+        whatever process mode the next new file would get outright — so the filmstrip must
+        not second-guess that choice with its own detection on an unstored frame."""
         controller = _controller({}, autodetect_enabled=False)
 
         AppController.generate_missing_thumbnails(controller)
@@ -57,6 +58,16 @@ class BatchRequest(unittest.TestCase):
 
         modes = {f["hash"]: f["process_mode"] for f in _emitted(controller)}
         self.assertEqual(modes, {"hash-a": "Transparency", "hash-b": "Color Negative"})
+
+    def test_unstored_frame_follows_the_sticky_default_when_autodetect_is_off(self):
+        """The fallback is whatever a new file would actually get — sticky B&W or Slide,
+        not a hardcoded C41 — or every B&W/Slide roll would render as color negative."""
+        controller = _controller({}, autodetect_enabled=False, new_file_default="B&W Negative")
+
+        AppController.generate_missing_thumbnails(controller)
+
+        modes = {f["hash"]: f["process_mode"] for f in _emitted(controller)}
+        self.assertEqual(modes, {"hash-a": "B&W Negative", "hash-b": "B&W Negative"})
 
     def test_the_session_assets_are_not_touched(self):
         """The dicts cross to a worker thread, and a mode written back here would outlive
@@ -93,6 +104,25 @@ class StoredMode(unittest.TestCase):
 
         with patch("negpy.desktop.session.load_or_promote", return_value=None):
             self.assertEqual(DesktopSessionManager.stored_process_mode(session, dict(FRESH)), "")
+
+
+class DefaultForNewFile(unittest.TestCase):
+    def test_answers_whatever_a_new_file_would_actually_get(self):
+        """The same call `_hydrate_asset_config` makes for a fresh asset, so this can never
+        drift from what opening a real new file actually does."""
+        from dataclasses import replace
+
+        from negpy.desktop.session import WorkspaceConfig
+
+        session = MagicMock()
+        sticky = replace(WorkspaceConfig(), process=replace(WorkspaceConfig().process, process_mode="B&W Negative"))
+        session._apply_sticky_settings.return_value = sticky
+
+        result = DesktopSessionManager.default_process_mode_for_new_file(session)
+
+        self.assertEqual(result, "B&W Negative")
+        session._apply_sticky_settings.assert_called_once()
+        self.assertEqual(session._apply_sticky_settings.call_args.kwargs.get("only_global"), False)
 
 
 if __name__ == "__main__":

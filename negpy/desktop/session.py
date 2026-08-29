@@ -964,6 +964,15 @@ class DesktopSessionManager(QObject):
         )
         return str(saved.process.process_mode) if saved is not None else ""
 
+    def default_process_mode_for_new_file(self) -> str:
+        """The film process a brand-new file gets when nothing has decided one yet:
+        sticky, if the user has that field carrying, else ProcessConfig's own default.
+
+        One global answer for the whole roll, not per asset — computed once, not the
+        per-frame cost `config_for_asset` would be if called for every unstored thumbnail.
+        """
+        return str(self._apply_sticky_settings(WorkspaceConfig(), only_global=False).process.process_mode)
+
     def select_file(self, index: int, selection_override: Optional[List[int]] = None) -> None:
         """
         Changes active file and hydrates state from repository.

@@ -756,9 +756,10 @@ class AppController(QObject):
             # negatives in the filmstrip. They are copies because these dicts cross to a
             # worker thread and uploaded_files must not grow a stale mode.
             # With autodetect off, a real open never runs the heuristic either — it takes
-            # ProcessConfig's own C41 default outright — so an unstored frame here does the
-            # same, rather than letting the heuristic guess against the user's own setting.
-            fallback = "" if self.state.autodetect_enabled else str(ProcessMode.C41)
+            # whatever film process the next new file would get (sticky, or ProcessConfig's
+            # default) outright — so an unstored frame here does the same, rather than
+            # letting the heuristic guess against the user's own setting.
+            fallback = "" if self.state.autodetect_enabled else self.session.default_process_mode_for_new_file()
             self.thumbnail_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f) or fallback} for f in missing])
 
     def clear_thumbnail_cache(self) -> None:
