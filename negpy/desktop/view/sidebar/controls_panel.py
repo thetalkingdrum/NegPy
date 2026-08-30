@@ -69,6 +69,7 @@ _SENSOR_FIELDS = (
     "crosstalk_strength",
     "fade_profile",
     "fade_strength",
+    "fade_ratio_r",
     "fade_ratio_g",
     "fade_ratio_b",
     "hue_trim",

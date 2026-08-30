@@ -1,16 +1,23 @@
 """Per-image dye-survival ratio estimation for Fade Restoration.
 
 The six side-absorption ratios (`fade_delta`) are a property of the dye set, set once
-per stock by a profile (services/assets/fade.py). The two survival ratios -- how much
+per stock by a profile (services/assets/fade.py). The two survival *ratios* -- how much
 this particular slide's green and blue layers have faded relative to red -- are a
-property of one frame instead, and can only be estimated per image.
+property of one frame instead, and can only be estimated per image, which is what this
+module does.
+
+Red's own absolute survival (`fade_ratio_r`, `resolve_fade_matrix`'s third parameter) is
+deliberately not estimated here: neutral image content only ever constrains a ratio
+between two channels, never one channel's survival on its own, so no per-image
+measurement can supply it. It stays at its slider default (or a physically-anchored
+source, once one exists -- the rebate probe) rather than being guessed from the frame.
 
 Reads off Cast Removal's own neutral-detection algorithm (`measure_neutral_axis_from_log`
 -- midtone + shadow references, chroma-gated, cross-checked on NegPy's GPU parity tests)
 rather than blind percentile spans, but does its own measurement rather than reusing
 Cast Removal's already-computed `neutral_axis_refs`: those are metered downstream of
 whatever fade correction is *already* configured, which is the identity at the default
-survival ratios (1.0, 1.0) regardless of delta -- so at the moment this feature is
+survival ratios (1.0, 1.0, 1.0) regardless of delta -- so at the moment this feature is
 actually used, nothing has removed the dye set's own measurement mixing yet, and reusing
 that metric would silently reintroduce the bias fixed below. `fade_measurement_unmix`
 does that unmixing explicitly, independent of the current ratio state.
@@ -41,6 +48,12 @@ AGREEMENT_TOLERANCE = 0.05
 #: in resolve_fade_matrix (reported via fade_reject_reason) is the real backstop, not
 #: this bound -- see FADE_CONDITION_LIMIT in features/exposure/normalization.py.
 RATIO_BOUNDS = (0.2, 5.0)
+#: Bound on fade_ratio_r, red's own absolute survival fraction -- not a reciprocal pair
+#: like RATIO_BOUNDS, since this is a fraction of original density, not a ratio between
+#: two channels: it cannot physically exceed 1.0 (a fading process does not add density
+#: back), and 0.05 keeps the restoration matrix's overall gain from a bare slip of the
+#: slider running away before FADE_CONDITION_LIMIT has a chance to catch it.
+RED_SURVIVAL_BOUNDS = (0.05, 1.0)
 
 #: (midtone RGB triple, shadow RGB triple, highlight RGB triple or None, confidence) --
 #: the return shape of normalization.measure_neutral_axis_from_log.
