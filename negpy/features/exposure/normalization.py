@@ -363,15 +363,38 @@ def _fade_side_absorption_matrix(delta: Optional[tuple]) -> Optional[np.ndarray]
 
 def fade_side_absorption_unmix(delta: Optional[tuple]) -> Optional[np.ndarray]:
     """inv(S): recovers per-layer dye concentration from measured density, given a fade
-    profile's own side-absorption `delta`. The survival-ratio estimator uses this to read
-    channel spans in concentration space -- where a layer's span is directly proportional
-    to its survival fraction -- rather than in measured-density space, where S's mixing
-    biases every ratio toward 1.0 (under-reporting fade, worse the more a slide has
-    actually faded). None when delta is absent or S is degenerate."""
+    profile's own side-absorption `delta`. Not row-normalized, so it shifts overall
+    channel brightness along with removing the mixing -- fine for matrix algebra
+    (`test_dropping_delta_is_the_correct_operator...`), wrong for feeding a fixed-band
+    luma detector like `measure_neutral_axis_from_log`, which needs `fade_measurement_unmix`
+    instead. None when delta is absent or S is degenerate."""
     s_matrix = _fade_side_absorption_matrix(delta)
     if s_matrix is None:
         return None
     return np.linalg.inv(s_matrix)
+
+
+def fade_measurement_unmix(delta: Optional[tuple]) -> Optional[tuple[np.ndarray, tuple[float, float, float]]]:
+    """(neutral-preserving unmix, correction factors) for reading a survival-ratio
+    estimate off `measure_neutral_axis_from_log`'s refs in concentration space.
+
+    Row-normalizing inv(S) -- the same technique `resolve_crosstalk_matrix` uses --
+    preserves neutral gray, so overall channel brightness doesn't move and the neutral-axis
+    detector's fixed luma bands keep finding pixels; the raw `fade_side_absorption_unmix`
+    shifts brightness enough that the detector returns nothing. Row-normalizing introduces
+    a per-channel bias exactly equal to inv(S)'s own row sums (the second element here),
+    which the caller must divide back out of a channel-to-red spread ratio -- ignoring it
+    is itself a real, double-digit-percent error, not a rounding correction. None when
+    delta is absent, S is degenerate, or a row sum is too close to zero to divide by."""
+    s_matrix = _fade_side_absorption_matrix(delta)
+    if s_matrix is None:
+        return None
+    s_inv = np.linalg.inv(s_matrix)
+    row_sums = s_inv.sum(axis=1)
+    if np.any(np.abs(row_sums) < 1e-6):
+        return None
+    normalized = s_inv / row_sums[:, None]
+    return normalized, (float(row_sums[0]), float(row_sums[1]), float(row_sums[2]))
 
 
 def fade_reject_reason(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> str:
