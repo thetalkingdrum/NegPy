@@ -22,7 +22,12 @@ SPAN_FLOOR = 0.05
 #: Spans within this fraction of the largest agree -- no evidence of differential fade.
 AGREEMENT_TOLERANCE = 0.05
 #: Sane bound on an implied ratio; outside this the estimate is clamped and reported.
-RATIO_BOUNDS = (0.5, 2.0)
+#: Reciprocal pair (0.2 = 1/5.0) so neither direction is favored. Wider than the original
+#: 0.5-2.0: real severely-faded slides push a pure diagonal (delta=0, no profile yet)
+#: correction past a factor of two on green and/or blue, and the ill-conditioning guard
+#: in resolve_fade_matrix (reported via fade_reject_reason) is the real backstop, not
+#: this bound -- see FADE_CONDITION_LIMIT in features/exposure/normalization.py.
+RATIO_BOUNDS = (0.2, 5.0)
 
 
 def measure_channel_spans(image: ImageBuffer, roi: Optional[tuple], analysis_buffer: float) -> tuple[float, float, float]:
