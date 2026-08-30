@@ -865,7 +865,7 @@ class ControlsPanel(QWidget):
             ]
         )
 
-        # Calibration's four fields live on ProcessConfig but belong to their own section, so they
+        # Calibration's fields live on ProcessConfig but belong to their own section, so they
         # are counted here and left out of process_count above.
         sensor_count = sum(
             [
@@ -874,6 +874,7 @@ class ControlsPanel(QWidget):
                 proc.crosstalk_strength != _proc.crosstalk_strength,
                 proc.fade_profile != _proc.fade_profile,
                 proc.fade_strength != _proc.fade_strength,
+                proc.fade_ratio_r != _proc.fade_ratio_r,
                 proc.fade_ratio_g != _proc.fade_ratio_g,
                 proc.fade_ratio_b != _proc.fade_ratio_b,
                 proc.hue_trim != _proc.hue_trim,

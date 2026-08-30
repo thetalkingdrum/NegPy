@@ -105,19 +105,24 @@ class ProcessConfig:
     # with it rather than running as its own stage. `fade_delta` is the six
     # side-absorption ratios in (gr, br, rg, bg, rb, gb) order, a property of the
     # dye set set once per stock by a profile. `fade_ratio_g`/`fade_ratio_b` are
-    # the surviving-dye-fraction ratios (green/red, blue/red) — a property of one
-    # faded slide, not the stock, so they live per-image rather than in the
-    # profile; only ratios are meaningful, since a uniform scale of all three
-    # survival fractions is exactly absorbed by per-channel normalization
-    # downstream. Strength scales the survival ratios toward 1.0, not delta (a
-    # measurement property of the dye set and scanner, independent of fade extent)
-    # and not the output: a scaled parameter set is a less-faded film, a blended
-    # output is not a state of the material. Defaults to 1.0 (full application), not
-    # 0.0 like Crosstalk's own strength: the real off-gate is fade_ratio_g/b defaulting
-    # to 1.0 (identity regardless of strength), so this default is still inert until a
-    # ratio is touched, and it means Estimate has a visible effect immediately instead
-    # of needing Strength raised separately afterward.
+    # the surviving-dye-fraction ratios (green/red, blue/red); `fade_ratio_r` is
+    # red's own absolute survival fraction. All three are a property of one faded
+    # slide, not the stock, so they live per-image rather than in the profile.
+    # Neutral image content only ever constrains the green/red and blue/red
+    # ratios, never red's own absolute survival, so `fade_ratio_r` cannot be
+    # estimated the way the other two can -- it needs a physical anchor (the
+    # rebate probe) or per-stock fade-trajectory data, or manual tuning by eye
+    # until one of those exists. Strength scales all three survival ratios toward
+    # 1.0, not delta (a measurement property of the dye set and scanner,
+    # independent of fade extent) and not the output: a scaled parameter set is a
+    # less-faded film, a blended output is not a state of the material. Defaults
+    # to 1.0 (full application), not 0.0 like Crosstalk's own strength: the real
+    # off-gate is fade_ratio_g/b/r defaulting to 1.0 (identity regardless of
+    # strength), so this default is still inert until a ratio is touched, and it
+    # means Estimate has a visible effect immediately instead of needing Strength
+    # raised separately afterward.
     fade_strength: float = 1.0
+    fade_ratio_r: float = 1.0
     fade_ratio_g: float = 1.0
     fade_ratio_b: float = 1.0
     fade_delta: Optional[tuple] = None
