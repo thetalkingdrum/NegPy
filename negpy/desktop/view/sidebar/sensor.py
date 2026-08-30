@@ -210,12 +210,12 @@ class SensorSidebar(BaseSidebar):
         estimate_row = QHBoxLayout()
         self.estimate_fade_btn = self._icon_action(
             "fa5s.magic",
-            "Estimate Green/Blue Survival from this frame's own per-channel density span, "
-            "unmixed by the selected Profile's side absorption first so the read is in dye "
-            "concentration rather than measured density. A suggestion, not a lock: it "
-            "populates the sliders above and can be overridden, and re-running it overwrites "
-            "rather than accumulates. Changing Profile clears a previous estimate, since it "
-            "was read against the old profile's delta",
+            "Estimate Green/Blue Survival using Cast Removal's own two-point neutral detection "
+            "(midtone and shadow), unmixed by the selected Profile's side absorption first so the "
+            "read is in dye concentration rather than measured density. A suggestion, not a lock: "
+            "it populates the sliders above and can be overridden, and re-running it overwrites "
+            "rather than accumulates. Changing Profile clears a previous estimate, since it was "
+            "read against the old profile's delta",
             width=28,
         )
         self.estimate_fade_label = field_label("Estimate")
