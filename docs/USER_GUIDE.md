@@ -760,15 +760,15 @@ The paper margin takes the mat color, so it runs into the border with no seam.
 
 ## 9. Favourites tab
 
-The sliders and toggles you reach for most, gathered in one place, so a routine edit no
-longer costs a tab switch and a scroll. Empty until you fill it.
+The sliders, toggles and dropdowns you reach for most, gathered in one place, so a
+routine edit no longer costs a tab switch and a scroll. Empty until you fill it.
 
 *   **Edit Favourites**: opens a picker. Tick controls on the left, drag them into the order you
     want on the right, then press **Apply**.
 *   The panel then shows those controls in your chosen order. They are the *same* controls as in
-    their home panels, so moving a slider here moves it there and the other way round, and
-    clicking a favourited toggle clicks the original. Nothing is duplicated or moved out of its
-    own tab.
+    their home panels, so moving a slider here moves it there and the other way round, clicking a
+    favourited toggle clicks the original, and picking a dropdown option there picks it in the
+    original too. Nothing is duplicated or moved out of its own tab.
 *   A favourite hides itself when its original does. Favourite a Filtration slider and it
     disappears while you are in black & white, where it has nothing to act on.
 *   Your selection is remembered between sessions.

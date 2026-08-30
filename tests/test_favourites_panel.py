@@ -5,6 +5,7 @@ from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
 from negpy.desktop.view.sidebar.favourites import FavouritesSidebar, load_favourites
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUP_BY_ID
 from negpy.desktop.view.slider_targets import SLIDER_ATTRS, slider_widget_map
+from negpy.desktop.view.combo_targets import COMBO_ATTRS, combo_widget_map
 from negpy.desktop.view.toggle_targets import TOGGLE_ATTRS, toggle_widget_map
 from negpy.desktop.view.widgets.favourites_dialog import FavouritesDialog
 from negpy.desktop.view.widgets.sliders import CompactSlider, HueSlider, KelvinSlider, PowerWarpSlider, clone_slider
@@ -57,6 +58,13 @@ def test_every_favouritable_toggle_resolves(controls):
         assert src.isCheckable()
 
 
+def test_every_favouritable_combo_resolves(controls):
+    widgets = combo_widget_map(controls)
+    for combo_id in COMBO_ATTRS:
+        src = widgets[combo_id]()
+        assert src.count() > 0
+
+
 def test_clone_refuses_unhandled_class(qapp):
     """A PowerWarpSlider flattened into a CompactSlider would keep its range but lose its
     nonlinear travel — that must fail loudly, not ship a subtly wrong control."""
@@ -104,13 +112,13 @@ def test_panel_is_empty_by_default(controls, qapp):
 
 def test_panel_mirrors_stored_favourites_in_order(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation", "density"]))
-    labels = [clone.label.text() for clone, _, _ in panel._mirrors]
+    labels = [clone.label.text() for _container, clone, _src, _kind in panel._mirrors]
     assert labels == [controls.lab_sidebar.saturation_slider.label.text(), controls.tone_sidebar.density_slider.label.text()]
 
 
 def test_moving_a_mirror_moves_the_original(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation"]))
-    clone, src, kind = panel._mirrors[0]
+    _container, clone, src, kind = panel._mirrors[0]
     assert kind == "slider"
     committed = []
     src.valueCommitted.connect(committed.append)
@@ -122,15 +130,15 @@ def test_moving_a_mirror_moves_the_original(controls, qapp):
 
 def test_sync_hides_a_mirror_only_when_the_original_is_explicitly_hidden(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation"]))
-    clone, src, _kind = panel._mirrors[0]
+    container, _clone, src, _kind = panel._mirrors[0]
 
     src.setVisible(False)
     panel.sync_ui()
-    assert clone.isHidden()
+    assert container.isHidden()
 
     src.setVisible(True)
     panel.sync_ui()
-    assert not clone.isHidden()
+    assert not container.isHidden()
 
 
 def test_choices_includes_a_toggle_grouped_with_its_category(controls, qapp):
@@ -146,7 +154,7 @@ def test_choices_includes_a_toggle_grouped_with_its_category(controls, qapp):
 
 def test_clicking_a_toggle_mirror_clicks_the_original(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
-    clone, src, kind = panel._mirrors[0]
+    _container, clone, src, kind = panel._mirrors[0]
     assert kind == "toggle"
     before = src.isChecked()
 
@@ -156,11 +164,47 @@ def test_clicking_a_toggle_mirror_clicks_the_original(controls, qapp):
 
 def test_sync_reflects_a_toggle_mirror_checked_state(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
-    clone, src, _kind = panel._mirrors[0]
+    _container, clone, src, _kind = panel._mirrors[0]
 
     src.setChecked(not src.isChecked())
     panel.sync_ui()
     assert clone.isChecked() == src.isChecked()
+
+
+def test_choices_includes_a_combo_grouped_with_its_category(controls, qapp):
+    ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
+    assert "fade_profile" in ids_in_order
+    process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
+    process_run = [i for i in ids_in_order if i in process_ids or i in ("e6_normalize", "fade_profile")]
+    # fade_profile's category is "Process": it must land inside that contiguous run, after
+    # the toggle that's already grouped there, not open a duplicate header of its own.
+    assert process_run[-1] == "fade_profile"
+
+
+def test_combo_mirror_starts_synced_to_the_original(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["fade_profile"]))
+    _container, clone, src, kind = panel._mirrors[0]
+    assert kind == "combo"
+    assert clone.currentText() == src.currentText()
+    assert [clone.itemText(i) for i in range(clone.count())] == [src.itemText(i) for i in range(src.count())]
+
+
+def test_picking_a_combo_mirror_item_drives_the_original(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["fade_profile"]))
+    _container, clone, src, _kind = panel._mirrors[0]
+    selectable = [clone.itemText(i) for i in range(clone.count()) if clone.model().item(i).isEnabled()]
+    other = next(text for text in selectable if text != src.currentText())
+
+    clone.setCurrentText(other)
+    assert src.currentText() == other
+
+
+def test_combo_mirror_disabled_heading_rows_are_not_selectable(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["fade_profile"]))
+    _container, clone, src, _kind = panel._mirrors[0]
+    src_disabled = {src.itemText(i) for i in range(src.count()) if not src.model().item(i).isEnabled()}
+    clone_disabled = {clone.itemText(i) for i in range(clone.count()) if not clone.model().item(i).isEnabled()}
+    assert clone_disabled == src_disabled
 
 
 def test_load_drops_unknown_ids(qapp):
