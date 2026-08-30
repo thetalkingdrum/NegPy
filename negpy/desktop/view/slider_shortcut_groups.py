@@ -62,6 +62,7 @@ SLIDER_GROUPS: tuple[SliderShortcutGroup, ...] = (
         inc_sign=-1.0,
         dec_sign=1.0,
     ),
+    _g("cast_removal", "Cast Removal ↑/↓", "cast_removal_inc", "cast_removal_dec", 0.01, "Exposure"),
     _g("density", "Density ↑/↓", "density_up", "density_down", 0.01, "Exposure"),
     _g(
         "grade",
@@ -99,6 +100,9 @@ SLIDER_GROUPS: tuple[SliderShortcutGroup, ...] = (
     _g("black_point", "Black point ↑/↓", "black_point_inc", "black_point_dec", 0.01, "Process"),
     _g("render_ev", "Render exposure ↑/↓", "render_ev_inc", "render_ev_dec", 0.05, "Process", step_suffix=" EV"),
     _g("separation", "Crosstalk ↑/↓", "separation_inc", "separation_dec", 0.01, "Process"),
+    _g("fade_strength", "Fade Strength ↑/↓", "fade_strength_inc", "fade_strength_dec", 0.01, "Process"),
+    _g("fade_ratio_g", "Fade Green Survival ↑/↓", "fade_ratio_g_inc", "fade_ratio_g_dec", 0.01, "Process"),
+    _g("fade_ratio_b", "Fade Blue Survival ↑/↓", "fade_ratio_b_inc", "fade_ratio_b_dec", 0.01, "Process"),
     _g("chroma_denoise", "Denoise ↑/↓", "chroma_denoise_inc", "chroma_denoise_dec", 0.01, "Lab"),
     _g("saturation", "Chroma ↑/↓", "saturation_inc", "saturation_dec", 0.01, "Lab"),
     _g("clahe", "CLAHE ↑/↓", "clahe_inc", "clahe_dec", 0.01, "Lab"),
