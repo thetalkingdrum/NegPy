@@ -5,7 +5,7 @@ from negpy.desktop.view.styles.templates import field_label, hint_label, section
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.features.exposure.normalization import fade_delta_conflict_reason, fade_reject_reason
-from negpy.features.process.fade import RATIO_BOUNDS
+from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS
 from negpy.features.process.models import ProcessMode, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.services.assets.crosstalk import CrosstalkProfiles
@@ -185,10 +185,24 @@ class SensorSidebar(BaseSidebar):
         self.fade_reject_hint.setVisible(False)
         self.layout.addWidget(self.fade_reject_hint)
 
-        # The dye set's own six side absorptions live in the profile above; these two are
-        # the only per-image unknowns -- how much this particular slide's green/blue layers
-        # have faded relative to red. A uniform survival scale is redundant (absorbed by
-        # per-channel normalization downstream), which is why there are two sliders, not three.
+        # The dye set's own six side absorptions live in the profile above; these three are
+        # the per-image unknowns -- how much this particular slide's three layers have
+        # faded. Green and blue are ratios to red, since that is all a neutral in the image
+        # can constrain; red's own absolute survival has no such reference and needs its
+        # own control.
+        self.fade_ratio_r_slider = CompactSlider(
+            "Red Survival", *RED_SURVIVAL_BOUNDS, conf.fade_ratio_r, step=0.01, precision=1000, has_neutral=True
+        )
+        self.fade_ratio_r_slider.setToolTip(
+            "Red layer's own surviving dye fraction (absolute, not relative to another "
+            "channel -- there is nothing else to measure it against in the frame). 1.0 = "
+            "red has not faded. E-6's fastest-fading dye is read on the red channel, so a "
+            "heavily faded slide often needs this well below 1.0 even after Green/Blue "
+            "Survival have fixed the colour balance -- without it the correction is "
+            "colour-accurate but under-restored in density, which reads as washed out."
+        )
+        self.layout.addWidget(self.fade_ratio_r_slider)
+
         self.fade_ratio_g_slider = CompactSlider(
             "Green Survival", *_RATIO_SLIDER_RANGE, conf.fade_ratio_g, step=0.01, precision=1000, has_neutral=True
         )
@@ -357,6 +371,8 @@ class SensorSidebar(BaseSidebar):
         self.manage_fade_btn.clicked.connect(self._open_fade_editor)
         self.fade_strength_slider.valueChanged.connect(lambda v: self._on_fade_strength_changed(v, persist=False))
         self.fade_strength_slider.valueCommitted.connect(lambda v: self._on_fade_strength_changed(v, persist=True))
+        self.fade_ratio_r_slider.valueChanged.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=False))
+        self.fade_ratio_r_slider.valueCommitted.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=True))
         self.fade_ratio_g_slider.valueChanged.connect(
             lambda v: self._on_fade_ratio_changed(v, self.fade_ratio_b_slider.value(), persist=False)
         )
@@ -534,6 +550,16 @@ class SensorSidebar(BaseSidebar):
             **invalidate_local_bounds(self.state.config.process),
         )
 
+    def _on_fade_ratio_r_changed(self, val: float, persist: bool = True) -> None:
+        self.update_config_section(
+            "process",
+            persist=persist,
+            render=True,
+            readback_metrics=persist,
+            fade_ratio_r=val,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
     def _on_fade_ratio_changed(self, ratio_g: float, ratio_b: float, persist: bool = True) -> None:
         self.update_config_section(
             "process",
@@ -705,6 +731,7 @@ class SensorSidebar(BaseSidebar):
                 self._fill_fade_combo(conf.process_mode)
             self.fade_combo.setCurrentText(conf.fade_profile)
             self.fade_strength_slider.setValue(conf.fade_strength)
+            self.fade_ratio_r_slider.setValue(conf.fade_ratio_r)
             self.fade_ratio_g_slider.setValue(conf.fade_ratio_g)
             self.fade_ratio_b_slider.setValue(conf.fade_ratio_b)
             for w in (
@@ -713,6 +740,7 @@ class SensorSidebar(BaseSidebar):
                 self.fade_combo,
                 self.manage_fade_btn,
                 self.fade_strength_slider,
+                self.fade_ratio_r_slider,
                 self.fade_ratio_g_slider,
                 self.fade_ratio_b_slider,
                 self.estimate_fade_label,
@@ -721,7 +749,7 @@ class SensorSidebar(BaseSidebar):
                 w.setVisible(e6)
             self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
             reject_reason = fade_delta_conflict_reason(conf, conf.process_mode) or fade_reject_reason(
-                conf.fade_strength, conf.fade_ratio_g, conf.fade_ratio_b, conf.fade_delta
+                conf.fade_strength, conf.fade_ratio_r, conf.fade_ratio_g, conf.fade_ratio_b, conf.fade_delta
             )
             self.fade_reject_hint.setText(reject_reason)
             self.fade_reject_hint.setVisible(e6 and bool(reject_reason))
@@ -739,6 +767,7 @@ class SensorSidebar(BaseSidebar):
             self.crosstalk_strength_slider,
             self.fade_combo,
             self.fade_strength_slider,
+            self.fade_ratio_r_slider,
             self.fade_ratio_g_slider,
             self.fade_ratio_b_slider,
             self.hue_trim_slider,

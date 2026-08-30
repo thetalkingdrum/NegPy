@@ -21,16 +21,30 @@ def side_absorption_matrix(delta: tuple) -> np.ndarray:
     return np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
 
 
-def forward_fade_matrix(ratio_g: float, ratio_b: float, delta: tuple) -> np.ndarray:
-    """F = S @ diag(1, ratio_g, ratio_b) @ inv(S), applied directly to a *scan's* measured
-    density (not a hypothetical concentration starting point): `clean_slide()` is already
-    "a scan of unfaded film", i.e. measured density with S's mixing baked in, the same way
-    a real scan would be. This is the similarity-transform form `_fade_forward_matrix` in
-    normalization.py uses, not the naive `S @ diag(1, ag, ab)` -- that form equals S itself
-    (not the identity) at ratio_g == ratio_b == 1.0, which fails "a control passes through
-    unchanged". This form is exactly the identity at ratio 1, for any S."""
+def forward_fade_matrix(ratio_g: float, ratio_b: float, delta: tuple, ratio_r: float = 1.0) -> np.ndarray:
+    """F = S @ diag(ratio_r, ratio_r*ratio_g, ratio_r*ratio_b) @ inv(S), applied directly to
+    a *scan's* measured density (not a hypothetical concentration starting point):
+    `clean_slide()` is already "a scan of unfaded film", i.e. measured density with S's
+    mixing baked in, the same way a real scan would be. This is the similarity-transform
+    form `_fade_forward_matrix` in normalization.py uses, not the naive `S @ diag(1, ag,
+    ab)` -- that form equals S itself (not the identity) at ratio_g == ratio_b == 1.0,
+    which fails "a control passes through unchanged". This form is exactly the identity at
+    ratio_r == ratio_g == ratio_b == 1, for any S.
+
+    `ratio_g`/`ratio_b` are green/red and blue/red survival *ratios*, so the true, absolute
+    green and blue survivals are `ratio_r*ratio_g` and `ratio_r*ratio_b` -- ratio times
+    reference, not the ratio alone; diag(ratio_r, ratio_g, ratio_b) with three independent
+    entries looks similar but is a different, wrong operator once ratio_r != 1 (caught by
+    test_forward_matrix_matches_the_production_similarity_transform, which is the point of
+    keeping that parity test rather than trusting this by construction).
+
+    `ratio_r` defaults to 1.0 (red's own survival, not a ratio to another channel -- the
+    only one none of these fixtures constrained until fade_ratio_r existed). A generator
+    that always assumes ratio_r == 1 cannot produce the failure that parameter's own bug
+    caused (correct colour balance, wrong absolute density -- the wash-out): that is the
+    reason it is a real, adjustable parameter here rather than folded into the identity."""
     s_matrix = side_absorption_matrix(delta)
-    return s_matrix @ np.diag([1.0, ratio_g, ratio_b]) @ np.linalg.inv(s_matrix)
+    return s_matrix @ np.diag([ratio_r, ratio_r * ratio_g, ratio_r * ratio_b]) @ np.linalg.inv(s_matrix)
 
 
 def clean_slide(size: int = 256, seed: int = 0) -> np.ndarray:
@@ -69,14 +83,15 @@ class Fixture:
     stain: tuple  # additive offset in img_log units, applied after the matrix
     clean: np.ndarray
     faded_log: np.ndarray
+    ratio_r: float = 1.0
 
 
-def make_fixture(name: str, ratio_g: float, ratio_b: float, delta: tuple, stain: tuple, seed: int = 0) -> Fixture:
+def make_fixture(name: str, ratio_g: float, ratio_b: float, delta: tuple, stain: tuple, seed: int = 0, ratio_r: float = 1.0) -> Fixture:
     clean = clean_slide(seed=seed)
     clean_log = np.log10(clean)
-    forward = forward_fade_matrix(ratio_g, ratio_b, delta)
+    forward = forward_fade_matrix(ratio_g, ratio_b, delta, ratio_r=ratio_r)
     faded_log = clean_log @ forward.T + np.asarray(stain)
-    return Fixture(name=name, ratio_g=ratio_g, ratio_b=ratio_b, delta=delta, stain=stain, clean=clean, faded_log=faded_log)
+    return Fixture(name=name, ratio_g=ratio_g, ratio_b=ratio_b, delta=delta, stain=stain, clean=clean, faded_log=faded_log, ratio_r=ratio_r)
 
 
 def fixture_set() -> list[Fixture]:
@@ -107,11 +122,47 @@ def test_control_fixture_matches_clean_reference():
 def test_forward_matrix_matches_the_production_similarity_transform():
     from negpy.features.exposure.normalization import _fade_forward_matrix
 
-    for ratio_g, ratio_b in ((0.85, 0.9), (0.35, 0.5), (0.4, 0.95)):
-        expected = _fade_forward_matrix(1.0, ratio_g, ratio_b, GENERIC_E6_DELTA)
+    for ratio_r, ratio_g, ratio_b in ((1.0, 0.85, 0.9), (1.0, 0.35, 0.5), (0.25, 0.4, 0.95)):
+        expected = _fade_forward_matrix(1.0, ratio_r, ratio_g, ratio_b, GENERIC_E6_DELTA)
         assert expected is not None
-        actual = forward_fade_matrix(ratio_g, ratio_b, GENERIC_E6_DELTA)
+        actual = forward_fade_matrix(ratio_g, ratio_b, GENERIC_E6_DELTA, ratio_r=ratio_r)
         assert np.allclose(actual, expected, atol=1e-10)
+
+
+def test_forward_matrix_is_identity_at_unity_ratios_including_ratio_r():
+    """The invariant that makes strength 0 a true no-op: identity at (1,1,1), for any S --
+    not just at (1, ratio_g, ratio_b) with ratio_r implicitly 1, now that ratio_r is a real,
+    independent parameter rather than folded into the diagonal's fixed leading 1."""
+    for delta in (GENERIC_E6_DELTA, KODACHROME_DELTA, (0.3, 0.1, 0.2, 0.15, 0.25, 0.05)):
+        forward = forward_fade_matrix(1.0, 1.0, delta, ratio_r=1.0)
+        assert np.allclose(forward, np.eye(3), atol=1e-12)
+
+
+def test_ratio_r_below_one_recovers_density_a_pinned_reference_channel_cannot():
+    """The mechanism behind the real wash-out this parameter fixes: pinning ratio_r = 1
+    asserts red never faded. On a fixture where it did (ratio_r < 1, the E-6 case since
+    cyan -- read on red -- fades fastest), a restoration built with ratio_r = 1 recovers
+    correct relative colour balance but at systematically low absolute density: every
+    channel's restored density comes out proportionally smaller than the true clean
+    reference, not just green/blue relative to red. Passing the real ratio_r closes that
+    gap essentially exactly; leaving it at the default does not, by a wide, consistent
+    margin -- this is the density loss, reproduced from first principles rather than only
+    inferred from a JPEG export."""
+    true_ratio_r, ratio_g, ratio_b = 0.25, 0.75, 0.53
+    fx = make_fixture("faded reference channel", ratio_g, ratio_b, GENERIC_E6_DELTA, (0.0, 0.0, 0.0), seed=7, ratio_r=true_ratio_r)
+    clean_log = np.log10(fx.clean)
+
+    forward = forward_fade_matrix(ratio_g, ratio_b, GENERIC_E6_DELTA, ratio_r=true_ratio_r)
+    restore_full = np.linalg.inv(forward)
+    restored_full_log = fx.faded_log @ restore_full.T
+    err_full = np.max(np.abs(restored_full_log - clean_log))
+
+    restore_pinned = np.linalg.inv(forward_fade_matrix(ratio_g, ratio_b, GENERIC_E6_DELTA, ratio_r=1.0))
+    restored_pinned_log = fx.faded_log @ restore_pinned.T
+    err_pinned = np.max(np.abs(restored_pinned_log - clean_log))
+
+    assert err_full < 1e-10  # exact recovery given the true ratio_r
+    assert err_pinned > 1.0  # pinning ratio_r = 1 leaves a real, large density error
 
 
 def test_fixture_set_covers_stained_and_unstained_cases():

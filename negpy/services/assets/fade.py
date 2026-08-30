@@ -27,9 +27,9 @@ class FadeProfiles:
     bands is not just incomplete, it invites silently applying the wrong numbers. `bands`
     is required; a profile missing it is rejected the same way a malformed delta is.
 
-    The two surviving-dye ratios are a property of one faded slide instead, and live on
-    ProcessConfig directly (`fade_ratio_g`/`fade_ratio_b`), not in a profile — see
-    IMPLEMENT_FADE_AUTO.md §1-2.
+    The three surviving-dye ratios are a property of one faded slide instead, and live on
+    ProcessConfig directly (`fade_ratio_r`/`fade_ratio_g`/`fade_ratio_b`), not in a
+    profile — see IMPLEMENT_FADE_AUTO.md §1-2.
 
     Files live in APP_CONFIG.fade_dir; bundled read-only profiles in the packaged
     `fade/` resource dir. "None" means no profile — no built-in fallback numbers, unlike

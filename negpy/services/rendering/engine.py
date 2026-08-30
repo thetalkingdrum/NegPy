@@ -152,6 +152,7 @@ class DarkroomEngine:
             settings.process.crosstalk_matrix,
             settings.process.crosstalk_process,
             settings.process.fade_strength,
+            settings.process.fade_ratio_r,
             settings.process.fade_ratio_g,
             settings.process.fade_ratio_b,
             settings.process.fade_delta,

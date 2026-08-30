@@ -169,9 +169,10 @@ class FadeEditorDialog(QDialog):
             "• The diagonal is fixed: this profile is <b>δ only</b>.<br>"
             "• Each off-diagonal slider is a side-absorption ratio — column is the source "
             "layer, row the one it leaks into.<br>"
-            "• The two per-frame survival ratios (how much this slide itself has faded) are "
-            "<b>not</b> edited here — they're the Green/Blue Survival sliders in the sidebar, "
-            "or the Estimate action next to them."
+            "• The three per-frame survival ratios (how much this slide itself has faded) are "
+            "<b>not</b> edited here — they're the Red/Green/Blue Survival sliders in the "
+            "sidebar (Estimate only fills in Green and Blue; Red has no neutral reference to "
+            "read it from)."
         )
         info.setWordWrap(True)
         info.setStyleSheet(
