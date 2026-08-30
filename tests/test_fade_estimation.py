@@ -1,43 +1,39 @@
-"""Per-image survival-ratio estimation for Fade Restoration (features/process/fade.py).
+"""Survival-ratio estimation for Fade Restoration (features/process/fade.py), reading
+Cast Removal's two-point neutral-detection algorithm rather than blind percentile spans.
 Mirrors tests/test_sensor_calibration.py in spirit: a measure step, a build step, and
 the fail-closed reasons in between.
+
+Verified premise: at the default survival ratios (1.0, 1.0), resolve_fade_matrix's
+similarity-transform fix makes the render's own unmix exactly the identity regardless of
+delta -- so at the moment Estimate is actually used, nothing has removed the dye set's own
+measurement mixing yet. The estimator must do its own delta-unmix rather than assume the
+render already did (test_delta_unmix_is_required_even_at_default_ratios pins this).
 """
 
 import numpy as np
 
-from negpy.features.exposure.normalization import resolve_fade_matrix, unmix_log_image
+from negpy.features.exposure.normalization import fade_measurement_unmix
 from negpy.features.process.fade import (
     RATIO_BOUNDS,
-    SPAN_FLOOR,
+    SPREAD_FLOOR,
     estimate_fade_ratios,
-    fade_ratios_from_spans,
+    fade_ratios_from_neutral_axis,
+    measure_neutral_axis_ratios,
 )
 from negpy.features.process.models import ProcessMode
 
+_GENERIC_E6_DELTA = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
 
-def _synthetic_capture(span_r: float, span_g: float, span_b: float, seed: int = 0) -> np.ndarray:
-    """A synthetic (64, 64, 3) linear capture whose per-channel P1-P99 log-density span
-    is exactly (span_r, span_g, span_b): one shared per-pixel factor `t`, scaled per
-    channel, so any two channels' spans are in the exact ratio of their span argument
-    regardless of block-median or percentile sampling (both commute with a positive
-    per-channel scale)."""
+
+def _synthetic_neutral_slide(ratio_g: float, ratio_b: float, delta: tuple, span: float = 3.0, size: int = 200, seed: int = 0) -> np.ndarray:
+    """A synthetic (size, size, 3) linear capture: every pixel is neutral by construction
+    (a single shared per-pixel factor t, scaled per channel by the true survival ratios --
+    concentration-space densities), then mixed through the dye set's own side-absorption
+    matrix S -- what a real scan of a faded, perfectly neutral gray card would read as
+    measured density. `span` covers E-6's full transfer window so both the midtone and
+    shadow luma bands have real pixels to find."""
     rng = np.random.default_rng(seed)
-    t = rng.uniform(0.0, 1.0, (64, 64)).astype(np.float64)
-    log_r, log_g, log_b = -t * span_r, -t * span_g, -t * span_b
-    image = np.stack([10.0**log_r, 10.0**log_g, 10.0**log_b], axis=-1)
-    return image.astype(np.float32)
-
-
-def _synthetic_measured_capture(ratio_g: float, ratio_b: float, delta: tuple, span: float = 1.0, seed: int = 0) -> np.ndarray:
-    """A synthetic (64, 64, 3) linear capture simulating a real scan: concentration-space
-    log-densities (equal unfaded spans, scaled by the given survival ratios) are mixed
-    through the dye set's own side-absorption matrix S before being written out -- the
-    measured-density domain measure_channel_spans actually reads. Unlike _synthetic_capture,
-    a channel's *measured* span here is not simply proportional to its survival ratio,
-    because S mixes the channels -- this is what the delta-aware unmix in
-    measure_channel_spans must undo."""
-    rng = np.random.default_rng(seed)
-    t = rng.uniform(0.0, 1.0, (64, 64)).astype(np.float64)
+    t = rng.uniform(0.03, 0.97, (size, size)).astype(np.float64)
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = delta
     s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
     concentration_log = np.stack([-t * span, -t * span * ratio_g, -t * span * ratio_b], axis=-1)
@@ -45,95 +41,98 @@ def _synthetic_measured_capture(ratio_g: float, ratio_b: float, delta: tuple, sp
     return np.power(10.0, measured_log).astype(np.float32)
 
 
-def test_unmix_by_delta_recovers_true_ratios_from_measured_density():
-    """A channel's *measured* density span is not proportional to its survival ratio --
-    the dye set's own side absorption mixes the channels and biases every ratio toward
-    1.0 (under-reporting fade). Unmixing by the selected profile's delta first, as
-    measure_channel_spans now does, recovers the true concentration-space ratios."""
-    generic_e6_delta = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
-    ratio_g_true, ratio_b_true = 0.6, 0.6
-    image = _synthetic_measured_capture(ratio_g_true, ratio_b_true, generic_e6_delta)
+def test_recovers_known_ratios_through_the_real_detector():
+    """End-to-end: a synthetic slide with known concentration-space survival ratios and
+    real generic-E6 delta, run through the actual production detector
+    (measure_neutral_axis_from_log) via measure_neutral_axis_ratios, recovers the true
+    ratios via fade_ratios_from_neutral_axis. This is the regression test for the row-sum
+    correction: without it, the recovered ratios are biased toward 1.0 by roughly the
+    row-sum ratio (~20% on green, for this delta)."""
+    ratio_g_true, ratio_b_true = 0.6, 0.85
+    image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
 
-    ratio_g_unmixed, ratio_b_unmixed, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, generic_e6_delta)
+    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, _GENERIC_E6_DELTA)
     assert reason == ""
-    assert abs(ratio_g_unmixed - ratio_g_true) < 1e-2
-    assert abs(ratio_b_unmixed - ratio_b_true) < 1e-2
-
-    # Without delta, the same measured image reads as materially less faded -- the bias
-    # this fix removes, not a hypothetical.
-    ratio_g_biased, ratio_b_biased, reason_biased = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
-    assert reason_biased == ""
-    assert ratio_g_biased - ratio_g_true > 0.1
-    assert ratio_b_biased - ratio_b_true > 0.1
+    assert abs(ratio_g - ratio_g_true) < 1e-2
+    assert abs(ratio_b - ratio_b_true) < 1e-2
 
 
-def test_round_trip_recovers_known_ratios_on_equal_span_source():
-    """An "unfaded" source has equal spans across channels (Daniell's ideal-image
-    assumption); applying a known fade (scaling green/blue spans by known ratios) and
-    then estimating must recover those ratios."""
-    ratio_g_true, ratio_b_true = 0.8, 1.3
-    image = _synthetic_capture(1.2, 1.2 * ratio_g_true, 1.2 * ratio_b_true)
-    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0)
+def test_delta_unmix_is_required_even_at_default_ratios():
+    """The bug this whole design avoids: reading the neutral axis on the *measured*-density
+    grid (no delta unmix) gives a materially biased answer, even though a render composed
+    at the default ratios (1.0, 1.0) would show this exact grid -- resolve_fade_matrix's
+    F = I there regardless of delta. Confirms delta=None (skip the unmix) reproduces the
+    bias measure_neutral_axis_ratios's own delta-aware unmix fixes."""
+    ratio_g_true, ratio_b_true = 0.6, 0.85
+    image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
+
+    ratio_g_biased, ratio_b_biased, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
     assert reason == ""
-    assert abs(ratio_g - ratio_g_true) < 1e-3
-    assert abs(ratio_b - ratio_b_true) < 1e-3
+    assert ratio_g_biased - ratio_g_true > 0.1  # biased toward 1.0, not a rounding difference
+    assert ratio_b_biased - ratio_b_true > 0.05
 
 
-def test_documented_wrong_behavior_on_unequal_unfaded_spans():
-    """A legitimately unequal-span scene with no fade at all still reads as non-unity.
-    This is expected, documented wrong behavior (IMPLEMENT_FADE_AUTO.md §3) -- a
-    monochromatic slide defeats any estimator built on this assumption -- not a bug for
-    a future pass to "fix"."""
-    image = _synthetic_capture(1.0, 1.6, 1.0)  # a genuinely more colorful green channel
-    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0)
+def test_row_sum_correction_is_not_negligible():
+    """fade_measurement_unmix's row-normalization (needed to keep the neutral-axis
+    detector's fixed luma bands working) introduces a per-channel bias that
+    fade_ratios_from_neutral_axis must divide back out. Confirm the correction factor
+    itself is a real, double-digit-percent effect for the shipped generic E6 delta, not
+    something safe to drop as a simplification."""
+    found = fade_measurement_unmix(_GENERIC_E6_DELTA)
+    assert found is not None
+    _unmix, row_sums = found
+    green_factor = row_sums[1] / row_sums[0]
+    assert abs(green_factor - 1.0) > 0.1
+
+
+def test_documented_wrong_behavior_on_unequal_unfaded_spreads():
+    """A legitimately unequal-spread scene with no fade at all still reads as non-unity.
+    Documented wrong behavior -- a monochromatic slide defeats any estimator built on this
+    assumption -- not a bug for a future pass to "fix"."""
+    image = _synthetic_neutral_slide(1.6, 1.0, (0.0,) * 6)  # a genuinely more colorful green channel, zero delta
+    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
     assert reason == ""
     assert ratio_g != 1.0
 
 
-def test_fails_closed_below_span_floor():
-    ratio_g, ratio_b, reason = fade_ratios_from_spans((SPAN_FLOOR / 2, SPAN_FLOOR / 2, SPAN_FLOOR / 2))
+def test_fails_closed_when_spreads_agree():
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 1.01, 0.99), (0.0, 0.0, 0.0), None, 1.0), None)
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
 
-def test_fails_closed_when_spans_agree():
-    ratio_g, ratio_b, reason = fade_ratios_from_spans((1.0, 1.01, 0.99))
+def test_fails_closed_below_spread_floor():
+    tiny = SPREAD_FLOOR / 2
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((tiny, tiny, tiny), (0.0, 0.0, 0.0), None, 1.0), None)
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
 
 def test_clamps_and_reports_an_out_of_bounds_ratio():
     lo, hi = RATIO_BOUNDS
-    ratio_g, ratio_b, reason = fade_ratios_from_spans((1.0, 10.0, 1.0))
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 10.0, 1.0), (0.0, 0.0, 0.0), None, 1.0), None)
     assert ratio_g == hi
     assert ratio_b == 1.0
     assert reason
 
 
-def test_fails_closed_for_non_transparency():
-    image = _synthetic_capture(1.0, 0.7, 1.4)
-    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.C41, None, 0.0)
+def test_no_neutral_axis_found_fails_closed():
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(None, None)
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
 
-def test_estimating_on_already_corrected_image_gives_a_different_answer():
-    """Regression test for the feedback loop the estimator must avoid (IMPLEMENT_FADE_AUTO.md
-    §2): estimating on an image the fade matrix has already touched gives a different --
-    and wrong, if it were reused -- answer than estimating on the raw capture. This is why
-    the estimate must always run on pre-composition data, never inside the render."""
-    ratio_g_true, ratio_b_true = 0.7, 1.2
-    image = _synthetic_capture(1.2, 1.2 * ratio_g_true, 1.2 * ratio_b_true)
+def test_fails_closed_for_non_transparency():
+    image = _synthetic_neutral_slide(0.7, 1.4, _GENERIC_E6_DELTA)
+    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.C41, None, 0.0, _GENERIC_E6_DELTA)
+    assert (ratio_g, ratio_b) == (1.0, 1.0)
+    assert reason
 
-    ratio_g_before, ratio_b_before, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0)
-    assert reason == ""
 
-    matrix = resolve_fade_matrix(1.0, ratio_g_before, ratio_b_before, None)
-    img_log = np.log10(np.clip(image, 1e-6, 1.0))
-    corrected_log = unmix_log_image(img_log, matrix)
-    corrected_image = np.clip(10.0**corrected_log, 1e-6, 1.0).astype(np.float32)
-
-    ratio_g_after, ratio_b_after, reason_after = estimate_fade_ratios(corrected_image, ProcessMode.E6, None, 0.0)
-    assert abs(ratio_g_after - 1.0) < 1e-2  # the already-corrected image now reads as unfaded
-    assert abs(ratio_b_after - 1.0) < 1e-2
-    assert abs(ratio_g_after - ratio_g_before) > 0.1  # a materially different answer
+def test_degenerate_delta_reported_by_measurement_step():
+    """A delta so extreme S itself is not invertible (or its row sums are ~0) is reported
+    by measure_neutral_axis_ratios before any detection runs, not silently ignored."""
+    degenerate_delta = (0.9995,) * 6
+    refs, reason = measure_neutral_axis_ratios(np.full((32, 32, 3), 0.5, dtype=np.float32), None, 0.0, degenerate_delta)
+    assert refs is None
+    assert reason
