@@ -2,6 +2,7 @@ import pytest
 
 from conftest import FakeController as _Controller, FakeRepo as _Repo
 from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
+from negpy.desktop.view.action_targets import ACTION_ATTRS, action_widget_map
 from negpy.desktop.view.sidebar.favourites import FavouritesSidebar, load_favourites
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUP_BY_ID
 from negpy.desktop.view.slider_targets import SLIDER_ATTRS, slider_widget_map
@@ -63,6 +64,13 @@ def test_every_favouritable_combo_resolves(controls):
     for combo_id in COMBO_ATTRS:
         src = widgets[combo_id]()
         assert src.count() > 0
+
+
+def test_every_favouritable_action_resolves(controls):
+    widgets = action_widget_map(controls)
+    for action_id in ACTION_ATTRS:
+        src = widgets[action_id]()
+        assert not src.isCheckable()
 
 
 def test_clone_refuses_unhandled_class(qapp):
@@ -205,6 +213,28 @@ def test_combo_mirror_disabled_heading_rows_are_not_selectable(controls, qapp):
     src_disabled = {src.itemText(i) for i in range(src.count()) if not src.model().item(i).isEnabled()}
     clone_disabled = {clone.itemText(i) for i in range(clone.count()) if not clone.model().item(i).isEnabled()}
     assert clone_disabled == src_disabled
+
+
+def test_choices_includes_an_action_grouped_with_its_category(controls, qapp):
+    ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
+    assert "estimate_fade" in ids_in_order
+    process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
+    process_tag = ("e6_normalize", "fade_profile", "estimate_fade")
+    process_run = [i for i in ids_in_order if i in process_ids or i in process_tag]
+    # estimate_fade's category is "Process": it must land inside that contiguous run,
+    # after the toggle and combo already grouped there, not open a duplicate header.
+    assert process_run[-1] == "estimate_fade"
+
+
+def test_clicking_an_action_mirror_clicks_the_original(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["estimate_fade"]))
+    _container, clone, src, kind = panel._mirrors[0]
+    assert kind == "action"
+
+    clicked = []
+    src.clicked.connect(lambda: clicked.append(True))
+    clone.click()
+    assert clicked == [True]
 
 
 def test_load_drops_unknown_ids(qapp):
