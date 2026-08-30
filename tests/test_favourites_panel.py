@@ -5,6 +5,7 @@ from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
 from negpy.desktop.view.sidebar.favourites import FavouritesSidebar, load_favourites
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUP_BY_ID
 from negpy.desktop.view.slider_targets import SLIDER_ATTRS, slider_widget_map
+from negpy.desktop.view.toggle_targets import TOGGLE_ATTRS, toggle_widget_map
 from negpy.desktop.view.widgets.favourites_dialog import FavouritesDialog
 from negpy.desktop.view.widgets.sliders import CompactSlider, HueSlider, KelvinSlider, PowerWarpSlider, clone_slider
 
@@ -47,6 +48,13 @@ def test_clone_round_trips_hue_and_kelvin(qapp):
     kelvin = clone_slider(KelvinSlider("Temperature"))
     assert isinstance(kelvin, KelvinSlider)
     assert (kelvin._min, kelvin._max) == (3000.0, 12000.0)
+
+
+def test_every_favouritable_toggle_resolves(controls):
+    widgets = toggle_widget_map(controls)
+    for toggle_id in TOGGLE_ATTRS:
+        src = widgets[toggle_id]()
+        assert src.isCheckable()
 
 
 def test_clone_refuses_unhandled_class(qapp):
@@ -96,13 +104,14 @@ def test_panel_is_empty_by_default(controls, qapp):
 
 def test_panel_mirrors_stored_favourites_in_order(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation", "density"]))
-    labels = [clone.label.text() for clone, _ in panel._mirrors]
+    labels = [clone.label.text() for clone, _, _ in panel._mirrors]
     assert labels == [controls.lab_sidebar.saturation_slider.label.text(), controls.tone_sidebar.density_slider.label.text()]
 
 
 def test_moving_a_mirror_moves_the_original(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation"]))
-    clone, src = panel._mirrors[0]
+    clone, src, kind = panel._mirrors[0]
+    assert kind == "slider"
     committed = []
     src.valueCommitted.connect(committed.append)
 
@@ -113,7 +122,7 @@ def test_moving_a_mirror_moves_the_original(controls, qapp):
 
 def test_sync_hides_a_mirror_only_when_the_original_is_explicitly_hidden(controls, qapp):
     panel = _favourites(controls, _Repo(favourite_sliders=["saturation"]))
-    clone, src = panel._mirrors[0]
+    clone, src, _kind = panel._mirrors[0]
 
     src.setVisible(False)
     panel.sync_ui()
@@ -122,6 +131,36 @@ def test_sync_hides_a_mirror_only_when_the_original_is_explicitly_hidden(control
     src.setVisible(True)
     panel.sync_ui()
     assert not clone.isHidden()
+
+
+def test_choices_includes_a_toggle_grouped_with_its_category(controls, qapp):
+    ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
+    assert "e6_normalize" in ids_in_order
+    process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
+    process_run = [i for i in ids_in_order if i in process_ids or i == "e6_normalize"]
+    # e6_normalize's category is "Process": it must land inside that contiguous run, not
+    # split off into a second, duplicate "Process" block at the end of the list.
+    assert process_run[-1] == "e6_normalize"
+    assert ids_in_order.index("e6_normalize") == ids_in_order.index(process_run[0]) + len(process_run) - 1
+
+
+def test_clicking_a_toggle_mirror_clicks_the_original(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
+    clone, src, kind = panel._mirrors[0]
+    assert kind == "toggle"
+    before = src.isChecked()
+
+    clone.click()
+    assert src.isChecked() != before
+
+
+def test_sync_reflects_a_toggle_mirror_checked_state(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
+    clone, src, _kind = panel._mirrors[0]
+
+    src.setChecked(not src.isChecked())
+    panel.sync_ui()
+    assert clone.isChecked() == src.isChecked()
 
 
 def test_load_drops_unknown_ids(qapp):
