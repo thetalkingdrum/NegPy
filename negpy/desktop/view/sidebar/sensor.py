@@ -161,9 +161,10 @@ class SensorSidebar(BaseSidebar):
             "Survival sliders below (how much this particular slide has faded), composed with the "
             "crosstalk unmix. Labelled restoration rather than correction, because it undoes fading "
             "rather than the ordinary channel bleed a fresh scan already has.<br><br>"
-            "<b>Generic E6 ships with zero side absorption</b> — visibly present, inert until a "
-            "measured profile supplies real numbers for a stock. Custom .toml profiles live in the "
-            "NegPy/fade folder."
+            "<b>The bundled profiles are computed from published spectral dye-density curves at "
+            "450/550/650 nm</b> (Gschwind's narrowband bands) — they describe a Narrowband Scanner or "
+            "Trichrome capture, not a broadband scan, where the real side absorption is much larger. "
+            "Custom .toml profiles live in the NegPy/fade folder."
             "</td></tr></table>"
         )
         self.manage_fade_btn = self._icon_action(
