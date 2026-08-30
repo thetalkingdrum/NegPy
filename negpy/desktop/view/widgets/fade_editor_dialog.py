@@ -6,6 +6,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,10 @@ _TYPE_CHOICES: tuple[tuple[str, str], ...] = (
 #: Off-diagonal grid position -> delta index, matching ProcessConfig.fade_delta's
 #: (gr, br, rg, bg, rb, gb) order: row-major, diagonal skipped.
 _DELTA_POSITIONS: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1))
+
+#: Gschwind's canonical narrowband bands (R, G, B, nm) -- the only convention any bundled
+#: profile uses today, so the sane default for a profile with no bands of its own yet.
+_DEFAULT_BANDS: tuple[float, float, float] = (650.0, 550.0, 450.0)
 
 
 class FadeEditorDialog(QDialog):
@@ -138,6 +143,23 @@ class FadeEditorDialog(QDialog):
         )
         type_row.addWidget(self.type_combo, 1)
         rl.addLayout(type_row)
+
+        bands_row = QHBoxLayout()
+        bands_row.addWidget(QLabel("Bands (nm)"))
+        self.band_r_spin = self._band_spin()
+        self.band_g_spin = self._band_spin()
+        self.band_b_spin = self._band_spin()
+        for label, spin in (("R", self.band_r_spin), ("G", self.band_g_spin), ("B", self.band_b_spin)):
+            bands_row.addWidget(QLabel(label))
+            bands_row.addWidget(spin)
+        bands_row.addStretch()
+        self.band_r_spin.setToolTip(
+            "The scanner's R/G/B measurement wavelengths this profile's delta was read at. Delta is "
+            "meaningless without them -- moving the red band from a narrowband LED to a colorimetric "
+            "sensor's peak changes it by roughly an order of magnitude. Gschwind's canonical "
+            "650/550/450 nm is the only convention any bundled profile uses today."
+        )
+        rl.addLayout(bands_row)
 
         info = QLabel(
             "<b>Dye-fade restoration — side absorptions</b><br>"
@@ -251,6 +273,15 @@ class FadeEditorDialog(QDialog):
             self._cells.append(row_cells)
         return container
 
+    def _band_spin(self) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(380.0, 750.0)
+        spin.setDecimals(0)
+        spin.setSuffix(" nm")
+        spin.setFixedWidth(80)
+        spin.valueChanged.connect(lambda _v: self._emit_preview())
+        return spin
+
     def _tool_btn(self, icon: str, tooltip: str, slot) -> QPushButton:
         btn = QPushButton()
         btn.setIcon(qta.icon(icon, color=THEME.text_primary, color_disabled=THEME.text_muted))
@@ -276,6 +307,22 @@ class FadeEditorDialog(QDialog):
     def _delta_for(self, name: str) -> List[float]:
         found = FadeProfiles.get_delta(name)
         return list(found) if found is not None else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def _bands_for(self, name: str) -> List[float]:
+        found = FadeProfiles.get_bands(name)
+        return list(found) if found is not None else list(_DEFAULT_BANDS)
+
+    def working_bands(self) -> List[float]:
+        return [self.band_r_spin.value(), self.band_g_spin.value(), self.band_b_spin.value()]
+
+    def _set_bands(self, bands: List[float]) -> None:
+        self.band_r_spin.setValue(bands[0])
+        self.band_g_spin.setValue(bands[1])
+        self.band_b_spin.setValue(bands[2])
+
+    def _set_bands_enabled(self, enabled: bool) -> None:
+        for spin in (self.band_r_spin, self.band_g_spin, self.band_b_spin):
+            spin.setEnabled(enabled)
 
     def _all_names(self) -> list:
         return FadeProfiles.list_profiles()
@@ -336,6 +383,7 @@ class FadeEditorDialog(QDialog):
 
         self._updating = True
         self._set_grid(self._delta_for(name))
+        self._set_bands(self._bands_for(name))
         self.name_edit.setText(name)
         self._set_type(FadeProfiles.get_type(name))
         self._updating = False
@@ -343,6 +391,7 @@ class FadeEditorDialog(QDialog):
         self.name_edit.setEnabled(editable)
         self.type_combo.setEnabled(editable)
         self._set_grid_enabled(editable)
+        self._set_bands_enabled(editable)
         self.save_btn.setEnabled(editable)
         self.delete_btn.setEnabled(editable)
         self.readonly_hint.setVisible(not editable)
@@ -362,7 +411,7 @@ class FadeEditorDialog(QDialog):
         while name in existing:
             name = f"New Profile {i}"
             i += 1
-        FadeProfiles.save(name, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        FadeProfiles.save(name, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], list(_DEFAULT_BANDS))
         self.profiles_changed.emit()
         self._reload_list(select=name)
 
@@ -370,7 +419,7 @@ class FadeEditorDialog(QDialog):
         if self._selected_name is None:
             return
         new_name = unique_copy_name(self._selected_name, self._all_names())
-        FadeProfiles.save(new_name, self.working_delta())
+        FadeProfiles.save(new_name, self.working_delta(), self.working_bands())
         self.profiles_changed.emit()
         self._reload_list(select=new_name)
 
@@ -381,7 +430,7 @@ class FadeEditorDialog(QDialog):
         old = self._selected_name
         if old and old != name and not FadeProfiles.is_bundled(old):
             FadeProfiles.delete(old)
-        FadeProfiles.save(name, self.working_delta(), self.selected_type())
+        FadeProfiles.save(name, self.working_delta(), self.working_bands(), self.selected_type())
         self.profiles_changed.emit()
         self._reload_list(select=name)
 

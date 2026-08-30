@@ -33,20 +33,25 @@ def _roc_coefficients(ar, ag, ab, delta):
     )
 
 
-def _forward_fade_matrix(ratio_g, ratio_b, delta):
-    """Independent transcription of the forward operator from IMPLEMENT_FADE_RESTORATION.md
-    §3 / IMPLEMENT_FADE_AUTO.md §1, with the red layer's survival pinned at 1.0 -- built
-    here rather than reused from production so a sign error in resolve_fade_matrix cannot
-    cancel itself against this test."""
-    ar, ag, ab = 1.0, ratio_g, ratio_b
+def _forward_fade_matrix(ratio_g, ratio_b, delta, strength=1.0):
+    """Independent transcription of the forward operator from IMPLEMENT_FADE_DELTA.md §1
+    -- a similarity transform F = S @ diag(1, ag, ab) @ inv(S) on measured densities, S
+    the dye set's side-absorption matrix. Built here rather than reused from production
+    so a sign or form error in resolve_fade_matrix cannot cancel itself against this test.
+    `delta` is never strength-scaled (a measurement property of the dye set and scanner,
+    independent of fade extent); only the survival ratios are."""
+    s = float(strength)
+    ag = 1.0 + s * (float(ratio_g) - 1.0)
+    ab = 1.0 + s * (float(ratio_b) - 1.0)
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = delta
-    return np.array(
+    s_matrix = np.array(
         [
-            [ar, ag * d_gr, ab * d_br],
-            [ar * d_rg, ag, ab * d_bg],
-            [ar * d_rb, ag * d_gb, ab],
+            [1.0, d_gr, d_br],
+            [d_rg, 1.0, d_bg],
+            [d_rb, d_gb, 1.0],
         ]
     )
+    return s_matrix @ np.diag([1.0, ag, ab]) @ np.linalg.inv(s_matrix)
 
 
 def test_ratio_invariance():
@@ -73,6 +78,36 @@ def test_no_delta_treated_as_zero_side_absorption():
     assert with_none is not None
     np.testing.assert_array_equal(with_none, with_zero)
     assert not np.allclose(with_none, np.eye(3))  # a real diagonal correction, not a no-op
+
+
+def test_identity_at_no_fade_regardless_of_delta():
+    """The regression test for IMPLEMENT_FADE_DELTA.md §1: ratio_g == ratio_b == 1.0 (an
+    unfaded slide) with a real, non-zero delta profile must give the exact identity, not
+    the delta-driven crosstalk-style correction the pre-similarity-transform form produced
+    unconditionally whenever a real profile was selected -- the bug the all-zero
+    generic_e6.toml was hiding until real profiles shipped."""
+    m = resolve_fade_matrix(1.0, 1.0, 1.0, _DELTA)
+    assert m is not None
+    np.testing.assert_allclose(m, np.eye(3), atol=1e-12)
+
+    # Holds for any delta, not just this one -- including the real generic E6 numbers.
+    generic_e6_delta = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
+    m2 = resolve_fade_matrix(1.0, 1.0, 1.0, generic_e6_delta)
+    assert m2 is not None
+    np.testing.assert_allclose(m2, np.eye(3), atol=1e-12)
+
+
+def test_delta_not_scaled_by_strength():
+    """Delta is a measurement property of the dye set and scanner bands; it does not vary
+    with how faded the slide is, unlike the earlier form where scaling delta by strength
+    masked the identity-at-no-fade bug. Two different strengths at the same ratios must
+    use the same (unscaled) S internally -- checked by matching against a hand-built F at
+    each strength, using raw delta both times."""
+    for strength in (0.3, 0.7, 1.0):
+        m = resolve_fade_matrix(strength, _RATIO_G, _RATIO_B, _DELTA)
+        expected = _forward_fade_matrix(_RATIO_G, _RATIO_B, _DELTA, strength=strength)
+        assert m is not None
+        np.testing.assert_allclose(m, np.linalg.inv(expected), atol=1e-10)
 
 
 def test_fade_off_leaves_crosstalk_matrix_unchanged():
@@ -116,6 +151,42 @@ def test_identity_fade_composes_to_crosstalk_matrix():
     np.testing.assert_allclose(composed, unmix_alone, atol=1e-12)
 
 
+def test_identity_fade_composes_cleanly_even_with_real_delta():
+    """The same as above but with a real (non-zero) delta profile active alongside the
+    crosstalk matrix: at ratio_g == ratio_b == 1.0 the fade factor is the identity
+    regardless of delta, so composing cannot double-apply delta in this case even without
+    fade_delta_conflict_reason's guard -- checked directly, not just via the guard."""
+    process = ProcessConfig(
+        crosstalk_strength=0.6,
+        crosstalk_matrix=_CROSSTALK,
+        crosstalk_process=ProcessMode.E6,
+        fade_strength=1.0,
+        fade_ratio_g=1.0,
+        fade_ratio_b=1.0,
+        fade_delta=_DELTA,
+        fade_process=ProcessMode.E6,
+    )
+    unmix_alone = resolve_crosstalk_matrix(0.6, _CROSSTALK)
+    composed = effective_crosstalk_matrix(process, ProcessMode.E6)
+    assert composed is not None
+    assert unmix_alone is not None
+    np.testing.assert_allclose(composed, unmix_alone, atol=1e-12)
+
+
+def test_equal_green_blue_ratios_are_not_diagonal():
+    """A claimed test from IMPLEMENT_FADE_DELTA.md that does not hold and is deliberately
+    not implemented as specified: "ratio_g == ratio_b == 0.7 gives a matrix whose
+    off-diagonal terms are zero" -- checked numerically and false. Red's own ratio is
+    always pinned at 1.0, so ratio_g == ratio_b == k != 1 is still differential fade
+    (red survived differently from green and blue, which happen to match each other),
+    and produces real cross-channel terms. Only ratio_g == ratio_b == 1.0 -- matching
+    red -- gives the identity (see test_identity_at_no_fade_regardless_of_delta)."""
+    m = resolve_fade_matrix(1.0, 0.7, 0.7, _DELTA)
+    assert m is not None
+    off_diagonal = m - np.diag(np.diag(m))
+    assert np.max(np.abs(off_diagonal)) > 1e-3
+
+
 def test_fade_matrix_round_trips_density():
     """Forward-fade then restore recovers the original density to numerical precision."""
     f = _forward_fade_matrix(_RATIO_G, _RATIO_B, _DELTA)
@@ -155,24 +226,38 @@ def test_process_mode_gate_ignores_fade_for_mismatched_process():
 
 def test_ill_conditioned_fade_falls_back_to_uncomposed_matrix():
     """A singular/ill-conditioned (ratios, delta) must refuse rather than invert into
-    garbage: the composed result stays exactly the uncomposed crosstalk matrix."""
-    # Uniform delta d gives F = (1-d)*I + d*J (J = all-ones): eigenvalues (1-d) [x2] and
-    # (1+2d) [x1], so cond = (1+2d)/(1-d) -> 148 at d=0.98, comfortably past the guard.
-    bad_delta = (0.98, 0.98, 0.98, 0.98, 0.98, 0.98)
-    assert resolve_fade_matrix(1.0, 1.0, 1.0, bad_delta) is None
+    garbage: the composed result stays exactly the uncomposed crosstalk matrix.
 
+    With the similarity-transform form, F is exactly the identity at ratio_g == ratio_b
+    == 1.0 regardless of delta (see test_identity_at_no_fade_regardless_of_delta), so a
+    degenerate delta alone no longer ill-conditions F -- it takes a real ratio deviation
+    too. Checked numerically: this bad_delta with any ratio != 1 pushes cond(F) into the
+    thousands, comfortably past the guard.
+    """
+    bad_delta = (0.98, 0.98, 0.98, 0.98, 0.98, 0.98)
+    assert resolve_fade_matrix(1.0, _RATIO_G, _RATIO_B, bad_delta) is None
+    assert resolve_fade_matrix(1.0, 1.0, 1.0, bad_delta) is not None  # identity case: not a rejection
+
+    # No crosstalk profile active, so fade_delta_conflict_reason cannot intervene here --
+    # isolates the ill-conditioning guard from the double-delta guard.
     process = ProcessConfig(
-        crosstalk_strength=0.6,
-        crosstalk_matrix=_CROSSTALK,
-        crosstalk_process=ProcessMode.E6,
         fade_strength=1.0,
-        fade_ratio_g=1.0,
-        fade_ratio_b=1.0,
+        fade_ratio_g=_RATIO_G,
+        fade_ratio_b=_RATIO_B,
         fade_delta=bad_delta,
         fade_process=ProcessMode.E6,
     )
-    unmix_alone = resolve_crosstalk_matrix(0.6, _CROSSTALK)
-    np.testing.assert_array_equal(effective_crosstalk_matrix(process, ProcessMode.E6), unmix_alone)
+    assert effective_crosstalk_matrix(process, ProcessMode.E6) is None
+
+
+def test_conditioning_guard_does_not_fire_in_normal_slider_range():
+    """The guard exists for a degenerate hand-entered profile, not normal use: with the
+    shipped generic E6 delta, no combination of the two survival sliders across their
+    full 0.2-5.0 range should be refused."""
+    generic_e6_delta = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
+    for ratio_g in (0.2, 0.5, 1.0, 2.0, 5.0):
+        for ratio_b in (0.2, 0.5, 1.0, 2.0, 5.0):
+            assert resolve_fade_matrix(1.0, ratio_g, ratio_b, generic_e6_delta) is not None
 
 
 def test_effective_crosstalk_matrix_is_a_pure_function_of_config():
@@ -257,11 +342,23 @@ def test_ill_conditioned_reject_reason_is_reported():
     reports why, using the same guard resolve_fade_matrix applies."""
     assert fade_reject_reason(0.0, 1.0, 1.0, _DELTA) == ""  # off is not a rejection
     assert fade_reject_reason(1.0, 1.0, 1.0, (0.0,) * 6) == ""  # identity: nothing to reject
+    assert fade_reject_reason(1.0, 1.0, 1.0, (0.98,) * 6) == ""  # identity holds even for a wild delta
 
     bad_delta = (0.98, 0.98, 0.98, 0.98, 0.98, 0.98)
-    reason = fade_reject_reason(1.0, 1.0, 1.0, bad_delta)
+    reason = fade_reject_reason(1.0, _RATIO_G, _RATIO_B, bad_delta)
     assert reason
-    assert resolve_fade_matrix(1.0, 1.0, 1.0, bad_delta) is None
+    assert resolve_fade_matrix(1.0, _RATIO_G, _RATIO_B, bad_delta) is None
+
+
+def test_degenerate_delta_reject_reason():
+    """A delta so extreme that S itself is not invertible is refused before F is even
+    built, and reported -- distinct from F's own conditioning guard."""
+    from negpy.features.exposure.normalization import _fade_forward_matrix
+
+    degenerate_delta = (0.9995,) * 6  # det(S) below the 1e-6 guard for this uniform form
+    assert _fade_forward_matrix(1.0, 1.0, 1.0, degenerate_delta) is None
+    assert resolve_fade_matrix(1.0, 1.0, 1.0, degenerate_delta) is None
+    assert fade_reject_reason(1.0, 1.0, 1.0, degenerate_delta) != ""
 
 
 def test_fade_profile_excluded_from_base_cache_key():
