@@ -237,15 +237,18 @@ def fade_delta_conflict_reason(process: "ProcessConfig", process_mode: Optional[
     """Why `fade_delta` is being dropped from the composition in favor of the crosstalk
     unmix already active for this dye set, or "" when there is no conflict.
 
-    Every bundled crosstalk matrix is "read off published spectral dye-density spec
-    sheets ... describing the dyes alone" (crosstalk/README.md) -- the same physical
-    quantity `fade_delta` represents. The fade factor's similarity-transform form
-    (`_fade_forward_matrix`) makes this harmless exactly at ratio_g == ratio_b == 1 (an
-    unfaded fade factor is the identity regardless of delta, so it contributes nothing to
-    compose), but for genuine fade (ratios != 1) composing two independently-sourced
-    side-absorption corrections for the same dye set still measurably over-corrects --
-    checked numerically, not assumed. Survival ratios have no crosstalk equivalent and are
-    never affected.
+    The reason is a domain mismatch, not double-counting a correction. `resolve_fade_matrix`
+    builds its inverse to act on *measured* densities -- the domain the raw scan is in, and
+    the domain the fade profile's own delta was measured in (see fade/README.md's `bands`).
+    But when a crosstalk unmix runs first, the data reaching the fade factor is no longer
+    measured densities: the unmix has already moved it toward *dye concentrations*, and
+    fading scales concentrations directly with no cross-channel mixing term at all. The
+    correct fade operator in that domain is the plain diagonal `diag(1, 1/ag, 1/ab)` -- which
+    is exactly what dropping delta produces (`resolve_fade_matrix(..., delta=None)` reduces
+    to S = identity). Keeping delta would apply a measured-density operator to
+    concentration-space data, a real, checked-numerically error rather than the identity's
+    harmless no-op that the ratio_g == ratio_b == 1 case gives regardless. Survival ratios
+    have no crosstalk equivalent and are never affected.
     """
     from negpy.features.process.models import ProcessMode
 
@@ -332,6 +335,17 @@ def _fade_forward_matrix(strength: float, ratio_g: float, ratio_b: float, delta:
     s = float(strength)
     ag = 1.0 + s * (float(ratio_g) - 1.0)
     ab = 1.0 + s * (float(ratio_b) - 1.0)
+    s_matrix = _fade_side_absorption_matrix(delta)
+    if s_matrix is None:
+        return None
+    return s_matrix @ np.diag([1.0, ag, ab]) @ np.linalg.inv(s_matrix)
+
+
+def _fade_side_absorption_matrix(delta: Optional[tuple]) -> Optional[np.ndarray]:
+    """S, the dye set's side-absorption matrix (1 on the diagonal, `delta` off it) --
+    the domain resolve_fade_matrix's similarity transform acts in: `F = S @ D @ inv(S)`
+    on measured densities. Shared with `fade_side_absorption_unmix` so both agree on
+    what S is. None when S itself is not invertible (a degenerate hand-entered profile)."""
     d = delta if delta is not None else (0.0,) * 6
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (float(x) for x in d)
     s_matrix = np.array(
@@ -344,7 +358,20 @@ def _fade_forward_matrix(strength: float, ratio_g: float, ratio_b: float, delta:
     )
     if abs(np.linalg.det(s_matrix)) < 1e-6:
         return None
-    return s_matrix @ np.diag([1.0, ag, ab]) @ np.linalg.inv(s_matrix)
+    return s_matrix
+
+
+def fade_side_absorption_unmix(delta: Optional[tuple]) -> Optional[np.ndarray]:
+    """inv(S): recovers per-layer dye concentration from measured density, given a fade
+    profile's own side-absorption `delta`. The survival-ratio estimator uses this to read
+    channel spans in concentration space -- where a layer's span is directly proportional
+    to its survival fraction -- rather than in measured-density space, where S's mixing
+    biases every ratio toward 1.0 (under-reporting fade, worse the more a slide has
+    actually faded). None when delta is absent or S is degenerate."""
+    s_matrix = _fade_side_absorption_matrix(delta)
+    if s_matrix is None:
+        return None
+    return np.linalg.inv(s_matrix)
 
 
 def fade_reject_reason(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> str:

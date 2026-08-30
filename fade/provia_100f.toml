@@ -1,4 +1,4 @@
-name = "Fujichrome Provia 100F (450/550/650)"
+name = "Fujichrome Provia 100F"
 type = "specsheet-based"
 process = "Transparency"
 bands = [650, 550, 450]

@@ -8,6 +8,7 @@ from negpy.features.exposure.normalization import (
     effective_crosstalk_matrix,
     fade_delta_conflict_reason,
     fade_reject_reason,
+    fade_side_absorption_unmix,
     resolve_crosstalk_matrix,
     resolve_fade_matrix,
 )
@@ -285,10 +286,56 @@ def test_fade_delta_coerced_to_tuple():
     assert isinstance(cfg.fade_delta, tuple)
 
 
+def test_fade_side_absorption_unmix_is_the_inverse_of_s():
+    """fade_side_absorption_unmix(delta) is inv(S), the same S resolve_fade_matrix's
+    similarity transform is built from -- the two must never disagree about what S is."""
+    unmix = fade_side_absorption_unmix(_DELTA)
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = _DELTA
+    s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
+    assert unmix is not None
+    np.testing.assert_allclose(unmix @ s_matrix, np.eye(3), atol=1e-12)
+    # None is treated as zero delta (S = identity), matching _fade_forward_matrix's own
+    # convention -- callers that mean "no profile" check for None themselves and skip
+    # unmixing rather than relying on this returning None.
+    np.testing.assert_array_equal(fade_side_absorption_unmix(None), np.eye(3))
+    assert fade_side_absorption_unmix((0.9995,) * 6) is None  # degenerate S: same guard as _fade_forward_matrix
+
+
+def test_dropping_delta_is_the_correct_operator_after_an_unmix_to_the_same_dye_set():
+    """Illustrates the actual mechanism behind fade_delta_conflict_reason (not double
+    application, a domain mismatch): resolve_fade_matrix's inverse acts on *measured*
+    densities. Once a same-dye-set unmix has run, the data is in *concentration* space,
+    where fading is a plain per-channel scale with no side absorption of its own -- exactly
+    what dropping delta produces. Idealized (raw inv(S) as the unmix, not the real
+    row-normalized resolve_crosstalk_matrix, which is independently calibrated and only
+    coincidentally close to any given fade delta) so the algebra is exact, not approximate."""
+    generic_e6_delta = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = generic_e6_delta
+    s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
+    s_inv = np.linalg.inv(s_matrix)
+
+    ratio_g, ratio_b = 0.6, 1.0
+    concentration_unfaded = np.array([1.0, 1.0, 1.0])
+    concentration_faded = concentration_unfaded * np.array([1.0, ratio_g, ratio_b])
+    measured_faded = s_matrix @ concentration_faded
+    after_unmix = s_inv @ measured_faded  # idealized same-dye-set crosstalk unmix
+
+    fade_with_delta = resolve_fade_matrix(1.0, ratio_g, ratio_b, generic_e6_delta)
+    fade_without_delta = resolve_fade_matrix(1.0, ratio_g, ratio_b, None)
+    assert fade_with_delta is not None and fade_without_delta is not None
+
+    err_kept = np.max(np.abs(fade_with_delta @ after_unmix - concentration_unfaded))
+    err_dropped = np.max(np.abs(fade_without_delta @ after_unmix - concentration_unfaded))
+    assert err_dropped < 1e-10  # the guard's behavior: exact
+    assert err_kept > 0.1  # keeping delta here is a real, substantial error
+
+
 def test_active_crosstalk_and_fade_delta_do_not_double_correct():
-    """A crosstalk profile and fade_delta describe the same physical quantity -- a dye
-    set's inherent side absorption. Both active for the same mode must not compose that
-    absorption twice: fade_delta is dropped (survival ratios still apply)."""
+    """A crosstalk profile and fade_delta both describe a dye set's side absorption, but
+    the reason dropping fade_delta is correct is a domain mismatch, not literal double
+    application -- see test_dropping_delta_is_the_correct_operator_after_an_unmix_to_the_same_dye_set.
+    This test pins the composed behavior with the real (row-normalized,
+    independently-calibrated) resolve_crosstalk_matrix."""
     process = ProcessConfig(
         crosstalk_strength=1.0,
         crosstalk_matrix=_CROSSTALK,

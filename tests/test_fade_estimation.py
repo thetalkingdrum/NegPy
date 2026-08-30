@@ -28,6 +28,45 @@ def _synthetic_capture(span_r: float, span_g: float, span_b: float, seed: int = 
     return image.astype(np.float32)
 
 
+def _synthetic_measured_capture(ratio_g: float, ratio_b: float, delta: tuple, span: float = 1.0, seed: int = 0) -> np.ndarray:
+    """A synthetic (64, 64, 3) linear capture simulating a real scan: concentration-space
+    log-densities (equal unfaded spans, scaled by the given survival ratios) are mixed
+    through the dye set's own side-absorption matrix S before being written out -- the
+    measured-density domain measure_channel_spans actually reads. Unlike _synthetic_capture,
+    a channel's *measured* span here is not simply proportional to its survival ratio,
+    because S mixes the channels -- this is what the delta-aware unmix in
+    measure_channel_spans must undo."""
+    rng = np.random.default_rng(seed)
+    t = rng.uniform(0.0, 1.0, (64, 64)).astype(np.float64)
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = delta
+    s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
+    concentration_log = np.stack([-t * span, -t * span * ratio_g, -t * span * ratio_b], axis=-1)
+    measured_log = concentration_log @ s_matrix.T
+    return np.power(10.0, measured_log).astype(np.float32)
+
+
+def test_unmix_by_delta_recovers_true_ratios_from_measured_density():
+    """A channel's *measured* density span is not proportional to its survival ratio --
+    the dye set's own side absorption mixes the channels and biases every ratio toward
+    1.0 (under-reporting fade). Unmixing by the selected profile's delta first, as
+    measure_channel_spans now does, recovers the true concentration-space ratios."""
+    generic_e6_delta = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
+    ratio_g_true, ratio_b_true = 0.6, 0.6
+    image = _synthetic_measured_capture(ratio_g_true, ratio_b_true, generic_e6_delta)
+
+    ratio_g_unmixed, ratio_b_unmixed, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, generic_e6_delta)
+    assert reason == ""
+    assert abs(ratio_g_unmixed - ratio_g_true) < 1e-2
+    assert abs(ratio_b_unmixed - ratio_b_true) < 1e-2
+
+    # Without delta, the same measured image reads as materially less faded -- the bias
+    # this fix removes, not a hypothetical.
+    ratio_g_biased, ratio_b_biased, reason_biased = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
+    assert reason_biased == ""
+    assert ratio_g_biased - ratio_g_true > 0.1
+    assert ratio_b_biased - ratio_b_true > 0.1
+
+
 def test_round_trip_recovers_known_ratios_on_equal_span_source():
     """An "unfaded" source has equal spans across channels (Daniell's ideal-image
     assumption); applying a known fade (scaling green/blue spans by known ratios) and
