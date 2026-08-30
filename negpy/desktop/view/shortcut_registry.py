@@ -130,6 +130,8 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "separation_inc": ShortcutEntry("Alt+1", "Crosstalk up", "Process"),
     "fade_strength_dec": ShortcutEntry("", "Fade Strength down", "Process"),
     "fade_strength_inc": ShortcutEntry("", "Fade Strength up", "Process"),
+    "fade_ratio_r_dec": ShortcutEntry("", "Fade Red Survival down", "Process"),
+    "fade_ratio_r_inc": ShortcutEntry("", "Fade Red Survival up", "Process"),
     "fade_ratio_g_dec": ShortcutEntry("", "Fade Green Survival down", "Process"),
     "fade_ratio_g_inc": ShortcutEntry("", "Fade Green Survival up", "Process"),
     "fade_ratio_b_dec": ShortcutEntry("", "Fade Blue Survival down", "Process"),

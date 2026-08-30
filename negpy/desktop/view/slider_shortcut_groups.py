@@ -101,6 +101,7 @@ SLIDER_GROUPS: tuple[SliderShortcutGroup, ...] = (
     _g("render_ev", "Render exposure ↑/↓", "render_ev_inc", "render_ev_dec", 0.05, "Process", step_suffix=" EV"),
     _g("separation", "Crosstalk ↑/↓", "separation_inc", "separation_dec", 0.01, "Process"),
     _g("fade_strength", "Fade Strength ↑/↓", "fade_strength_inc", "fade_strength_dec", 0.01, "Process"),
+    _g("fade_ratio_r", "Fade Red Survival ↑/↓", "fade_ratio_r_inc", "fade_ratio_r_dec", 0.01, "Process"),
     _g("fade_ratio_g", "Fade Green Survival ↑/↓", "fade_ratio_g_inc", "fade_ratio_g_dec", 0.01, "Process"),
     _g("fade_ratio_b", "Fade Blue Survival ↑/↓", "fade_ratio_b_inc", "fade_ratio_b_dec", 0.01, "Process"),
     _g("chroma_denoise", "Denoise ↑/↓", "chroma_denoise_inc", "chroma_denoise_dec", 0.01, "Lab"),
