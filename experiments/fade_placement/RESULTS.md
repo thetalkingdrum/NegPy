@@ -85,33 +85,37 @@ Two things about this table matter more than the ratio between its columns:
 
 ## How good would that estimate need to be
 
-Perturbing the injected offset by a fractional error `eps` (`estimated = true_stain * (1
-- eps)`, `eps=0` is the oracle above, `eps=1` is no correction at all, i.e. Variant A) on
-the heavy-stain fixture through the same real pipeline:
+First pass at this (perturbing the injected offset by a coarse fractional error, dense
+only near "no correction", one stain hue, `max_err` only) reported a sharp threshold: a
+correction worse than about 2% off the true value looked actively worse than no
+correction at all. That claim does not survive a proper check and is retracted below —
+recorded here because the mechanism behind the false positive is itself worth knowing.
 
-```
-eps    error (density)
-0.0    0.006   (oracle)
-0.5    0.022
-0.9    0.047
-1.0    0.054   (= Variant A, no correction)
-1.02   0.054   (already worse than Variant A -- exceeds it just past this point)
-2.0    0.119
-```
+The residual left behind by an estimate is `r = true_stain − estimated_stain`. The
+apparent "2%" threshold sat almost exactly at `|r| = |true_stain|` — which is where the
+no-correction case (Variant A) sits *by definition* (`estimated = 0`). Any continuous,
+monotonically-increasing function of `|r|` crosses its own value at that point trivially;
+the "cliff" was the ordinary continuity of the error curve at the one input where it is
+guaranteed to equal Variant A, not a new failure mode found by the sweep.
 
-The result is asymmetric and forgiving in the direction that matters: any estimate that
-removes *some* of the stain in the right direction — even a small, conservative fraction
-of it — helps monotonically, all the way down from the oracle to no correction at all.
-The failure mode is overshoot: once the residual left behind (`true − estimated`) exceeds
-the original stain's own magnitude, which happens the moment the estimate passes the true
-value and flips sign, the correction is actively worse than doing nothing, and the margin
-past that point is thin (~2% overshoot is enough to lose the benefit on this fixture). A
-sign-flipped estimate is roughly twice as bad as no correction at all.
+A proper check — `r/s` from −0.5 to 1.0 in steps of 0.05 (`s` = true stain magnitude),
+two different stain hues, tracking `mean_err` (less noisy than the single-worst-pixel
+`max_err`) and the real detector's own `neutral_axis_refs`/confidence at every point —
+shows no cliff and no detector failure over that whole range: confidence stays flat
+(~0.77) and refs are never `None` on either hue, even at the largest overshoot tested.
+The error curve is smooth and roughly monotone in `|r|` in both directions, close to
+linear, consistent with the direct proportionality already seen in the stain-magnitude
+table above. There is a mild asymmetry between over- and under-estimating at a given
+`|r|`, but its direction is not consistent between the two hues tested (favours
+under-estimating on one, over-estimating on the other), so it does not support a general
+rule like "always err on the side of removing less."
 
-This sizes the requirement for a real probe: it does not need to be precise, but it does
-need to reliably get the *direction* right and not overshoot the *magnitude* — a much
-lower bar than matching the oracle, but a real one, and one nothing in the current design
-(no verified rebate probe, no base-yellowing model) currently meets.
+The honest reading: **there is no sharp accuracy threshold to hit, and no known safe
+direction to bias toward.** Benefit degrades gradually and roughly proportionally to
+estimation error in either direction — even a rough estimate (on the order of 50% error)
+keeps most of the benefit over doing nothing, and accuracy above that continues to help
+smoothly, with no free lunch and no cliff to guard against. A real probe's requirement is
+therefore about relative accuracy, not about avoiding a particular failure mode.
 
 ## Process note: oracle-based validation hides selection effects
 
@@ -134,8 +138,9 @@ asked.
   relative to Finding 1, and is bounded by a test that assumed perfect knowledge of the
   stain. Nothing in the current design supplies that knowledge. Building the offset
   mechanism ahead of a way to estimate its input would be building the cheap half of a
-  feature whose expensive half — a real stain estimator, accurate enough on direction and
-  magnitude per the sweep above — does not exist yet.
+  feature whose expensive half — a real stain estimator, accurate to a meaningful fraction
+  of the true stain, with no free pass in either direction per the sweep above — does not
+  exist yet.
 - **The real gap is a stain estimator, not the offset plumbing.** If one becomes
   available (a verified rebate probe, a base-yellowing model, or real faded-slide
   material to characterize either against), this experiment's ε-sweep is the test to
