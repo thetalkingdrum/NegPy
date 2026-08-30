@@ -7,14 +7,19 @@ Every `.toml` here is bundled with the app and copied into a user's
 `<Documents>/NegPy/fade/` folder on first run, so they show up in the sidebar
 dropdown out of the box.
 
-A profile is `delta`: the six side-absorption ratios between layers, in
-`(gr, br, rg, bg, rb, gb)` order — a property of the dye set, not of any one
-faded frame. The two surviving-dye ratios that *do* vary per frame (relative
-green/blue survival against red) are not profile data; they live as sliders
-in the sidebar, or from the Estimate action, next to Strength.
+A profile is `delta` plus the `bands` it was measured at: `delta` is the six
+side-absorption ratios between layers, in `(gr, br, rg, bg, rb, gb)` order —
+a property of the dye set, not of any one faded frame. `bands` is the
+scanner's R/G/B measurement wavelengths in nm; delta is meaningless without
+it (see below), so a profile missing `bands` is rejected outright, the same
+as a malformed `delta`. The two surviving-dye ratios that *do* vary per
+frame (relative green/blue survival against red) are not profile data; they
+live as sliders in the sidebar, or from the Estimate action, next to
+Strength.
 
 ```toml
 process = "Transparency"   # or "Color Negative", once a negative dye set exists
+bands = [650, 550, 450]    # R, G, B measurement wavelengths, nm
 ```
 
 ## Where these numbers come from
@@ -53,4 +58,6 @@ difference in dye chemistry, not noise.
 Measured profiles (fit against real faded and unfaded scans of the same
 stock) remain the most useful contribution beyond this: they'd capture
 interlayer coupling and base staining that a pure spectral-density read does
-not.
+not. A stained or yellowed base in particular is an additive density floor,
+not a side-absorption ratio, and no matrix here will remove it — a known,
+unmodelled gap, not an oversight in these numbers.

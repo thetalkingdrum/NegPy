@@ -131,9 +131,10 @@ class ProcessConfig:
     # faded slide, not the stock, so they live per-image rather than in the
     # profile; only ratios are meaningful, since a uniform scale of all three
     # survival fractions is exactly absorbed by per-channel normalization
-    # downstream. Strength scales the parameters, not the output: a scaled
-    # parameter set is a less-faded film, a blended output is not a state of the
-    # material.
+    # downstream. Strength scales the survival ratios toward 1.0, not delta (a
+    # measurement property of the dye set and scanner, independent of fade extent)
+    # and not the output: a scaled parameter set is a less-faded film, a blended
+    # output is not a state of the material.
     fade_strength: float = 0.0
     fade_ratio_g: float = 1.0
     fade_ratio_b: float = 1.0
