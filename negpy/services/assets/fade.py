@@ -3,9 +3,12 @@ import tomllib
 from typing import List, Optional
 
 from negpy.kernel.system.config import APP_CONFIG
+from negpy.kernel.system.logging import get_logger
 from negpy.kernel.system.paths import get_resource_path
 from negpy.services.assets.crosstalk import GROUP_ORDER, CrosstalkType
 from negpy.services.assets.naming import escape_toml_string, slugify
+
+logger = get_logger(__name__)
 
 #: No profile selected: no correction, same as fade_strength = 0. Distinct from a
 #: bundled profile, whose delta is real spec-sheet-derived data (see fade/README.md).
@@ -86,11 +89,12 @@ class FadeProfiles:
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     return None
             bands = data.get("bands")
-            if not isinstance(bands, list) or len(bands) != 3:
+            if not isinstance(bands, list) or len(bands) != 3 or any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in bands):
+                # The likelier real-world trigger than a malformed delta: a profile saved
+                # before `bands` existed. Logged (unlike a malformed delta, silent like
+                # crosstalk's own precedent) because it otherwise vanishes with no sign why.
+                logger.warning("Fade profile %s has no valid `bands` (R/G/B measurement wavelengths) -- skipping", path)
                 return None
-            for v in bands:
-                if not isinstance(v, (int, float)) or isinstance(v, bool):
-                    return None
             raw_name = data.get("name")
             name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
             return name, [float(v) for v in delta], [float(v) for v in bands]

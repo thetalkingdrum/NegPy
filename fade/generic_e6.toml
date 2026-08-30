@@ -1,4 +1,4 @@
-name = "Generic E6 (450/550/650)"
+name = "Generic E6"
 type = "built-in"
 process = "Transparency"
 bands = [650, 550, 450]

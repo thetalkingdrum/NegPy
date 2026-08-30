@@ -210,9 +210,12 @@ class SensorSidebar(BaseSidebar):
         estimate_row = QHBoxLayout()
         self.estimate_fade_btn = self._icon_action(
             "fa5s.magic",
-            "Estimate Green/Blue Survival from this frame's own per-channel density span. "
-            "A suggestion, not a lock: it populates the sliders above and can be overridden, "
-            "and re-running it overwrites rather than accumulates",
+            "Estimate Green/Blue Survival from this frame's own per-channel density span, "
+            "unmixed by the selected Profile's side absorption first so the read is in dye "
+            "concentration rather than measured density. A suggestion, not a lock: it "
+            "populates the sliders above and can be overridden, and re-running it overwrites "
+            "rather than accumulates. Changing Profile clears a previous estimate, since it "
+            "was read against the old profile's delta",
             width=28,
         )
         self.estimate_fade_label = field_label("Estimate")
@@ -505,7 +508,10 @@ class SensorSidebar(BaseSidebar):
     def _on_fade_profile_changed(self, name: str) -> None:
         # Bake delta like crosstalk bakes its matrix, and clear the per-frame bounds
         # analyzed under the previous fade state. The survival ratios are per-image, not
-        # part of the profile, so they are untouched here.
+        # part of the profile, so they are untouched here -- but a prior Estimate result
+        # was computed against the old delta (the estimator unmixes by it), so the hint
+        # is now stale and is cleared rather than left showing a number for a profile
+        # that no longer applies.
         self.update_config_section(
             "process",
             persist=True,
@@ -515,6 +521,8 @@ class SensorSidebar(BaseSidebar):
             fade_process=FadeProfiles.get_process(name),
             **invalidate_local_bounds(self.state.config.process),
         )
+        self.fade_estimate_hint.setText("")
+        self.fade_estimate_hint.setVisible(False)
 
     def _on_fade_strength_changed(self, val: float, persist: bool = True) -> None:
         self.update_config_section(
@@ -548,7 +556,7 @@ class SensorSidebar(BaseSidebar):
             return
         conf = self.state.config.process
         roi, buffer = resolve_analysis_region(image.shape, None, conf.analysis_buffer, conf.analysis_rect)
-        ratio_g, ratio_b, reason = estimate_fade_ratios(image, conf.process_mode, roi, buffer)
+        ratio_g, ratio_b, reason = estimate_fade_ratios(image, conf.process_mode, roi, buffer, conf.fade_delta)
         self.fade_ratio_g_slider.setValue(ratio_g)
         self.fade_ratio_b_slider.setValue(ratio_b)
         self._on_fade_ratio_changed(ratio_g, ratio_b, persist=True)

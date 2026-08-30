@@ -1,4 +1,4 @@
-name = "Kodachrome 64 (450/550/650)"
+name = "Kodachrome 64"
 type = "specsheet-based"
 process = "Transparency"
 bands = [650, 550, 450]
