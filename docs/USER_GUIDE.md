@@ -616,10 +616,10 @@ The paper margin takes the mat color, so it joins the border with no seam.
 
 ## 8. Favorites tab
 
-The sliders you use most, in one place. Empty until you fill it.
+The sliders and toggles you use most, in one place. Empty until you fill it.
 
-*   **Edit Favorites**: tick sliders on the left, drag them into order on the right, then press **Apply**.
-*   They are the same controls as in their home panels, so a change here is a change there. A favorite hides when its original does (a Filtration slider in black & white).
+*   **Edit Favorites**: tick controls on the left, drag them into order on the right, then press **Apply**.
+*   They are the same controls as in their home panels, so a change here is a change there, and clicking a favorited toggle clicks the original. A favorite hides when its original does (a Filtration slider in black & white).
 *   Your selection is remembered between sessions.
 
 <!-- panel:presets -->
