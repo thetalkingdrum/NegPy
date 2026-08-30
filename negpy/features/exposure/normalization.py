@@ -239,11 +239,13 @@ def fade_delta_conflict_reason(process: "ProcessConfig", process_mode: Optional[
 
     Every bundled crosstalk matrix is "read off published spectral dye-density spec
     sheets ... describing the dyes alone" (crosstalk/README.md) -- the same physical
-    quantity `fade_delta` represents. A crosstalk profile and a non-zero fade profile
-    active for the same mode would apply that side-absorption correction twice; this is
-    currently prevented only by accident (the bundled fade profile is all-zero, and no
-    crosstalk profile is E-6), which breaks the moment either changes. Survival ratios
-    have no crosstalk equivalent and are never affected.
+    quantity `fade_delta` represents. The fade factor's similarity-transform form
+    (`_fade_forward_matrix`) makes this harmless exactly at ratio_g == ratio_b == 1 (an
+    unfaded fade factor is the identity regardless of delta, so it contributes nothing to
+    compose), but for genuine fade (ratios != 1) composing two independently-sourced
+    side-absorption corrections for the same dye set still measurably over-corrects --
+    checked numerically, not assumed. Survival ratios have no crosstalk equivalent and are
+    never affected.
     """
     from negpy.features.process.models import ProcessMode
 
@@ -296,36 +298,53 @@ def resolve_fade_matrix(strength: float, ratio_g: float, ratio_b: float, delta: 
     fractions is exactly absorbed by per-channel normalization downstream. `delta` (the
     six side-absorption ratios) is treated as zero when no profile supplies one, so the
     ratio sliders alone still give a real, if purely diagonal, correction. Strength scales
-    the parameters toward the identity (a less-faded film) before F is built, not the
-    output, so a partial application stays a physically coherent state of the material.
-    Refuses (returns None) rather than inverting when F is singular or ill-conditioned
-    for the requested parameters.
+    only the survival ratios toward 1.0 (a less-faded film) before F is built, not the
+    output -- delta is a measurement property of the dye set and the scanner's bands and
+    does not vary with fade extent, so it is never strength-scaled (see
+    `_fade_forward_matrix`). Refuses (returns None) rather than inverting when F is
+    singular or ill-conditioned for the requested parameters.
     """
     if float(strength) <= 0.0:
         return None
     f = _fade_forward_matrix(strength, ratio_g, ratio_b, delta)
+    if f is None:
+        return None
     det = np.linalg.det(f)
     if abs(det) < 1e-6 or np.linalg.cond(f) > FADE_CONDITION_LIMIT:
         return None
     return np.linalg.inv(f)
 
 
-def _fade_forward_matrix(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> np.ndarray:
-    """The forward fade operator F for (strength-scaled) parameters, shared by
-    resolve_fade_matrix and fade_reject_reason so the two cannot disagree on what F is."""
+def _fade_forward_matrix(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> Optional[np.ndarray]:
+    """The forward fade operator, shared by resolve_fade_matrix and fade_reject_reason so
+    the two cannot disagree on what F is.
+
+    F = S @ diag(1, ag, ab) @ inv(S), a similarity transform on measured densities: S is
+    the dye set's side-absorption matrix (`delta`, fixed by the dye set and the scanner's
+    bands -- never strength-scaled), and diag(1, ag, ab) is the (strength-scaled) survival
+    diagonal. A similarity transform is exactly the identity whenever ag == ab == 1, for
+    any S -- strength 0 is then a true no-op by construction, not by delta happening to
+    scale to zero too, and composing a real fade with an already-active crosstalk unmix of
+    the same dye set cannot double-apply delta, since an unfaded fade factor carries no net
+    crosstalk correction to begin with. Returns None when S itself is not invertible (a
+    degenerate hand-entered profile) rather than raising.
+    """
     s = float(strength)
     ag = 1.0 + s * (float(ratio_g) - 1.0)
     ab = 1.0 + s * (float(ratio_b) - 1.0)
     d = delta if delta is not None else (0.0,) * 6
-    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (s * float(x) for x in d)
-    return np.array(
+    d_gr, d_br, d_rg, d_bg, d_rb, d_gb = (float(x) for x in d)
+    s_matrix = np.array(
         [
-            [1.0, ag * d_gr, ab * d_br],
-            [d_rg, ag, ab * d_bg],
-            [d_rb, ag * d_gb, ab],
+            [1.0, d_gr, d_br],
+            [d_rg, 1.0, d_bg],
+            [d_rb, d_gb, 1.0],
         ],
         dtype=np.float64,
     )
+    if abs(np.linalg.det(s_matrix)) < 1e-6:
+        return None
+    return s_matrix @ np.diag([1.0, ag, ab]) @ np.linalg.inv(s_matrix)
 
 
 def fade_reject_reason(strength: float, ratio_g: float, ratio_b: float, delta: Optional[tuple]) -> str:
@@ -335,6 +354,8 @@ def fade_reject_reason(strength: float, ratio_g: float, ratio_b: float, delta: O
     if float(strength) <= 0.0:
         return ""
     f = _fade_forward_matrix(strength, ratio_g, ratio_b, delta)
+    if f is None:
+        return "the dye-set side-absorption profile is degenerate (its own matrix is singular) -- check the delta values"
     det = np.linalg.det(f)
     if abs(det) < 1e-6:
         return f"the restoration matrix is singular for this strength and profile (det≈{det:.2g})"

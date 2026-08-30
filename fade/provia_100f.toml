@@ -1,4 +1,5 @@
 name = "Fujichrome Provia 100F (450/550/650)"
 type = "specsheet-based"
 process = "Transparency"
+bands = [650, 550, 450]
 delta = [0.0880, 0.0254, 0.2481, 0.0404, 0.1471, 0.2073]

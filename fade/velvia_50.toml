@@ -1,4 +1,5 @@
 name = "Fujichrome Velvia 50 (450/550/650)"
 type = "specsheet-based"
 process = "Transparency"
+bands = [650, 550, 450]
 delta = [0.0623, 0.0024, 0.2311, 0.0863, 0.0559, 0.1917]
