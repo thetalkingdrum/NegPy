@@ -25,18 +25,22 @@ from negpy.features.process.models import ProcessMode
 _GENERIC_E6_DELTA = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
 
 
-def _synthetic_neutral_slide(ratio_g: float, ratio_b: float, delta: tuple, span: float = 3.0, size: int = 200, seed: int = 0) -> np.ndarray:
+def _synthetic_neutral_slide(
+    ratio_g: float, ratio_b: float, delta: tuple, span: float = 3.0, size: int = 200, seed: int = 0, ratio_r: float = 1.0
+) -> np.ndarray:
     """A synthetic (size, size, 3) linear capture: every pixel is neutral by construction
     (a single shared per-pixel factor t, scaled per channel by the true survival ratios --
     concentration-space densities), then mixed through the dye set's own side-absorption
     matrix S -- what a real scan of a faded, perfectly neutral gray card would read as
     measured density. `span` covers E-6's full transfer window so both the midtone and
-    shadow luma bands have real pixels to find."""
+    shadow luma bands have real pixels to find *when ratio_r == 1* -- `ratio_r` scales the
+    whole capture's density down the same way a real fade_ratio_r < 1 does, shrinking the
+    actual span well below `span` regardless of what `span` is set to."""
     rng = np.random.default_rng(seed)
     t = rng.uniform(0.03, 0.97, (size, size)).astype(np.float64)
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = delta
     s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
-    concentration_log = np.stack([-t * span, -t * span * ratio_g, -t * span * ratio_b], axis=-1)
+    concentration_log = np.stack([-t * span * ratio_r, -t * span * ratio_r * ratio_g, -t * span * ratio_r * ratio_b], axis=-1)
     measured_log = concentration_log @ s_matrix.T
     return np.power(10.0, measured_log).astype(np.float32)
 
@@ -50,6 +54,22 @@ def test_recovers_known_ratios_through_the_real_detector():
     row-sum ratio (~20% on green, for this delta)."""
     ratio_g_true, ratio_b_true = 0.6, 0.85
     image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
+
+    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, _GENERIC_E6_DELTA)
+    assert reason == ""
+    assert abs(ratio_g - ratio_g_true) < 1e-2
+    assert abs(ratio_b - ratio_b_true) < 1e-2
+
+
+def test_recovers_known_ratios_on_a_severely_faded_frame():
+    """The regression test for the measured-bounds fix: against E-6's fixed 0..3 window,
+    a frame whose own density span is compressed by a real fade_ratio_r (here 0.1, so the
+    frame's actual span is a tenth of what the fixed window expects) found no content in
+    the detector's midtone/shadow luma bands at all and failed closed to (1.0, 1.0) --
+    exactly the slides fade_ratio_r exists to help. Bounds measured from the frame itself
+    put the detector's bands back on real content, recovering the true ratios regardless."""
+    ratio_g_true, ratio_b_true = 0.6, 0.85
+    image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA, ratio_r=0.1)
 
     ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, _GENERIC_E6_DELTA)
     assert reason == ""
