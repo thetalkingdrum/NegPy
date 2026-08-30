@@ -27,13 +27,12 @@ from typing import Optional
 
 from negpy.domain.types import ImageBuffer
 from negpy.features.exposure.normalization import (
-    LogNegativeBounds,
+    analyze_log_exposure_bounds_from_log,
     fade_measurement_unmix,
     measure_neutral_axis_from_log,
     prefilter_log_grid,
     unmix_log_image,
 )
-from negpy.features.exposure.transfer import transfer_bounds
 from negpy.features.process.models import ProcessConfig, ProcessMode
 
 #: Below this density spread (midtone - shadow) a channel's neutral axis is too flat to
@@ -59,23 +58,25 @@ RED_SURVIVAL_BOUNDS = (0.05, 1.0)
 #: the return shape of normalization.measure_neutral_axis_from_log.
 NeutralAxisRefs = tuple[tuple[float, float, float], tuple[float, float, float], object, float]
 
-#: E-6's fixed normalization window (features/exposure/transfer.py). Fade Restoration is
-#: E-6 only, and matching the render's own bounds is what keeps the neutral-axis detector's
-#: luma bands meaningful; Normalize's alternative (measured, per-frame) bounds are not used
-#: here since the estimate should not depend on whether Normalize happens to be on.
-_BOUNDS = LogNegativeBounds(*transfer_bounds())
-
 
 def measure_neutral_axis_ratios(
     image: ImageBuffer, roi: Optional[tuple], analysis_buffer: float, delta: Optional[tuple]
 ) -> tuple[Optional[NeutralAxisRefs], str]:
     """(refs, reject_reason) from the raw capture: unmixed by the selected profile's delta
     (`fade_measurement_unmix`, neutral-preserving so the detector's fixed luma bands still
-    find pixels) before Cast Removal's own two-point neutral detection runs on it. Falls
-    back to reading measured density directly when no profile is selected -- a real, if
-    delta-biased, estimate beats none. reject_reason is set (refs is None) only when the
-    detector itself finds no trustworthy neutral axis; delta's own degeneracy is separate
-    (see fade_ratios_from_neutral_axis's caller)."""
+    find pixels) before Cast Removal's own two-point neutral detection runs on it, against
+    bounds measured from this frame rather than E-6's fixed window. A genuinely faded
+    slide's own density span is compressed by exactly the amount `fade_ratio_r` exists to
+    restore (see its docstring in models.py); against a window sized for an undegraded
+    slide, the detector's luma bands find no content past roughly fade_ratio_r < 0.85 and
+    fail outright rather than return a degraded estimate, on precisely the slides that need
+    the estimate most. Forcing `e6_normalize=True` here regardless of the live Normalize
+    toggle keeps the estimate independent of that setting, per-frame bounds are just the
+    correct read of a compressed slide either way. Falls back to reading measured density
+    directly when no profile is selected -- a real, if delta-biased, estimate beats none.
+    reject_reason is set (refs is None) only when the detector itself finds no trustworthy
+    neutral axis; delta's own degeneracy is separate (see fade_ratios_from_neutral_axis's
+    caller)."""
     grid = prefilter_log_grid(image, roi, analysis_buffer)
     if delta is not None:
         found = fade_measurement_unmix(delta)
@@ -83,7 +84,8 @@ def measure_neutral_axis_ratios(
             return None, "the dye-set side-absorption profile is degenerate — check the delta values"
         unmix, _row_sums = found
         grid = unmix_log_image(grid, unmix)
-    refs = measure_neutral_axis_from_log(grid, _BOUNDS, None, 0.0)
+    bounds = analyze_log_exposure_bounds_from_log(grid, None, 0.0, ProcessMode.E6, e6_normalize=True)
+    refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0)
     if refs is None:
         return None, "no trustworthy neutral axis found on this frame"
     return refs, ""
