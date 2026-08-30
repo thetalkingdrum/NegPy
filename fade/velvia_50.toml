@@ -1,4 +1,4 @@
-name = "Fujichrome Velvia 50 (450/550/650)"
+name = "Fujichrome Velvia 50"
 type = "specsheet-based"
 process = "Transparency"
 bands = [650, 550, 450]
