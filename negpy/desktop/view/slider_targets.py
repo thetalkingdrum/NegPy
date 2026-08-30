@@ -41,6 +41,7 @@ SLIDER_ATTRS: dict[str, str] = {
     "render_ev": "process_sidebar.render_ev_slider",
     "separation": "sensor_sidebar.crosstalk_strength_slider",
     "fade_strength": "sensor_sidebar.fade_strength_slider",
+    "fade_ratio_r": "sensor_sidebar.fade_ratio_r_slider",
     "fade_ratio_g": "sensor_sidebar.fade_ratio_g_slider",
     "fade_ratio_b": "sensor_sidebar.fade_ratio_b_slider",
     "chroma_denoise": "lab_sidebar.chroma_denoise_slider",
