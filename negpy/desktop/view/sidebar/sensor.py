@@ -196,10 +196,14 @@ class SensorSidebar(BaseSidebar):
         self.fade_ratio_r_slider.setToolTip(
             "Red layer's own surviving dye fraction (absolute, not relative to another "
             "channel -- there is nothing else to measure it against in the frame). 1.0 = "
-            "red has not faded. E-6's fastest-fading dye is read on the red channel, so a "
-            "heavily faded slide often needs this well below 1.0 even after Green/Blue "
-            "Survival have fixed the colour balance -- without it the correction is "
-            "colour-accurate but under-restored in density, which reads as washed out."
+            "red has not faded, and is the top of this slider's range, not its middle: "
+            "unlike Green/Blue Survival, which compare against red and can legitimately "
+            "run past 1.0 in either direction, red's own survival cannot exceed the "
+            "original -- a fading dye never gains density back. E-6's fastest-fading dye "
+            "is read on the red channel, so a heavily faded slide often needs this well "
+            "below 1.0 even after Green/Blue Survival have fixed the colour balance -- "
+            "without it the correction is colour-accurate but under-restored in density, "
+            "which reads as washed out."
         )
         self.layout.addWidget(self.fade_ratio_r_slider)
 
@@ -586,7 +590,9 @@ class SensorSidebar(BaseSidebar):
         self.fade_ratio_g_slider.setValue(ratio_g)
         self.fade_ratio_b_slider.setValue(ratio_b)
         self._on_fade_ratio_changed(ratio_g, ratio_b, persist=True)
-        self.fade_estimate_hint.setText(reason or f"Estimated: green {ratio_g:.2f}, blue {ratio_b:.2f}")
+        self.fade_estimate_hint.setText(
+            reason or f"Estimated: green {ratio_g:.2f}, blue {ratio_b:.2f} — Red Survival unaffected, set it by eye"
+        )
         self.fade_estimate_hint.setVisible(True)
 
     def _open_fade_editor(self) -> None:
