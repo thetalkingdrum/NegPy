@@ -7,8 +7,8 @@ from negpy.kernel.system.paths import get_resource_path
 from negpy.services.assets.crosstalk import GROUP_ORDER, CrosstalkType
 from negpy.services.assets.naming import escape_toml_string, slugify
 
-#: No profile selected: no correction, same as fade_strength = 0. Distinct from the
-#: bundled "Generic E6" profile, which is a real (if all-zero) delta.
+#: No profile selected: no correction, same as fade_strength = 0. Distinct from a
+#: bundled profile, whose delta is real spec-sheet-derived data (see fade/README.md).
 NONE_NAME = "None"
 
 

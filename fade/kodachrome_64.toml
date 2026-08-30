@@ -1,0 +1,4 @@
+name = "Kodachrome 64 (450/550/650)"
+type = "specsheet-based"
+process = "Transparency"
+delta = [0.0770, 0.0004, 0.0558, 0.0260, 0.0393, 0.2278]
