@@ -134,8 +134,12 @@ class ProcessConfig:
     # downstream. Strength scales the survival ratios toward 1.0, not delta (a
     # measurement property of the dye set and scanner, independent of fade extent)
     # and not the output: a scaled parameter set is a less-faded film, a blended
-    # output is not a state of the material.
-    fade_strength: float = 0.0
+    # output is not a state of the material. Defaults to 1.0 (full application), not
+    # 0.0 like Crosstalk's own strength: the real off-gate is fade_ratio_g/b defaulting
+    # to 1.0 (identity regardless of strength), so this default is still inert until a
+    # ratio is touched, and it means Estimate has a visible effect immediately instead
+    # of needing Strength raised separately afterward.
+    fade_strength: float = 1.0
     fade_ratio_g: float = 1.0
     fade_ratio_b: float = 1.0
     fade_delta: Optional[tuple] = None
