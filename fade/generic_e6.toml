@@ -1,4 +1,4 @@
-name = "Generic E6"
+name = "Generic E6 (450/550/650)"
 type = "built-in"
 process = "Transparency"
-delta = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+delta = [0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815]
