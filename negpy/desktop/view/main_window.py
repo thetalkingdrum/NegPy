@@ -187,9 +187,32 @@ class MainWindow(QMainWindow):
         self.resize(w, h)
         self.move(x, y)
 
+    def show_restored(self) -> None:
+        """Show the window, re-entering the maximized/full-screen state it was closed in.
+
+        ``resize``/``move`` alone leave a window in Qt's normal state, so a window closed
+        maximized would reopen merely sized like the screen rather than actually maximized.
+        """
+        state = self.controller.session.repo.get_global_setting("window_state", "normal")
+        if state == "maximized":
+            self.showMaximized()
+        elif state == "fullscreen":
+            self.showFullScreen()
+        else:
+            self.show()
+
+    def _persist_window_state(self) -> None:
+        state = "fullscreen" if self.isFullScreen() else "maximized" if self.isMaximized() else "normal"
+        # normalGeometry() is the restored-size rect even while maximized/full-screen,
+        # so un-maximizing next run lands on a sane size instead of the screen-filling one.
+        geo = self.geometry() if state == "normal" else self.normalGeometry()
+        repo = self.controller.session.repo
+        repo.save_global_setting("window_geometry", [geo.x(), geo.y(), geo.width(), geo.height()])
+        repo.save_global_setting("window_state", state)
+
     def closeEvent(self, event) -> None:
         try:
-            self.controller.session.repo.save_global_setting("window_geometry", [self.x(), self.y(), self.width(), self.height()])
+            self._persist_window_state()
         except Exception:
             logger.exception("Failed to persist window geometry")
         super().closeEvent(event)

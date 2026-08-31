@@ -271,7 +271,7 @@ def main() -> None:
         window = MainWindow(controller)
         if prev_clean_exit is False and prev_run_parallel:
             _offer_to_disable_cpu_parallel(repo, window)
-        window.show()
+        window.show_restored()
 
         exit_code = app.exec()
         controller.cleanup()
