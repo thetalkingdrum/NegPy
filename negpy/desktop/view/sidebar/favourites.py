@@ -2,7 +2,12 @@ import qtawesome as qta
 from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from negpy.desktop.controller import AppController
-from negpy.desktop.view.action_targets import ACTION_ATTRS, ACTION_LABELS, action_widget_map
+from negpy.desktop.view.action_targets import (
+    ACTION_ATTRS,
+    ACTION_LABELS,
+    action_hint_widget_map,
+    action_widget_map,
+)
 from negpy.desktop.view.combo_targets import COMBO_ATTRS, COMBO_LABELS, combo_widget_map
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUPS
@@ -101,6 +106,10 @@ class FavouritesSidebar(BaseSidebar):
         # calls, so sync_ui and _rebuild branch on the tag rather than probing the widget
         # type.
         self._mirrors: list[tuple[object, object, object, str]] = []
+        #: action id -> (local hint clone, source hint label), for actions that report a
+        #: result. Synced alongside _mirrors but kept separate since no other mirror kind
+        #: carries a second widget.
+        self._action_hints: dict[str, tuple[object, object]] = {}
         super().__init__(controller)
 
     def _init_ui(self) -> None:
@@ -158,11 +167,13 @@ class FavouritesSidebar(BaseSidebar):
             container.setParent(None)
             container.deleteLater()
         self._mirrors.clear()
+        self._action_hints.clear()
 
         slider_widgets = slider_widget_map(self.controls)
         toggle_widgets = toggle_widget_map(self.controls)
         combo_widgets = combo_widget_map(self.controls)
         action_widgets = action_widget_map(self.controls)
+        action_hint_widgets = action_hint_widget_map(self.controls)
         for item_id in load_favourites(self.controller.session.repo):
             if item_id in SLIDER_ATTRS:
                 src = slider_widgets[item_id]()
@@ -192,8 +203,20 @@ class FavouritesSidebar(BaseSidebar):
                 clone = _clone_action(src)
                 clone.clicked.connect(lambda _checked, s=src: s.click())
                 row = _labeled_row(item_label, clone, expand=False)
-                self._container_layout.addWidget(row)
-                self._mirrors.append((row, clone, src, "action"))
+                hint_getter = action_hint_widgets.get(item_id)
+                if hint_getter is None:
+                    container = row
+                else:
+                    hint_clone = hint_label("")
+                    hint_clone.setVisible(False)
+                    container = QWidget()
+                    container_layout = QVBoxLayout(container)
+                    container_layout.setContentsMargins(0, 0, 0, 0)
+                    container_layout.addWidget(row)
+                    container_layout.addWidget(hint_clone)
+                    self._action_hints[item_id] = (hint_clone, hint_getter())
+                self._container_layout.addWidget(container)
+                self._mirrors.append((container, clone, src, "action"))
 
         self.empty_hint.setVisible(not self._mirrors)
         self.sync_ui()
@@ -212,3 +235,6 @@ class FavouritesSidebar(BaseSidebar):
             # not. B&W hides the whole Colour section, so isHidden() alone misses it.
             container.setVisible(not hidden_by_gating(src))
             container.setEnabled(src.isEnabled())
+        for hint_clone, hint_src in self._action_hints.values():
+            hint_clone.setText(hint_src.text())
+            hint_clone.setVisible(not hint_src.isHidden())

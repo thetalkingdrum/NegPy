@@ -769,7 +769,8 @@ fill it.
 *   The panel then shows those controls in your chosen order. They are the *same* controls as in
     their home panels, so moving a slider here moves it there and the other way round, clicking a
     favourited toggle or action button clicks the original, and picking a dropdown option there
-    picks it in the original too. Nothing is duplicated or moved out of its own tab.
+    picks it in the original too. Nothing is duplicated or moved out of its own tab. An action
+    that reports a result, such as Estimate, shows that result here too.
 *   A favourite hides itself when its original does. Favourite a Filtration slider and it
     disappears while you are in black & white, where it has nothing to act on.
 *   Your selection is remembered between sessions.
