@@ -237,6 +237,22 @@ def test_clicking_an_action_mirror_clicks_the_original(controls, qapp):
     assert clicked == [True]
 
 
+def test_action_hint_mirrors_the_source_estimate_text(controls, qapp):
+    panel = _favourites(controls, _Repo(favourite_sliders=["estimate_fade"]))
+    hint_clone, hint_src = panel._action_hints["estimate_fade"]
+    assert hint_src is controls.sensor_sidebar.fade_estimate_hint
+
+    hint_src.setText("Estimated: green 0.68, blue 0.71 — Red Survival unaffected, set it by eye")
+    hint_src.setVisible(True)
+    panel.sync_ui()
+    assert hint_clone.text() == hint_src.text()
+    assert not hint_clone.isHidden()
+
+    hint_src.setVisible(False)
+    panel.sync_ui()
+    assert hint_clone.isHidden()
+
+
 def test_load_drops_unknown_ids(qapp):
     repo = _Repo(favourite_sliders=["density", "retired_slider", "saturation"])
     assert load_favourites(repo) == ["density", "saturation"]
