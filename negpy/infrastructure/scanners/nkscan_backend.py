@@ -29,7 +29,6 @@ from negpy.infrastructure.scanners.params import (
     ScanParams,
     dpi_stops_in_range,
     film_passes_infrared,
-    film_reads_positive,
 )
 from negpy.infrastructure.scanners.result import ScanResult
 from negpy.kernel.system.logging import get_logger
@@ -233,6 +232,8 @@ class NkscanBackend:
             import nkscan
         except ImportError as exc:
             raise ScannerUnavailable(_INSTALL_HINT) from exc
+        if hasattr(nkscan, "init_logging"):
+            nkscan.init_logging("trace")  # [bleed-debug] temporary, for the offset investigation
         self._nk = nkscan
         self._devices_cache: list[ScannerDevice] | None = None
         self._sessions: dict[str, NkscanSession] = {}
@@ -241,6 +242,9 @@ class NkscanBackend:
         # re-previewing a strip after a nudge must not cost another read of the film.
         self._frames: dict[str, list[tuple[int, int, int, int]]] = {}
         self._strips: dict[str, np.ndarray] = {}
+        # Feed addresses per thumbnail column, measured per pass alongside the strip. Not
+        # cached across discoveries: it depends on the pass, not the device.
+        self._pitch: dict[str, float] = {}
         self._lock = threading.Lock()
 
     # ── enumeration ───────────────────────────────────────────────────
@@ -359,10 +363,11 @@ class NkscanBackend:
         if cancel.is_set():
             raise RuntimeError("Scan cancelled before start")
         report = _progress_bridge(progress, cancel)
-        rect = self._resolve_frame(session, device_id, params, report)
+        detected = self._resolve_frame(session, device_id, params, report)
         optical = int(session.capabilities.optical_dpi)
-        rect = _shift_frame(rect, _offset_units(params.frame_offset_mm, optical))
+        rect = _shift_frame(detected, _offset_units(params.frame_offset_mm, optical))
         rect = _crop_frame(rect, params.window)
+        logger.info("Frame %s detected %s, scanning %s (%+0.2f mm)", params.frame, detected, rect, params.frame_offset_mm)
         with self._mapped_errors():
             result = self.scan_frame(
                 session,
@@ -380,6 +385,11 @@ class NkscanBackend:
             raise RuntimeError("Scan cancelled")
         if result.cleaned:
             logger.info("Dust removal rebuilt %d pixels", result.cleaned)
+        logger.info(
+            "[bleed-debug] real scan requested_rect=%s pass_shape=%s",
+            rect,
+            next(iter(result.colors.values())).shape,
+        )
         return self._to_result(result, model)
 
     def scan_frame(
@@ -432,14 +442,24 @@ class NkscanBackend:
         with self._mapped_errors():
             discovery = session.discover_frames(
                 format=film_format,
-                positive=film_reads_positive(film_type),
                 progress=progress,
             )
         self._frames[device_id] = [tuple(int(v) for v in rect) for rect in discovery.frames]
         thumbnail = getattr(discovery, "thumbnail", None)
         if thumbnail:
             self._strips[device_id] = _stack_rgb(thumbnail)
+        pitch = getattr(discovery, "addresses_per_column", None)
+        if pitch:
+            self._pitch[device_id] = float(pitch)
+        else:
+            self._pitch.pop(device_id, None)
         logger.info("Detected %d frames on %s", len(self._frames[device_id]), device_id)
+        logger.info(
+            "[bleed-debug] discover_frames rects=%s thumbnail_shape=%s addresses_per_column=%s",
+            self._frames[device_id],
+            None if not thumbnail else next(iter(thumbnail.values())).shape,
+            pitch,
+        )
         return discovery
 
     def detect_frames(self, device_id: str, *, film_format: str | None = None, film_type: str = "negative") -> int:
@@ -471,6 +491,10 @@ class NkscanBackend:
     def strip_pass(self, device_id: str) -> np.ndarray | None:
         """The whole-strip read the frames were measured on, where the mechanism took one."""
         return self._strips.get(device_id)
+
+    def pitch(self, device_id: str) -> float | None:
+        """Feed addresses per thumbnail column, measured on the last discovery's own pass."""
+        return self._pitch.get(device_id)
 
     def set_frame(self, device_id: str, slot: int, rect: tuple[int, int, int, int]) -> None:
         """Replace one detected rect, so a nudge in the preview reaches the fine scan."""
