@@ -17,7 +17,14 @@ from typing import Any
 import numpy as np
 
 from negpy.infrastructure.scanners.base import ScannerDevice
-from negpy.infrastructure.scanners.nkscan_backend import _offset_units, _progress_bridge, _shift_frame, _stack_rgb
+from negpy.infrastructure.scanners.nkscan_backend import (
+    _crop_to_frame,
+    _offset_units,
+    _progress_bridge,
+    _shift_frame,
+    _stack_rgb,
+)
+from negpy.infrastructure.scanners.params import film_reads_positive
 from negpy.infrastructure.scanners.roll import RollPreview, effective_pitch_mm
 from negpy.kernel.system.logging import get_logger
 
@@ -119,11 +126,21 @@ class NkscanRollSession:
     def _preview_one(self, slot: int, cancel: threading.Event) -> np.ndarray:
         rect = self._rect(slot)
         strip = self.thumbnail
+        scale = self._scale()
+        logger.info(
+            "[bleed-debug] preview slot=%s rect=%s scale=%s strip_shape=%s",
+            slot,
+            rect,
+            scale,
+            None if strip is None else strip.shape,
+        )
         if strip is not None:
-            tile = slice_frame(strip, rect, self._scale())
+            tile = slice_frame(strip, rect, scale)
             if tile is not None:
+                logger.info("[bleed-debug] preview slot=%s served from thumbnail slice, tile_shape=%s", slot, tile.shape)
                 return tile
             logger.info("Slot %s falls outside the strip pass; scanning it instead", slot)
+        logger.info("[bleed-debug] preview slot=%s falling back to _scan_preview", slot)
         return self._scan_preview(rect, cancel)
 
     def _scale(self) -> float:
@@ -142,13 +159,20 @@ class NkscanRollSession:
                 infrared=False,
                 clean=False,
                 lock_white_balance=self._backend.locks_white_balance(self._film_type),
+                positive=film_reads_positive(self._film_type),
                 exposures=self._exposures,
                 progress=_progress_bridge(None, cancel),
                 frames=self._backend.frames(self._device.id),
             )
         if self._exposures is None:
             self._exposures = dict(result.exposures)
-        return _stack_rgb(result.colors)
+        logger.info(
+            "[bleed-debug] scan-preview requested_rect=%s frame_columns=%s pass_shape=%s",
+            rect,
+            getattr(result, "frame_columns", None),
+            next(iter(result.colors.values())).shape,
+        )
+        return _stack_rgb(_crop_to_frame(result.colors, getattr(result, "frame_columns", None)))
 
     def _ensure_frames(self, cancel: threading.Event) -> list[tuple[int, int, int, int]]:
         frames = self._backend.frames(self._device.id)

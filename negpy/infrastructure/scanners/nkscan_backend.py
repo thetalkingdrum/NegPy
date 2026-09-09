@@ -166,6 +166,14 @@ def _crop_frame(
     return (new_top, new_left, max(new_bottom, new_top + 1), max(new_right, new_left + 1))
 
 
+def _crop_to_frame(colors: dict[str, np.ndarray], frame_columns: tuple[int, int] | None) -> dict[str, np.ndarray]:
+    """A perforation-framed unit's pass is longer than the frame; ``frame_columns`` says where it is."""
+    if not frame_columns:
+        return colors
+    start, end = frame_columns
+    return {name: plane[:, start:end] for name, plane in colors.items()}
+
+
 def _stack_rgb(colors: dict[str, np.ndarray]) -> np.ndarray:
     """One (rows, cols, 3) array from nkscan's per-channel planes.
 
@@ -234,6 +242,8 @@ class NkscanBackend:
             import nkscan
         except ImportError as exc:
             raise ScannerUnavailable(_INSTALL_HINT) from exc
+        if hasattr(nkscan, "init_logging"):
+            nkscan.init_logging("trace")  # [bleed-debug] temporary, for the offset investigation
         self._nk = nkscan
         self._devices_cache: list[ScannerDevice] | None = None
         self._sessions: dict[str, NkscanSession] = {}
@@ -376,6 +386,7 @@ class NkscanBackend:
                 infrared=bool(params.capture_ir),
                 clean=bool(params.clean),
                 lock_white_balance=self.locks_white_balance(params.film_type),
+                positive=film_reads_positive(params.film_type),
                 exposures=exposures,
                 progress=report,
                 frames=self._frames.get(device_id),
@@ -384,6 +395,12 @@ class NkscanBackend:
             raise RuntimeError("Scan cancelled")
         if result.cleaned:
             logger.info("Dust removal rebuilt %d pixels", result.cleaned)
+        logger.info(
+            "[bleed-debug] real scan requested_rect=%s frame_columns=%s pass_shape=%s",
+            rect,
+            getattr(result, "frame_columns", None),
+            next(iter(result.colors.values())).shape,
+        )
         return self._to_result(result, model)
 
     def scan_frame(
@@ -418,9 +435,13 @@ class NkscanBackend:
         return bool(self._nk.Capabilities.locks_white_balance(film_type))
 
     def _to_result(self, result: Any, model: str) -> ScanResult:
+        frame_columns = getattr(result, "frame_columns", None)
         ir = result.ir
+        if ir is not None and frame_columns:
+            start, end = frame_columns
+            ir = ir[:, start:end]
         return ScanResult(
-            rgb=_stack_rgb(result.colors),
+            rgb=_stack_rgb(_crop_to_frame(result.colors, frame_columns)),
             ir=ir,
             dpi=int(result.dpi),
             device_model=model,
@@ -442,7 +463,6 @@ class NkscanBackend:
         with self._mapped_errors():
             discovery = session.discover_frames(
                 format=film_format,
-                positive=film_reads_positive(film_type),
                 progress=progress,
             )
         self._frames[device_id] = [tuple(int(v) for v in rect) for rect in discovery.frames]
@@ -450,6 +470,11 @@ class NkscanBackend:
         if thumbnail:
             self._strips[device_id] = _stack_rgb(thumbnail)
         logger.info("Detected %d frames on %s", len(self._frames[device_id]), device_id)
+        logger.info(
+            "[bleed-debug] discover_frames rects=%s thumbnail_shape=%s",
+            self._frames[device_id],
+            None if not thumbnail else next(iter(thumbnail.values())).shape,
+        )
         return discovery
 
     def detect_frames(self, device_id: str, *, film_format: str | None = None, film_type: str = "negative") -> int:
