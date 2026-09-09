@@ -26,18 +26,6 @@ logger = get_logger(__name__)
 _PREVIEW_DEPTH_DPI = 0  # the strip pass has its own resolution; nothing chooses it
 
 
-def thumbnail_scale(optical_dpi: int, thumbnail_dpi: int) -> float:
-    """Stage addresses per thumbnail column.
-
-    A column is one line pitch of film and the pass starts at the axis origin, so a column is
-    a feed address. The pitch is a whole number of addresses; the resolution the unit reports
-    for the pass is that pitch rounded down, so the trip back through it has to round.
-    """
-    if optical_dpi <= 0 or thumbnail_dpi <= 0:
-        return 0.0
-    return float(round(optical_dpi / thumbnail_dpi))
-
-
 def slice_frame(strip: np.ndarray, rect: tuple[int, int, int, int], scale: float) -> np.ndarray | None:
     """The frame's own pixels out of the strip pass, or None when it falls outside.
 
@@ -119,17 +107,25 @@ class NkscanRollSession:
     def _preview_one(self, slot: int, cancel: threading.Event) -> np.ndarray:
         rect = self._rect(slot)
         strip = self.thumbnail
+        scale = self._scale()
+        logger.info(
+            "[bleed-debug] preview slot=%s rect=%s scale=%s strip_shape=%s",
+            slot,
+            rect,
+            scale,
+            None if strip is None else strip.shape,
+        )
         if strip is not None:
-            tile = slice_frame(strip, rect, self._scale())
+            tile = slice_frame(strip, rect, scale)
             if tile is not None:
+                logger.info("[bleed-debug] preview slot=%s served from thumbnail slice, tile_shape=%s", slot, tile.shape)
                 return tile
             logger.info("Slot %s falls outside the strip pass; scanning it instead", slot)
+        logger.info("[bleed-debug] preview slot=%s falling back to _scan_preview", slot)
         return self._scan_preview(rect, cancel)
 
     def _scale(self) -> float:
-        caps = self._session.capabilities
-        dpi = tuple(caps.thumbnail_dpi)
-        return thumbnail_scale(int(caps.optical_dpi), int(dpi[0]) if dpi else 0)
+        return self._backend.pitch(self._device.id) or 0.0
 
     def _scan_preview(self, rect: tuple[int, int, int, int], cancel: threading.Event) -> np.ndarray:
         """A pass of one frame, for a mechanism that measured the film without a strip pass."""
@@ -148,6 +144,11 @@ class NkscanRollSession:
             )
         if self._exposures is None:
             self._exposures = dict(result.exposures)
+        logger.info(
+            "[bleed-debug] scan-preview requested_rect=%s pass_shape=%s",
+            rect,
+            next(iter(result.colors.values())).shape,
+        )
         return _stack_rgb(result.colors)
 
     def _ensure_frames(self, cancel: threading.Event) -> list[tuple[int, int, int, int]]:
