@@ -170,8 +170,6 @@ EXPOSURE_CONSTANTS: Dict[str, Any] = {
     # base and scene shadows sit near sensor white, so clipped pixels collapse
     # distinct densities to D=0.
     "scan_clip_level": 0.99,
-    # Per-channel clipped fraction above which the Analysis panel warns.
-    "scan_clip_warn": 0.01,
     # Max normalized shadow cast (green - channel) that Cast Removal corrects.
     "cast_removal_max_offset": 0.1,
     # Cast Removal neutral axis: per-channel refs at a highlight/midtone/shadow luma

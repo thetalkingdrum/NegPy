@@ -71,13 +71,20 @@ def _clipping_row(clip_low: Optional[float], clip_high: Optional[float]) -> Stat
 
 
 def _scan_clip_row(scan_clip: Optional[Tuple[float, float, float]]) -> Optional[StatRow]:
-    """Returns None when clean — the row only appears when it warns."""
+    """Returns None when every channel is clean — the row only names the ones that warn.
+
+    The threshold tracks `shadow_neutral_percentile`: past `100 - percentile` clipped, the
+    shadow-neutral tie's own p98 sample can start landing in the clipped pile instead of the
+    true base, so that channel's black point becomes a stand-in for the pile rather than a
+    measurement. Retuning the percentile moves this threshold with it.
+    """
     if scan_clip is None:
         return None
-    r, g, b = (float(v) for v in scan_clip)
-    if max(r, g, b) <= float(EXPOSURE_CONSTANTS["scan_clip_warn"]):
+    threshold = (100.0 - float(EXPOSURE_CONSTANTS["shadow_neutral_percentile"])) / 100.0
+    flagged = [f"{label} {frac * 100:.1f}%" for label, frac in zip(("R", "G", "B"), scan_clip) if float(frac) > threshold]
+    if not flagged:
         return None
-    return StatRow("Scan clip", f"R {r * 100:.1f}% · G {g * 100:.1f}% · B {b * 100:.1f}%", warn=True)
+    return StatRow("Scan clip", " · ".join(flagged), warn=True)
 
 
 def _repair_row(repair: Optional[Tuple[float, float, float]]) -> Optional[StatRow]:

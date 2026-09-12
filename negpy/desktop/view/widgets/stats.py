@@ -18,9 +18,10 @@ _TOOLTIPS = {
     ),
     "Clipping": ("Share of pixels crushed to black (shadows) or blown to white (highlights), worst channel. Turns red above 1%."),
     "Scan clip": (
-        "Share of source-scan pixels at/above sensor white, per channel. In a negative scan the film base and "
-        "scene shadows sit near sensor white — clipping there destroys base/shadow separation. Fix at capture: "
-        "expose the scan lower. Turns red above 1%."
+        "Names the channel once its clipped fraction passes the point where the shadow-neutral tie's "
+        "own sample can start landing in the clipped pile instead of the true base (currently above "
+        "2%). Past that point the black point in that channel is estimated, not measured, and the "
+        "color balance is unreliable."
     ),
     "Gamut": (
         "Share of the frame the soft-proofed output profile cannot print. The Clipping row says a "

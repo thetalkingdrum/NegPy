@@ -45,7 +45,28 @@ class TestNegativeStatistics(unittest.TestCase):
         self.assertFalse(any(r.name == "Scan clip" for r in clean))
         blown = _by_name(negative_statistics(1.3, 0.46, 0.0, 0.0, scan_clip=(0.031, 0.002, 0.0)), "Scan clip")
         self.assertTrue(blown.warn)
-        self.assertEqual(blown.value, "R 3.1% · G 0.2% · B 0.0%")
+
+    def test_scan_clip_names_only_the_channels_that_cross(self):
+        # Threshold is (100 - shadow_neutral_percentile) / 100 = 0.02. G and B sit under it.
+        row = _by_name(negative_statistics(1.3, 0.46, 0.0, 0.0, scan_clip=(0.031, 0.005, 0.0)), "Scan clip")
+        self.assertEqual(row.value, "R 3.1%")
+
+    def test_scan_clip_names_every_channel_that_crosses(self):
+        row = _by_name(negative_statistics(1.3, 0.46, 0.0, 0.0, scan_clip=(0.031, 0.056, 0.002)), "Scan clip")
+        self.assertEqual(row.value, "R 3.1% · G 5.6%")
+
+    def test_scan_clip_threshold_tracks_shadow_neutral_percentile(self):
+        # At the default percentile (98.0) 0.019 sits under the 0.02 threshold, so it's clean.
+        clean = negative_statistics(1.3, 0.46, 0.0, 0.0, scan_clip=(0.019, 0.0, 0.0))
+        self.assertFalse(any(r.name == "Scan clip" for r in clean))
+
+        original = EXPOSURE_CONSTANTS["shadow_neutral_percentile"]
+        EXPOSURE_CONSTANTS["shadow_neutral_percentile"] = 99.0  # threshold moves to 0.01
+        try:
+            warned = _by_name(negative_statistics(1.3, 0.46, 0.0, 0.0, scan_clip=(0.019, 0.0, 0.0)), "Scan clip")
+        finally:
+            EXPOSURE_CONSTANTS["shadow_neutral_percentile"] = original
+        self.assertTrue(warned.warn)
 
     def test_negative_row_character(self):
         from negpy.features.exposure.logic import default_grade_range
