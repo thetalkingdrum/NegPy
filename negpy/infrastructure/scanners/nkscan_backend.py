@@ -232,6 +232,8 @@ class NkscanBackend:
             import nkscan
         except ImportError as exc:
             raise ScannerUnavailable(_INSTALL_HINT) from exc
+        if hasattr(nkscan, "init_logging"):
+            nkscan.init_logging("trace")  # [bleed-debug] temporary, for the offset investigation
         self._nk = nkscan
         self._devices_cache: list[ScannerDevice] | None = None
         self._sessions: dict[str, NkscanSession] = {}
@@ -382,6 +384,11 @@ class NkscanBackend:
             raise RuntimeError("Scan cancelled")
         if result.cleaned:
             logger.info("Dust removal rebuilt %d pixels", result.cleaned)
+        logger.info(
+            "[bleed-debug] real scan requested_rect=%s pass_shape=%s",
+            rect,
+            next(iter(result.colors.values())).shape,
+        )
         return self._to_result(result, model)
 
     def scan_frame(
@@ -438,6 +445,12 @@ class NkscanBackend:
             self._strips[device_id] = _stack_rgb(thumbnail)
             self._columns[device_id] = float(discovery.addresses_per_column)
         logger.info("Detected %d frames on %s", len(self._frames[device_id]), device_id)
+        logger.info(
+            "[bleed-debug] discover_frames rects=%s thumbnail_shape=%s addresses_per_column=%s",
+            self._frames[device_id],
+            None if not thumbnail else next(iter(thumbnail.values())).shape,
+            self._columns.get(device_id),
+        )
         return discovery
 
     def detect_frames(self, device_id: str, *, film_format: str | None = None) -> int:

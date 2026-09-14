@@ -107,11 +107,21 @@ class NkscanRollSession:
     def _preview_one(self, slot: int, cancel: threading.Event) -> np.ndarray:
         rect = self._rect(slot)
         strip = self.thumbnail
+        scale = self._backend.addresses_per_column(self._device.id) or 0.0
+        logger.info(
+            "[bleed-debug] preview slot=%s rect=%s scale=%s strip_shape=%s",
+            slot,
+            rect,
+            scale,
+            None if strip is None else strip.shape,
+        )
         if strip is not None:
-            tile = slice_frame(strip, rect, self._backend.addresses_per_column(self._device.id) or 0.0)
+            tile = slice_frame(strip, rect, scale)
             if tile is not None:
+                logger.info("[bleed-debug] preview slot=%s served from thumbnail slice, tile_shape=%s", slot, tile.shape)
                 return tile
             logger.info("Slot %s falls outside the strip pass; scanning it instead", slot)
+        logger.info("[bleed-debug] preview slot=%s falling back to _scan_preview", slot)
         return self._scan_preview(rect, cancel)
 
     def _scan_preview(self, rect: tuple[int, int, int, int], cancel: threading.Event) -> np.ndarray:
@@ -130,6 +140,11 @@ class NkscanRollSession:
             )
         if self._exposures is None:
             self._exposures = dict(result.exposures)
+        logger.info(
+            "[bleed-debug] scan-preview requested_rect=%s pass_shape=%s",
+            rect,
+            next(iter(result.colors.values())).shape,
+        )
         return _stack_rgb(result.colors)
 
     def _ensure_frames(self, cancel: threading.Event) -> list[tuple[int, int, int, int]]:
