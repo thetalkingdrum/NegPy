@@ -223,7 +223,7 @@ Narrow the panel and the toolbar buttons that no longer fit move into a **»** m
 
 ### Triage (culling the roll)
 
-Thumbnails are positives from the start. A frame you have not opened yet is inverted straight from its preview, a quick per-channel job rather than the full pipeline, so the sheet reads as photographs while you cull. Open a frame and its thumbnail is replaced by the real render, matching the canvas exactly. Transparencies are left alone, being positives already: a frame whose film process you have already set, or that you have opened once, is taken at its word, and only a frame nothing has decided yet is guessed at from its preview.
+Thumbnails are positives from the start. A frame you have not opened yet is inverted straight from its preview, a quick per-channel job rather than the full pipeline, so the sheet reads as photographs while you cull. Open a frame and its thumbnail is replaced by the real render, matching the canvas exactly. Applying settings or a preset to more than the current frame re-renders the touched frames' thumbnails in the background too, without opening them. Transparencies are left alone, being positives already: a frame whose film process you have already set, or that you have opened once, is taken at its word, and only a frame nothing has decided yet is guessed at from its preview.
 
 Right-click a thumbnail, or use keyboard shortcuts, to mark frames while you review the sheet:
 
