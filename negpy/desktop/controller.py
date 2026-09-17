@@ -3415,6 +3415,7 @@ class AppController(QObject):
         Applies averaged normalization baseline to all files.
         """
         self._end_batch("normalization")
+        changed_hashes: list[str] = []
         for f_info in self.state.uploaded_files:
             p = self.session.repo.load_file_settings(f_info["hash"]) or self.session.config_for_asset(f_info)
             new_process = replace(
@@ -3429,7 +3430,11 @@ class AppController(QObject):
             # The active file records its step via update_config(persist=True) below.
             if f_info["hash"] != self.state.current_file_hash:
                 self.session.push_external_history(f_info["hash"], p, new_p)
+                changed_hashes.append(f_info["hash"])
             self.session.repo.save_file_settings(f_info["hash"], new_p, file_path=f_info["path"])
+
+        if changed_hashes:
+            self.session.frames_edited_offscreen.emit(changed_hashes)
 
         # Update current state
         new_process = replace(
@@ -3466,6 +3471,7 @@ class AppController(QObject):
         data = self.session.repo.load_normalization_roll(name)
         if data:
             locked_floors, locked_ceils = data
+            changed_hashes: list[str] = []
             for f_info in self.state.uploaded_files:
                 p = self.session.repo.load_file_settings(f_info["hash"]) or self.session.config_for_asset(f_info)
                 new_process = replace(
@@ -3479,7 +3485,11 @@ class AppController(QObject):
                 new_p = replace(p, process=new_process)
                 if f_info["hash"] != self.state.current_file_hash:
                     self.session.push_external_history(f_info["hash"], p, new_p)
+                    changed_hashes.append(f_info["hash"])
                 self.session.repo.save_file_settings(f_info["hash"], new_p, file_path=f_info["path"])
+
+            if changed_hashes:
+                self.session.frames_edited_offscreen.emit(changed_hashes)
 
             new_process = replace(
                 self.state.config.process,
