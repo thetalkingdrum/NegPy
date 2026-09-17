@@ -309,6 +309,7 @@ class AppController(QObject):
     normalization_requested = pyqtSignal(NormalizationTask)
     batch_autocrop_requested = pyqtSignal(BatchAutoCropTask)
     thumbnail_render_requested = pyqtSignal(ThumbnailRenderTask)
+    thumbnail_refresh_state_changed = pyqtSignal(bool)  # a background refresh started/stopped running
     analysis_buffer_preview_requested = pyqtSignal(float)
     rotation_guide_requested = pyqtSignal()
     crop_guide_changed = pyqtSignal()
@@ -449,6 +450,10 @@ class AppController(QObject):
         self._thumbnail_render_pending: set[str] = set()
         # Hashes a pre-emption cut short, retried once the pre-empting batch is done.
         self._thumbnail_render_resume: set[str] = set()
+        # True between cancel_thumbnail_refresh() and the worker's cancelled signal
+        # landing — marks that cancellation as a user stop, not a pre-emption, so the
+        # cancelled handler discards the backlog instead of resuming it.
+        self._thumbnail_render_user_cancelled = False
         self.flush_export_settings: Optional[Callable[[], None]] = None
 
         self.preview_service = PreviewManager()
@@ -2824,12 +2829,41 @@ class AppController(QObject):
         logger.error("Auto Crop All failed: %s", message)
         self.set_status(f"Auto Crop All failed: {message}", 5000, kind="error")
 
+    @property
+    def thumbnail_refresh_running(self) -> bool:
+        return self._thumbnail_render_running
+
     def _preempt_background_thumbnail_refresh(self) -> None:
         """Give real batch work immediate use of `norm_thread` and its CPU: the
         background refresh checks for a cancel between every frame, so it yields
         within one frame's processing time instead of finishing the whole roll first."""
         if self._thumbnail_render_running:
             self.thumbnail_render_worker.cancel(self._thumbnail_render_generation)
+
+    def cancel_thumbnail_refresh(self) -> None:
+        """Stop a thumbnail refresh outright — the user's own escape hatch for one
+        started on too large a folder by mistake. Unlike a real batch's pre-emption,
+        this discards the backlog instead of resuming it once norm_thread is free."""
+        self._thumbnail_render_resume.clear()
+        if self._thumbnail_render_running:
+            self._thumbnail_render_user_cancelled = True
+            self.thumbnail_render_worker.cancel(self._thumbnail_render_generation)
+
+    def request_thumbnail_refresh(self, scope: str) -> None:
+        """User-triggered escape hatch for stale thumbnails: the same background pass
+        a bulk edit dispatches automatically, run on demand over ``scope`` ("selection"
+        or "roll") — for staleness an automatic trigger missed, or predates one."""
+        if scope == "roll":
+            indices = self.session.asset_model.visible_actual_indices_ordered()
+        else:
+            indices = [
+                i for i in (self.state.selected_indices or [self.state.selected_file_idx]) if 0 <= i < len(self.state.uploaded_files)
+            ]
+        hashes = [self.state.uploaded_files[i]["hash"] for i in indices]
+        if not hashes:
+            self.set_status("Nothing to update", 2000)
+            return
+        self.refresh_thumbnails_for(hashes)
 
     def refresh_thumbnails_for(self, hashes: list[str]) -> None:
         """Re-render the filmstrip thumbnails of frames a bulk settings write touched
@@ -2876,6 +2910,7 @@ class AppController(QObject):
         self._thumbnail_render_generation += 1
         self._thumbnail_render_running = True
         self._thumbnail_render_pending = {f.file_info.get("hash") for f in frames}
+        self.thumbnail_refresh_state_changed.emit(True)
         self.set_status(f"Updating {count_of(len(frames), 'thumbnail')}...")
         self.thumbnail_render_requested.emit(
             ThumbnailRenderTask(
@@ -2917,6 +2952,14 @@ class AppController(QObject):
         self._finish_thumbnail_render_generation()
 
     def _on_thumbnail_render_cancelled(self) -> None:
+        if self._thumbnail_render_user_cancelled:
+            # Stopped outright, not pre-empted: discard the backlog instead of the
+            # routine path's resume, and say so — this one the user did ask for.
+            self._thumbnail_render_user_cancelled = False
+            self._thumbnail_render_resume.clear()
+            self.set_status("Thumbnail update cancelled", 3000)
+            self._finish_thumbnail_render_generation()
+            return
         # Fires whenever real batch work pre-empts a running refresh, which is routine
         # rather than something the user asked for, so no status message here — the
         # resume dispatch below, if any, sets its own "Updating N thumbnails..." right
@@ -2939,6 +2982,7 @@ class AppController(QObject):
         redispatch queued behind, never ahead of, the batch that pre-empted it."""
         self._thumbnail_render_running = False
         self._thumbnail_render_pending = set()
+        self.thumbnail_refresh_state_changed.emit(False)
         if self._thumbnail_render_resume:
             leftover = list(self._thumbnail_render_resume)
             self._thumbnail_render_resume.clear()
