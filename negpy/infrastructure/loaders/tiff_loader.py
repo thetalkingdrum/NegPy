@@ -7,15 +7,17 @@ from PIL import Image
 from typing import Any, ContextManager, Optional, Tuple
 from negpy.domain.interfaces import IImageLoader
 from negpy.domain.models import ColorSpace
-from negpy.kernel.image.logic import srgb_to_linear, uint8_to_float32, uint16_to_float32, working_oetf_decode
+from negpy.kernel.image.logic import apply_linear_primaries_transform, srgb_to_linear, uint8_to_float32, uint16_to_float32, working_oetf_decode
 from negpy.infrastructure.loaders.constants import IR_SIDECAR_SUFFIXES, SUPPORTED_TIFF_EXTENSIONS
 from negpy.infrastructure.loaders.helpers import (
     NonStandardFileWrapper,
     _tiff_preview_page,
     bounded_tiff_page_preview,
+    decode_via_own_profile,
     fit_bounded_preview,
     identify_color_space_from_icc,
     read_orientation,
+    resolve_srgb_to_xyz,
 )
 from negpy.infrastructure.loaders.ir_planes import find_ir_plane, normalize_ir_to_float32
 from negpy.kernel.system.logging import get_logger
@@ -181,8 +183,12 @@ class TiffLoader(IImageLoader):
                 # linear, which no ColorSpace names, so it stays None; a positive source has
                 # resolved that ambiguity and takes the 8-bit assumption.
                 color_space = ColorSpace.SRGB.value
-            if color_space == ColorSpace.SRGB.value:
+            own_profile = decode_via_own_profile(f32, icc_bytes)
+            if own_profile is not None:
+                f32 = own_profile
+            elif color_space == ColorSpace.SRGB.value:
                 f32 = srgb_to_linear(f32)
+                f32 = apply_linear_primaries_transform(f32, resolve_srgb_to_xyz(icc_bytes))
             elif color_space == ColorSpace.ADOBE_RGB.value:
                 # Adobe RGB's TRC is the working space's own gamma, so its decode is the
                 # inverse of the pipeline OETF encode.

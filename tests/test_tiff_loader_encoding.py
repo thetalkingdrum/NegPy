@@ -10,9 +10,9 @@ from PIL import ImageCms
 
 from negpy.domain.models import ColorSpace
 from negpy.infrastructure.display.color_spaces import WORKING_COLOR_SPACE
-from negpy.infrastructure.loaders.helpers import NonStandardFileWrapper
+from negpy.infrastructure.loaders.helpers import NonStandardFileWrapper, decode_via_own_profile, resolve_srgb_to_xyz
 from negpy.infrastructure.loaders.tiff_loader import TiffLoader
-from negpy.kernel.image.logic import srgb_to_linear, working_oetf_decode
+from negpy.kernel.image.logic import apply_linear_primaries_transform, srgb_to_linear, working_oetf_decode
 from negpy.features.process.logic import effective_linear_raw
 from negpy.features.process.models import ProcessConfig, ProcessMode
 
@@ -42,6 +42,17 @@ def _load(path: str, linear_raw: bool = False, positive_source: bool = False) ->
         return raw.data, metadata
 
 
+def _srgb_expected(data: np.ndarray, max_val: float, icc: bytes | None = None) -> np.ndarray:
+    """What an sRGB-identified source should now produce: a real embedded profile
+    decodes via its own r/g/bTRC + primaries (decode_via_own_profile), the untagged
+    fallback via the closed-form sRGB curve + canonical sRGB primaries."""
+    f32 = data.astype(np.float32) / max_val
+    own_profile = decode_via_own_profile(f32, icc)
+    if own_profile is not None:
+        return own_profile
+    return apply_linear_primaries_transform(srgb_to_linear(f32), resolve_srgb_to_xyz(icc))
+
+
 class TestTiffEncodingAssumptions:
     def test_untagged_uint16_reads_linear(self) -> None:
         data = _rgb16()
@@ -61,7 +72,7 @@ class TestTiffEncodingAssumptions:
             path = os.path.join(tmpdir, "positivized.tif")
             tifffile.imwrite(path, data, photometric="rgb")
             f32, metadata = _load(path, positive_source=True)
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=1e-6)
+            np.testing.assert_allclose(f32, _srgb_expected(data, 65535.0), atol=1e-6)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_positive_source_does_not_override_an_actual_tag(self) -> None:
@@ -73,7 +84,7 @@ class TestTiffEncodingAssumptions:
             path = os.path.join(tmpdir, "tagged.tif")
             tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
             f32, metadata = _load(path, positive_source=True)
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=1e-6)
+            np.testing.assert_allclose(f32, _srgb_expected(data, 65535.0, icc), atol=1e-6)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_positive_source_off_keeps_the_untagged_default(self) -> None:
@@ -91,7 +102,7 @@ class TestTiffEncodingAssumptions:
             path = os.path.join(tmpdir, "photo.tif")
             tifffile.imwrite(path, data, photometric="rgb")
             f32, metadata = _load(path)
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 255.0), atol=1e-6)
+            np.testing.assert_allclose(f32, _srgb_expected(data, 255.0), atol=1e-6)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_srgb_icc_uint16_gets_srgb_decode(self) -> None:
@@ -101,7 +112,31 @@ class TestTiffEncodingAssumptions:
             path = os.path.join(tmpdir, "tagged.tif")
             tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
             f32, metadata = _load(path)
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=1e-6)
+            np.testing.assert_allclose(f32, _srgb_expected(data, 65535.0, icc), atol=1e-6)
+            assert metadata["color_space"] == ColorSpace.SRGB.value
+
+    def test_unrecognized_profile_name_still_decodes_via_its_own_data(self, monkeypatch) -> None:
+        """A real camera-embedded profile whose description string NegPy's name list
+        doesn't recognise (seen in the wild: a real Adobe RGB (1998) profile described
+        only as "A98C") must still decode via its own primaries/TRC, not fall back to
+        an sRGB guess — which would double-wrong it: the wrong TRC, and a spurious
+        sRGB->working primaries correction on data already in the working primaries.
+        Simulated here by forcing the name lookup to miss on an otherwise-real,
+        extractable matrix/TRC profile (PIL's sRGB), isolating the bypass logic itself
+        from any one profile's byte-level quirks."""
+        import negpy.infrastructure.loaders.tiff_loader as tiff_loader_module
+
+        monkeypatch.setattr(tiff_loader_module, "identify_color_space_from_icc", lambda icc_bytes: None)
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        data = _rgb16()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "tagged.tif")
+            tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
+            f32, metadata = _load(path, positive_source=True)
+            expected = decode_via_own_profile(data.astype(np.float32) / 65535.0, icc)
+            assert expected is not None, "fixture profile must be extractable as matrix/TRC"
+            np.testing.assert_allclose(f32, expected, atol=1e-6)
+            # The name list still can't place it, but that no longer decides the decode.
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_adobe_rgb_icc_uint16_gets_the_working_oetf_decode(self) -> None:
@@ -163,7 +198,7 @@ class TestPositiveSourceOnTheTransferPath:
 
             process = ProcessConfig(process_mode=ProcessMode.E6, e6_normalize=False, positive_source=True)
             f32, metadata = _load(path, linear_raw=effective_linear_raw(process))
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=1e-6)
+            np.testing.assert_allclose(f32, _srgb_expected(data, 65535.0, icc), atol=1e-6)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_without_positive_source_the_tag_is_still_ignored(self) -> None:

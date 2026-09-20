@@ -137,6 +137,19 @@ def srgb_to_linear(img: np.ndarray) -> np.ndarray:
     return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4).astype(np.float32)
 
 
+# Canonical sRGB (IEC 61966-2-1) primaries, D65-referenced RGB->XYZ. A source
+# identified as sRGB but carrying no embedded profile (the common untagged-scan case)
+# has no per-file matrix to extract, so ingestion falls back to this fixed one.
+SRGB_TO_XYZ = np.array(
+    [
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ],
+    dtype=np.float64,
+)
+
+
 # Working-space output transform: the Adobe RGB (1998) TRC, a pure 563/256 power with no
 # linear segment. Applied at the pipeline boundary, and it composes with the Adobe RGB ICC.
 # Mirrored in WGSL oetf_encode/oetf_decode.
@@ -219,6 +232,21 @@ def _matmul_3x3_kernel(px: np.ndarray, m: np.ndarray) -> np.ndarray:
     return out
 
 
+def apply_linear_primaries_transform(img_linear: np.ndarray, src_to_xyz: np.ndarray) -> np.ndarray:
+    """Primaries-only src -> working (Adobe RGB) transform on scene-linear data.
+
+    For ingestion: the source's own TRC has already been decoded (its real gamma,
+    not the working space's), so only the primaries need correcting. Leaving this
+    step out mislabels a narrower source gamut (sRGB) as the working space's wider
+    one — the same look as Photoshop's Assign Profile (not Convert) to Adobe RGB.
+    """
+    m = np.ascontiguousarray((_XYZ_TO_WORKING.astype(np.float64) @ src_to_xyz).astype(np.float32))
+    h, w = img_linear.shape[:2]
+    flat = np.ascontiguousarray(img_linear.reshape(-1, 3), dtype=np.float32)
+    out = _matmul_3x3_kernel(flat, m)
+    return np.clip(out.reshape(h, w, 3), 0.0, 1.0).astype(np.float32)
+
+
 def apply_primaries_transform(img: np.ndarray, src_to_xyz: np.ndarray) -> np.ndarray:
     """Apply a primaries-only colour transform (no TRC re-decode from the input profile).
 
@@ -228,12 +256,8 @@ def apply_primaries_transform(img: np.ndarray, src_to_xyz: np.ndarray) -> np.nda
     XYZ_to_working @ src_to_XYZ matrix is a linear-light operator, so it must
     run on decoded values: decode, matrix-multiply, re-encode.
     """
-    m_total = np.ascontiguousarray((_XYZ_TO_WORKING.astype(np.float64) @ src_to_xyz).astype(np.float32))
     linear = working_oetf_decode(img)
-    h, w = linear.shape[:2]
-    flat = linear.reshape(-1, 3).astype(np.float32, copy=False)
-    out = _matmul_3x3_kernel(flat, m_total)
-    out = np.clip(out.reshape(h, w, 3), 0.0, 1.0)
+    out = apply_linear_primaries_transform(linear, src_to_xyz)
     return working_oetf_encode(out)
 
 

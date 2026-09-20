@@ -10,7 +10,7 @@ from PIL import Image, ImageCms
 from negpy.domain.models import ColorSpace
 from negpy.features.process.models import DemosaicMode
 from negpy.infrastructure.loaders.constants import SUPPORTED_RAW_EXTENSIONS
-from negpy.kernel.image.logic import apply_exif_orientation, ensure_rgb
+from negpy.kernel.image.logic import SRGB_TO_XYZ, apply_exif_orientation, ensure_rgb
 from negpy.kernel.system.logging import get_logger
 
 logger = get_logger(__name__)
@@ -135,6 +135,66 @@ def identify_color_space_from_icc(icc_bytes: Optional[bytes]) -> Optional[str]:
     if "srgb" in desc or "iec 61966" in desc or "iec61966" in desc:
         return ColorSpace.SRGB.value
     return None
+
+
+def resolve_srgb_to_xyz(icc_bytes: Optional[bytes]) -> np.ndarray:
+    """D65 RGB->XYZ for a source identified as sRGB: the embedded profile's own
+    primaries when it's a real matrix/TRC profile, else the canonical sRGB primaries
+    (the common case — a scanner/phone JPEG rarely embeds one at all)."""
+    if icc_bytes:
+        try:
+            from negpy.infrastructure.display.icc_profile import extract_primaries_matrix, is_matrix_trc_profile
+
+            if is_matrix_trc_profile(icc_bytes):
+                m = extract_primaries_matrix(icc_bytes)
+                if m is not None:
+                    return m
+        except Exception:
+            pass
+    return SRGB_TO_XYZ
+
+
+_TRC_SAMPLE_POINTS = 4096
+
+
+def decode_via_own_profile(f32: np.ndarray, icc_bytes: Optional[bytes]) -> Optional[np.ndarray]:
+    """Decode gamma-encoded [0,1] RGB straight from the embedded profile's own r/g/bTRC
+    curves and primaries, into the working (Adobe RGB) linear space. None when there is
+    no profile, or it isn't a matrix/TRC type (a LUT profile falls back to name-matching).
+
+    A profile's description string is a label a vendor chose, not a promise: a real
+    Adobe RGB (1998) profile described only as "A98C" (seen on real camera-scanned
+    TIFFs) doesn't match `identify_color_space_from_icc`'s name list, and guessing
+    sRGB from that miss decodes the wrong TRC and, worse, re-primaries data that was
+    already in the working space's own primaries. The profile's own tags are ground
+    truth; name-matching is only for the metadata label and the untagged fallback.
+    """
+    if not icc_bytes:
+        return None
+    try:
+        from negpy.infrastructure.display.icc_profile import (
+            extract_primaries_matrix,
+            extract_trc_decode_samples,
+            is_matrix_trc_profile,
+        )
+        from negpy.kernel.image.logic import apply_linear_primaries_transform
+
+        if not is_matrix_trc_profile(icc_bytes):
+            return None
+        src_to_xyz = extract_primaries_matrix(icc_bytes)
+        if src_to_xyz is None:
+            return None
+        xs = np.linspace(0.0, 1.0, _TRC_SAMPLE_POINTS)
+        samples = extract_trc_decode_samples(icc_bytes, xs)
+        if samples is None:
+            return None
+    except Exception:
+        logger.warning("Failed to decode via the embedded ICC profile's own TRC/primaries", exc_info=True)
+        return None
+    linear = np.empty_like(f32, dtype=np.float32)
+    for ch in range(3):
+        linear[..., ch] = np.interp(f32[..., ch], xs, samples[ch]).astype(np.float32)
+    return apply_linear_primaries_transform(linear, src_to_xyz)
 
 
 def _tiff_preview_page(file_path: str) -> Optional[Image.Image]:
