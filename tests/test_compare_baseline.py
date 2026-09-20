@@ -7,12 +7,12 @@ from dataclasses import replace
 
 from negpy.desktop.controller import baseline_compare_config
 from negpy.domain.models import WorkspaceConfig
-from negpy.features.exposure.models import ExposureConfig
 from negpy.features.finish.models import FinishConfig
 from negpy.features.lab.models import LabConfig
 from negpy.features.process.models import ProcessMode
 from negpy.features.retouch.models import RetouchConfig
 from negpy.features.toning.models import ToningConfig
+from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 
 
 def _edited_config() -> WorkspaceConfig:
@@ -39,11 +39,19 @@ def _edited_config() -> WorkspaceConfig:
 
 def test_baseline_resets_creative_sections() -> None:
     base = baseline_compare_config(_edited_config())
-    assert base.exposure == ExposureConfig()
+    assert base.exposure == DEFAULT_WORKSPACE_CONFIG.exposure
     assert base.lab == LabConfig()
     assert base.toning == ToningConfig()
     assert base.finish == FinishConfig()
     assert base.retouch == RetouchConfig()
+
+
+def test_baseline_grade_matches_an_untouched_files_own_default() -> None:
+    """Grade is the one ExposureConfig field the panel's own default doesn't carry (115,
+    not the neutral 100 both the print curve and the E-6 transfer curve are calibrated to).
+    Left at 115, the baseline prints harder contrast than an unedited file's own render."""
+    base = baseline_compare_config(WorkspaceConfig())
+    assert base.exposure.grade == DEFAULT_WORKSPACE_CONFIG.exposure.grade
 
 
 def test_baseline_preserves_process_and_geometry() -> None:

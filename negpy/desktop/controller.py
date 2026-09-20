@@ -118,7 +118,6 @@ from negpy.features.exposure.logic import (
     calculate_wb_shifts_from_log,
 )
 from negpy.features.altprocess.models import AltProcess
-from negpy.features.exposure.models import ExposureConfig
 from negpy.features.finish.models import FinishConfig
 from negpy.features.geometry.logic import (
     apply_fine_rotation,
@@ -138,6 +137,7 @@ from negpy.features.process.models import (
     auto_meter_for_positive_source,
     cast_removal_for_mode,
     invalidate_local_bounds,
+    mode_aware_exposure_reset,
     scan_setup_values,
 )
 from negpy.desktop.settings_catalog import BOUNDS_INPUT_FIELDS, section_of_field
@@ -153,7 +153,7 @@ from negpy.infrastructure.filesystem.watcher import FolderWatchService
 from negpy.infrastructure.gpu.device import GPUDevice
 from negpy.infrastructure.gpu.resources import GPUTexture
 from negpy.infrastructure.storage.local_asset_store import LocalAssetStore
-from negpy.kernel.system.config import APP_CONFIG
+from negpy.kernel.system.config import APP_CONFIG, DEFAULT_WORKSPACE_CONFIG
 from negpy.kernel.system.logging import get_logger
 from negpy.services.rendering.prefetch_policy import MIN_RAM_RESERVE_BYTES
 from negpy.services.rendering.preview_manager import PreviewManager
@@ -280,18 +280,19 @@ def baseline_compare_config(config: WorkspaceConfig) -> WorkspaceConfig:
     while keeping process (mode + normalization bounds), geometry/crop, export and metadata,
     so it shows the un-graded auto conversion of the same framed image.
 
-    Cast Removal's default is mode-dependent (cast_removal_for_mode), not the bare
-    ExposureConfig default, or a transparency's 'before' would gray-balance a color the
-    live render never applies.
+    Exposure resets to DEFAULT_WORKSPACE_CONFIG's own section, not the bare ExposureConfig()
+    default: grade is 115 there, not the neutral 100 both the print curve and the E-6
+    transfer curve are calibrated to (transfer_grade_ref) and that an untouched file's own
+    render actually starts at (_hydrate_asset_config). Left at 115, the baseline prints
+    harder than the edit it is meant to be a neutral reference for.
+
+    Cast Removal's own default is mode-dependent (cast_removal_for_mode) on top of that:
+    a transparency starts at 0, a negative at DEFAULT_WORKSPACE_CONFIG's 0.5. Left flat, a
+    slide's baseline gray-balances a crossover the live render never touches.
     """
-    baseline_exposure = ExposureConfig()
-    baseline_exposure = replace(
-        baseline_exposure,
-        cast_removal_strength=cast_removal_for_mode(config.process.process_mode, baseline_exposure.cast_removal_strength),
-    )
     return replace(
         config,
-        exposure=baseline_exposure,
+        exposure=mode_aware_exposure_reset(config.process.process_mode, DEFAULT_WORKSPACE_CONFIG.exposure),
         lab=LabConfig(),
         local=LocalAdjustmentsConfig(),
         toning=ToningConfig(),
