@@ -65,6 +65,8 @@ class RenderTask:
     interactive: bool = False
     # Only the controller knows whether the filmstrip is already current for this config.
     wants_thumbnail: bool = False
+    # thumbnail_fingerprint of the edit these pixels show; empty when they show no saved edit.
+    thumbnail_fingerprint: str = ""
     # Decoder XYZ->camera matrix for this source; only the transparency transfer reads it.
     cam_xyz: Optional[list] = None
     # As-shot WB multipliers, needed only when the buffer was decoded without WB.
@@ -109,6 +111,7 @@ class ThumbnailUpdateTask:
     monitor_icc_bytes: Optional[bytes] = None
     proof: Optional[tuple] = None
     persist: bool = True  # False = in-memory filmstrip only, skip the disk JPEG encode.
+    fingerprint: str = ""  # thumbnail_fingerprint of the edit rendered; empty = placeholder
 
 
 @dataclass(frozen=True)
@@ -364,6 +367,7 @@ class RenderWorker(QObject):
             metrics["source_hash"] = task.source_hash
             metrics["ephemeral"] = task.ephemeral
             metrics["memo_key"] = task.memo_key
+            metrics["thumbnail_fingerprint"] = task.thumbnail_fingerprint
             metrics["compare"] = task.compare
             metrics["interactive"] = task.interactive
 
@@ -558,6 +562,7 @@ class ThumbnailWorker(QObject):
                 color_space=task.color_space,
                 monitor_icc_bytes=task.monitor_icc_bytes,
                 proof=task.proof,
+                fingerprint=task.fingerprint,
             )
             if thumb:
                 self.rendered_finished.emit({task.file_hash: thumb})

@@ -83,6 +83,11 @@ class AppState:
     # Keys whose cached bitmap predates a settings write that reached the file without a
     # render (a bulk apply, not the active canvas). Cleared once a render refreshes it.
     stale_thumbnails: Set[str] = field(default_factory=set)
+    # asset_thumbnail_key -> thumbnail_fingerprint of the thumbnail on display; absent for a
+    # placeholder. The expected map holds what the saved edit fingerprints to now, filled by
+    # AppController.reconcile_thumbnails; None there means a placeholder is acceptable.
+    thumbnail_fingerprints: Dict[str, str] = field(default_factory=dict)
+    expected_thumbnail_fingerprints: Dict[str, Optional[str]] = field(default_factory=dict)
     # Paths add_files turned away because a loaded frame already holds their content. They
     # are absent from uploaded_files by design, so a caller that decides what is new by
     # path (the Hot Folder poll) would otherwise offer the same file every round forever.
@@ -309,6 +314,18 @@ class AppState:
             self.local_hidden_masks_by_hash[h] = set(value)
         else:
             self.local_hidden_masks_by_hash.pop(h, None)
+
+
+def thumbnail_is_stale(state: Any, file_info: Dict[str, Any]) -> bool:
+    """True when a frame's thumbnail shows other edits than its saved ones.
+
+    The active frame is never stale: its live render owns its thumbnail."""
+    file_hash = file_info.get("hash")
+    if not state or not file_hash or file_hash == state.current_file_hash:
+        return False
+    key = asset_thumbnail_key(file_info)
+    expected = state.expected_thumbnail_fingerprints.get(key)
+    return expected is not None and state.thumbnail_fingerprints.get(key) != expected
 
 
 def _asset_key(asset: Dict[str, Any]) -> tuple:
@@ -566,8 +583,8 @@ class AssetListModel(QAbstractListModel):
                 lines.append(summary)
             if file_info.get("scene"):
                 lines.append(f"Scene: {file_info['scene'][2]}")
-            if asset_thumbnail_key(file_info) in self._state.stale_thumbnails:
-                lines.append("Thumbnail predates a settings change; open the frame to refresh it.")
+            if thumbnail_is_stale(self._state, file_info):
+                lines.append("Thumbnail predates a settings change; it updates in the background, or when the frame opens.")
             return "\n".join(lines)
 
         if role == Qt.ItemDataRole.UserRole:
@@ -863,6 +880,8 @@ class DesktopSessionManager(QObject):
         self.state.thumbnails.pop(key, None)
         self.state.rendered_thumbnails.discard(key)
         self.state.stale_thumbnails.discard(key)
+        self.state.thumbnail_fingerprints.pop(key, None)
+        self.state.expected_thumbnail_fingerprints.pop(key, None)
         self.state.embeddings.pop(asset.get("hash"), None)
 
     def search_facts(self) -> Dict[str, Dict[str, Any]]:
@@ -1977,6 +1996,8 @@ class DesktopSessionManager(QObject):
         self.state.uploaded_files.clear()
         self.state.thumbnails.clear()
         self.state.rendered_thumbnails.clear()
+        self.state.thumbnail_fingerprints.clear()
+        self.state.expected_thumbnail_fingerprints.clear()
         self.state.active_roll_id = None
         self.state.stale_thumbnails.clear()
         self.state.duplicate_paths.clear()

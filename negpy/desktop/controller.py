@@ -141,7 +141,7 @@ from negpy.features.process.models import (
     scan_setup_values,
 )
 from negpy.desktop.settings_catalog import BOUNDS_INPUT_FIELDS, section_of_field
-from negpy.services.assets.thumbnails import asset_thumbnail_key
+from negpy.services.assets.thumbnails import asset_thumbnail_key, image_fingerprint, thumbnail_fingerprint
 from negpy.services.assets import semantic_model
 from negpy.kernel.system.paths import get_default_user_dir, get_resource_path
 from negpy.features.retouch.logic import downsample_ir, trace_scratch
@@ -808,7 +808,7 @@ class AppController(QObject):
         self.thumbnail_render_worker.finished.connect(self._on_thumbnail_render_finished)
         self.thumbnail_render_worker.cancelled.connect(self._on_thumbnail_render_cancelled)
         self.thumbnail_render_worker.error.connect(self._on_thumbnail_render_error)
-        self.session.frames_edited_offscreen.connect(self.refresh_thumbnails_for)
+        self.session.frames_edited_offscreen.connect(self.reconcile_thumbnails)
 
         self.asset_discovery_requested.connect(self.discovery_worker.process)
         self.discovery_worker.progress.connect(self._on_discovery_progress)
@@ -898,6 +898,8 @@ class AppController(QObject):
             # negatives in the filmstrip. They are copies because these dicts cross to a
             # worker thread and uploaded_files must not grow a stale mode.
             self.thumbnail_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f)} for f in missing])
+        else:
+            self.reconcile_thumbnails()
 
     def _turn_thumbnails(self, keys: list, qt_transform: QTransform, pil_transpose: Any) -> bool:
         """Turns each cached thumbnail in place by one step. Memory and disk turn from
@@ -908,15 +910,32 @@ class AppController(QObject):
         thumbnails, so the turn is queued instead and replayed onto that decode's own
         result in _apply_thumbnails."""
         changed = False
+        # A turned bitmap shows the turned edit, so a thumbnail current before the turn stays
+        # current. The expected map still holds the pre-turn fingerprint at this point.
+        current = {
+            key
+            for key in keys
+            if self.state.thumbnail_fingerprints.get(key) is not None
+            and self.state.thumbnail_fingerprints.get(key) == self.state.expected_thumbnail_fingerprints.get(key)
+        }
+        turned_fp = self._fingerprints_by_key(current)
         for key in keys:
             icon = self.state.thumbnails.get(key)
             sizes = icon.availableSizes() if icon is not None else []
             if sizes:
                 self.state.thumbnails[key] = QIcon(icon.pixmap(sizes[0]).transformed(qt_transform))
                 changed = True
+            if key in turned_fp:
+                self.state.thumbnail_fingerprints[key] = turned_fp[key]
+                self.state.expected_thumbnail_fingerprints[key] = turned_fp[key]
             cached = self.asset_store.get_thumbnail(key)
             if cached is not None:
-                self.asset_store.save_thumbnail(key, cached.transpose(pil_transpose))
+                turned = cached.transpose(pil_transpose)
+                if key in turned_fp:
+                    turned.info["comment"] = turned_fp[key].encode("ascii")
+                else:
+                    turned.info.pop("comment", None)
+                self.asset_store.save_thumbnail(key, turned)
             else:
                 self._thumbnail_pending_correction.setdefault(key, []).append(pil_transpose)
         return changed
@@ -961,6 +980,8 @@ class AppController(QObject):
         self.state.thumbnails.clear()
         self.state.rendered_thumbnails.clear()
         self.state.stale_thumbnails.clear()
+        self.state.thumbnail_fingerprints.clear()
+        self.state.expected_thumbnail_fingerprints.clear()
         self.session.asset_model.refresh()
         self.generate_missing_thumbnails()
 
@@ -998,6 +1019,8 @@ class AppController(QObject):
                     self.asset_store.save_thumbnail(key, pil_img)
                 if not self._set_thumbnail(key, pil_img):
                     broken.add(key)
+                    continue
+                self._record_fingerprint(key, image_fingerprint(pil_img))
         self.session.asset_model.refresh()
         return broken
 
@@ -1006,6 +1029,7 @@ class AppController(QObject):
         self._thumbnail_queue_active = bool(key)
         self.thumbnail_activity_changed.emit(key)
         if was_active and not key:
+            self.reconcile_thumbnails()
             # Thumbnails first: each file's preview is on disk by now, so the embedding
             # pass reuses it instead of decoding the RAW a second time.
             self.generate_missing_embeddings()
@@ -1141,6 +1165,7 @@ class AppController(QObject):
             if pil_img and self._set_thumbnail(key, pil_img):
                 self.state.rendered_thumbnails.add(key)
                 self.state.stale_thumbnails.discard(key)
+                self._record_fingerprint(key, image_fingerprint(pil_img))
         self.session.asset_model.refresh()
         self._resume_background_thumbnails()
 
@@ -3478,6 +3503,92 @@ class AppController(QObject):
             return
         self.refresh_thumbnails_for(hashes)
 
+    def _fingerprint_for(self, asset: dict, config: WorkspaceConfig) -> str:
+        """thumbnail_fingerprint of what a render of ``asset`` under ``config`` shows."""
+        pair = self.diptych_pair(asset)
+        return thumbnail_fingerprint(*pair) if pair is not None else thumbnail_fingerprint(config)
+
+    def _active_thumbnail_fingerprint(self) -> str:
+        file_hash = self.state.current_file_hash
+        asset = next((a for a in self.state.uploaded_files if a.get("hash") == file_hash), None) if file_hash else None
+        if asset is None:
+            return ""
+        dip = self.active_diptych()
+        if dip is not None:
+            return thumbnail_fingerprint(*dip[1])
+        return thumbnail_fingerprint(self._config_for_batch_asset(asset))
+
+    def _carry_active_thumbnail_fingerprint(self, before: str) -> None:
+        """Follow a render-neutral write to the active frame's config, as the render memo's
+        rekey does: the displayed pixels still hold, only their fingerprint moves. ``before``
+        is the fingerprint ahead of the write; a render that does not match it shows an older
+        edit, and carrying it would mark those pixels current."""
+        with self.state.metrics_lock:
+            if before and self.state.last_metrics.get("thumbnail_fingerprint") == before:
+                self.state.last_metrics["thumbnail_fingerprint"] = self._active_thumbnail_fingerprint()
+
+    def _record_fingerprint(self, key: str, fingerprint: Optional[str]) -> None:
+        if fingerprint:
+            self.state.thumbnail_fingerprints[key] = fingerprint
+        else:
+            self.state.thumbnail_fingerprints.pop(key, None)
+
+    def _fingerprints_by_key(self, keys: set[str]) -> dict[str, str]:
+        """Expected fingerprint per thumbnail key, from each frame's saved edit."""
+        out: dict[str, str] = {}
+        for asset in self.state.uploaded_files:
+            key = asset_thumbnail_key(asset)
+            if key in keys and key not in out:
+                out[key] = self._fingerprint_for(asset, self._config_for_batch_asset(asset))
+        return out
+
+    def reconcile_thumbnails(self, hashes: Optional[list[str]] = None) -> None:
+        """Compare each frame's thumbnail with its saved edit and re-render the ones that differ.
+
+        ``hashes`` limits the pass; None checks every loaded frame. A frame with no saved
+        edit keeps its placeholder. The active frame is left to its live render, and a frame
+        whose thumbnail has not loaded yet is judged when the thumbnail queue finishes."""
+        wanted = set(hashes) if hashes is not None else None
+        repo = self.session.repo
+        candidates = [
+            a
+            for a in self.state.uploaded_files
+            if a.get("hash")
+            and a.get("hash") != self.state.current_file_hash
+            and (wanted is None or a.get("hash") in wanted)
+            and asset_thumbnail_key(a) in self.state.thumbnails
+        ]
+        if not candidates:
+            return
+        edited = set(repo.load_file_settings_many([a["hash"] for a in candidates]))
+        stale: list[str] = []
+        seen: set[str] = set()
+        for asset in candidates:
+            key = asset_thumbnail_key(asset)
+            if key in seen:
+                continue
+            seen.add(key)
+            stored = self.state.thumbnail_fingerprints.get(key)
+            if stored is None and asset["hash"] not in edited and self.diptych_pair(asset) is None:
+                self.state.expected_thumbnail_fingerprints[key] = None
+                continue
+            expected = self._fingerprint_for(asset, self._config_for_batch_asset(asset))
+            self.state.expected_thumbnail_fingerprints[key] = expected
+            if stored != expected:
+                stale.append(asset["hash"])
+            legacy = key in self.state.stale_thumbnails
+            if legacy != (stored != expected):
+                logger.info(
+                    "thumbnail-fingerprint: %s legacy_stale=%s fingerprint_stale=%s placeholder=%s",
+                    asset.get("path", key),
+                    legacy,
+                    stored != expected,
+                    stored is None,
+                )
+        self.session.asset_model.refresh()
+        if stale:
+            self.refresh_thumbnails_for(stale)
+
     def refresh_thumbnails_for(self, hashes: list[str]) -> None:
         """Re-render the filmstrip thumbnails of frames a bulk settings write touched
         without opening them. Runs off the shared batch lane so it never blocks Export
@@ -3561,6 +3672,7 @@ class AppController(QObject):
                 monitor_icc_bytes=monitor_bytes,
                 proof=proof,
                 persist=True,
+                fingerprint=self._fingerprint_for(asset, frame.config),
             )
         )
 
@@ -5480,6 +5592,9 @@ class AppController(QObject):
             crop_preview_full=crop_preview_full,
             ephemeral=ephemeral,
             memo_key=memo_key,
+            thumbnail_fingerprint=(
+                self._active_thumbnail_fingerprint() if config_override is None and not ephemeral and not interactive else ""
+            ),
             compare=compare_capture,
             interactive=interactive,
             # Mirrors should_update_thumb, minus its pending-task check.
@@ -6788,6 +6903,7 @@ class AppController(QObject):
 
             if changes:
                 new_process = replace(self.state.config.process, **changes)
+                before = self._active_thumbnail_fingerprint()
                 self.session.update_config(
                     replace(self.state.config, process=new_process),
                     persist=self._may_persist_measured_bounds(),
@@ -6801,6 +6917,7 @@ class AppController(QObject):
                 self._render_memo.rekey(
                     src or self.state.current_file_hash or "", self._render_memo_key(), old_key=metrics.get("memo_key", "")
                 )
+                self._carry_active_thumbnail_fingerprint(before)
                 if self._last_render_identity is not None:
                     self._last_render_identity = (
                         self._last_render_identity[0],
@@ -6928,6 +7045,7 @@ class AppController(QObject):
                 monitor_icc_bytes=monitor_bytes,
                 proof=proof,
                 persist=persist,
+                fingerprint=str(metrics.get("thumbnail_fingerprint") or ""),
             )
         )
 

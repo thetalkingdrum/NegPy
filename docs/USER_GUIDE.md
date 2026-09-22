@@ -246,7 +246,7 @@ Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works
 | Top-right | number on a colored disc | the frame's scene, while **Show Scenes** is on |
 | Bottom-left | *see below* | the frame was built from more than one file |
 | Top-left | exclamation | the file failed to decode; click to retry |
-| Top-left | small amber dot | the thumbnail predates a settings change (a bulk apply reached the file before a render reached its thumbnail); open the frame to refresh it |
+| Top-left | small amber dot | the thumbnail shows older settings than the frame's saved edit; it re-renders in the background, or when the frame opens |
 
 The gray bottom-left glyph shows the frame type:
 
@@ -266,7 +266,7 @@ The right-click menu also has:
 *   **Reset Settings**; with several frames selected, **Reset N Frames**, confirmed first.
 *   **Apply Settings…**.
 *   **Sync Bounds…**: pushes only this frame's measured bounds, as **Tonal span** and **Color balance**, to the selection or roll. Also in the canvas right-click and overflow menus.
-*   **Update Thumbnail(s)**: re-renders the selection's thumbnails; **Update Thumbnails** on the toolbar does every stale one in the roll. Both become **Cancel** while running.
+*   **Update Thumbnail(s)**: re-renders the selection's thumbnails; **Update Thumbnails** on the toolbar does every one in the roll. Both run in the background and become **Cancel** while running. Thumbnails that differ from their frames' saved edits re-render by themselves when a roll opens and after each bulk change.
 *   **Reset Roll to Defaults…**, and per-frame export.
 *   **Edit Independently in This Roll** / **Use the Shared Edit Again**; see [Rolls that are not folders](#rolls-that-are-not-folders).
 

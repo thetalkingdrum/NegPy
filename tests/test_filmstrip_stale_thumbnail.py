@@ -1,5 +1,4 @@
-"""The film strip flags a thumbnail whose bitmap predates a settings write that
-reached the file without a render (a bulk apply, not the active canvas)."""
+"""The film strip flags a thumbnail whose fingerprint differs from its saved edit's."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -33,27 +32,46 @@ def _top_left_colour(pix: QPixmap) -> QColor:
     return QColor(pix.toImage().pixel(3 + 4 + 4, 3 + 4 + 4))
 
 
-def test_stale_frame_gets_a_dot(qapp):
-    # Keyed like push_external_history keys it: asset_thumbnail_key, not the bare hash --
-    # a triplet's thumbnail cache key differs from its plain hash.
-    state = SimpleNamespace(is_dirty=False, current_file_path=None, stale_thumbnails={asset_thumbnail_key({"hash": "h1"})})
-    dot = _top_left_colour(_paint(_ThumbnailDelegate(state=state), {"path": "/a.nef", "hash": "h1"}))
-    assert dot.name().upper() == THEME.warn_amber.upper()
+KEY = asset_thumbnail_key({"hash": "h1"})
 
 
-def test_fresh_frame_does_not(qapp):
-    state = SimpleNamespace(is_dirty=False, current_file_path=None, stale_thumbnails={asset_thumbnail_key({"hash": "h1"})})
-    clean = _top_left_colour(_paint(_ThumbnailDelegate(state=state), {"path": "/b.nef", "hash": "h2"}))
-    assert clean.name().upper() != THEME.warn_amber.upper()
+def _state(stored=None, expected=None, current_hash=None):
+    return SimpleNamespace(
+        is_dirty=False,
+        current_file_path=None,
+        current_file_hash=current_hash,
+        thumbnail_fingerprints={KEY: stored} if stored else {},
+        expected_thumbnail_fingerprints={KEY: expected},
+    )
 
 
-def test_stale_key_is_the_thumbnail_cache_key_not_the_bare_hash(qapp):
-    """A regression guard for the mismatch this indicator originally shipped with:
-    push_external_history adds asset_thumbnail_key(asset) (hash plus a cache-version
-    suffix), never the bare hash, so the read side must key the same way."""
-    state = SimpleNamespace(is_dirty=False, current_file_path=None, stale_thumbnails={"h1"})
-    clean = _top_left_colour(_paint(_ThumbnailDelegate(state=state), {"path": "/a.nef", "hash": "h1"}))
-    assert clean.name().upper() != THEME.warn_amber.upper()
+def _is_amber(state, file_hash="h1") -> bool:
+    dot = _top_left_colour(_paint(_ThumbnailDelegate(state=state), {"path": "/a.nef", "hash": file_hash}))
+    return dot.name().upper() == THEME.warn_amber.upper()
+
+
+def test_mismatched_fingerprint_gets_a_dot(qapp):
+    assert _is_amber(_state(stored="a" * 32, expected="b" * 32))
+
+
+def test_placeholder_of_an_edited_frame_gets_a_dot(qapp):
+    assert _is_amber(_state(stored=None, expected="b" * 32))
+
+
+def test_matching_fingerprint_does_not(qapp):
+    assert not _is_amber(_state(stored="b" * 32, expected="b" * 32))
+
+
+def test_acceptable_placeholder_does_not(qapp):
+    assert not _is_amber(_state(stored=None, expected=None))
+
+
+def test_active_frame_never_stale(qapp):
+    assert not _is_amber(_state(stored="a" * 32, expected="b" * 32, current_hash="h1"))
+
+
+def test_other_frame_does_not(qapp):
+    assert not _is_amber(_state(stored="a" * 32, expected="b" * 32), file_hash="h2")
 
 
 def test_no_state_never_stale(qapp):

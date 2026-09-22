@@ -1,3 +1,4 @@
+import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from PIL import Image
@@ -12,6 +13,48 @@ from negpy.infrastructure.display.color_spaces import WORKING_COLOR_SPACE
 from negpy.kernel.system.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# Bump when a pipeline change alters rendered thumbnails for an unchanged edit.
+THUMBNAIL_RENDER_VERSION = 1
+
+# Config state that never reaches a thumbnail's pixels: metadata and export sections, and
+# tool settings that only shape the next stroke.
+_NON_RENDER_SECTIONS = frozenset({"metadata", "export"})
+_NON_RENDER_FIELDS = {"retouch": frozenset({"manual_dust_size"})}
+_FINGERPRINT_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def thumbnail_fingerprint(*configs: Any) -> str:
+    """Identity of the edits a rendered thumbnail shows. A diptych passes both halves.
+
+    Display inputs (monitor profile, soft proof) are not part of it."""
+    import hashlib
+    import json
+    from dataclasses import asdict, fields
+
+    parts: list[Any] = [THUMBNAIL_RENDER_VERSION]
+    for config in configs:
+        sections = {}
+        for f in fields(config):
+            if f.name in _NON_RENDER_SECTIONS:
+                continue
+            values = asdict(getattr(config, f.name))
+            for name in _NON_RENDER_FIELDS.get(f.name, ()):
+                values.pop(name, None)
+            sections[f.name] = values
+        parts.append(sections)
+    return hashlib.md5(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def image_fingerprint(img: Any) -> Optional[str]:
+    """The fingerprint a thumbnail image carries, or None for a placeholder."""
+    comment = getattr(img, "info", {}).get("comment")
+    if isinstance(comment, bytes):
+        comment = comment.decode("ascii", "ignore")
+    if not isinstance(comment, str) or not _FINGERPRINT_RE.fullmatch(comment):
+        return None
+    return comment
 
 
 def asset_thumbnail_key(asset: Dict[str, Any]) -> str:
@@ -234,6 +277,8 @@ def get_thumbnail_worker(
         # pixel, and on a full-size decode its temporaries cost a gigabyte per worker.
         img.thumbnail((ts, ts), Image.Resampling.LANCZOS)
         square_img: Image.Image = prepare_thumbnail(preview_positive(img, process_mode), ts)
+        # A placeholder carries no fingerprint, whatever comment the source JPEG held.
+        square_img.info.pop("comment", None)
 
         if asset_store:
             asset_store.save_thumbnail(cache_key, square_img)
@@ -253,6 +298,7 @@ def get_rendered_thumbnail(
     color_space: str = WORKING_COLOR_SPACE,
     monitor_icc_bytes: Optional[bytes] = None,
     proof: Optional[tuple] = None,
+    fingerprint: str = "",
 ) -> Optional[Image.Image]:
     """
     Creates a thumbnail from a rendered float32 buffer, applying the same display
@@ -276,6 +322,8 @@ def get_rendered_thumbnail(
         img = Image.fromarray(u8_arr)
 
         square_img: Image.Image = prepare_thumbnail(img, ts)
+        if fingerprint:
+            square_img.info["comment"] = fingerprint.encode("ascii")
 
         if asset_store:
             asset_store.save_thumbnail(file_hash, square_img)

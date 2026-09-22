@@ -86,8 +86,9 @@ class LocalAssetStore(IAssetStore):
         """Persists thumb to disk."""
         try:
             thumb_path = os.path.join(self.thumb_dir, f"{file_hash}.jpg")
-            # Save as JPEG for speed and smaller file size
-            image.save(thumb_path, "JPEG", quality=85)
+            # The render fingerprint rides in the JPEG comment, so it lives and dies with the file.
+            comment = image.info.get("comment") or b""
+            image.save(thumb_path, "JPEG", quality=85, comment=comment)
         except Exception as e:
             logger.error(f"Failed to save thumbnail {file_hash}: {e}")
 

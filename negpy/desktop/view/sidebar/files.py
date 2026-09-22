@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
 
 from negpy.kernel.system.text import count_of
 from negpy.desktop.controller import AppController
-from negpy.desktop.session import AppState, composite_kind
+from negpy.desktop.session import AppState, composite_kind, thumbnail_is_stale
 from negpy.desktop.view.confirm import (
     prompt_delete_scene,
     confirm_reset_frames,
@@ -182,11 +182,7 @@ class _ThumbnailDelegate(QStyledItemDelegate):
         return bool(state and state.is_dirty and state.current_file_path and file_info.get("path") == state.current_file_path)
 
     def _is_stale_thumbnail(self, file_info: dict) -> bool:
-        """True while the cached bitmap predates a settings write a render hasn't caught up to."""
-        state = self._state
-        if not state or not file_info.get("hash"):
-            return False
-        return asset_thumbnail_key(file_info) in state.stale_thumbnails
+        return thumbnail_is_stale(self._state, file_info)
 
     def _draw_stale_dot(self, painter: QPainter, img_rect: QRect) -> None:
         r = self._STALE_DOT_RADIUS
@@ -794,7 +790,7 @@ class FileBrowser(QWidget):
         self.save_roll_btn.clicked.connect(self._on_save_roll_clicked)
         self.update_thumbnails_btn = QToolButton()
         self.update_thumbnails_btn.setIcon(qta.icon("fa5s.sync-alt", color=THEME.text_primary))
-        self.update_thumbnails_btn.setToolTip("Update Thumbnails — re-render every stale thumbnail in the roll")
+        self.update_thumbnails_btn.setToolTip("Update Thumbnails — re-render every thumbnail in the roll")
         self.update_thumbnails_btn.clicked.connect(self._on_update_thumbnails_clicked)
 
         self.scenes_btn = QToolButton()
@@ -1646,7 +1642,7 @@ class FileBrowser(QWidget):
             self.update_thumbnails_btn.setToolTip("Cancel Thumbnail Update — stop the background refresh in progress")
         else:
             self.update_thumbnails_btn.setIcon(qta.icon("fa5s.sync-alt", color=THEME.text_primary))
-            self.update_thumbnails_btn.setToolTip("Update Thumbnails — re-render every stale thumbnail in the roll")
+            self.update_thumbnails_btn.setToolTip("Update Thumbnails — re-render every thumbnail in the roll")
 
     def _build_session_menu(self) -> QMenu:
         """Mirrors the panel toolbar's add/clear tools, for a right click on empty space."""

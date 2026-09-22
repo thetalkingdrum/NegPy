@@ -15,7 +15,13 @@ _TOP_LEFT_DOT = (3 + 4 + 4, 3 + 4 + 4)
 
 
 def _state(stale=()):
-    return SimpleNamespace(is_dirty=False, current_file_path=None, stale_thumbnails=set(stale))
+    return SimpleNamespace(
+        is_dirty=False,
+        current_file_path=None,
+        current_file_hash=None,
+        thumbnail_fingerprints={key: "a" * 32 for key in stale},
+        expected_thumbnail_fingerprints={key: "b" * 32 for key in stale},
+    )
 
 
 def _pixel(pix, xy) -> str:

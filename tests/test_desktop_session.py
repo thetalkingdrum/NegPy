@@ -1864,13 +1864,8 @@ class TestThumbnailKeying(unittest.TestCase):
         self.assertEqual(session.state.thumbnails, {keys[1]: "thumb-b"})
 
     def test_push_external_history_flags_stale_under_the_thumbnail_cache_key(self):
-        """push_external_history (a bulk apply reaching a non-active file) adds
-        asset_thumbnail_key(asset) to stale_thumbnails, not the bare hash -- the read
-        side (the film strip's dot, the tooltip) must key the same way or the flag,
-        though set, never matches anything and the indicator never shows."""
-        from PyQt6.QtCore import Qt
-
-        from negpy.desktop.view.sidebar.files import _ThumbnailDelegate
+        """push_external_history keys the legacy stale set by asset_thumbnail_key(asset),
+        not the bare hash, so the reconcile pass's comparison log lines up with it."""
         from negpy.services.assets.thumbnails import asset_thumbnail_key
 
         repo = MagicMock(spec=StorageRepository)
@@ -1887,12 +1882,21 @@ class TestThumbnailKeying(unittest.TestCase):
 
         self.assertIn(asset_thumbnail_key(asset), session.state.stale_thumbnails)
 
-        model = AssetListModel(session.state)
-        tooltip = model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole)
-        self.assertIn("predates a settings change", tooltip)
+    def test_tooltip_follows_the_fingerprint_comparison(self):
+        from PyQt6.QtCore import Qt
 
-        delegate = _ThumbnailDelegate(state=session.state)
-        self.assertTrue(delegate._is_stale_thumbnail(asset))
+        from negpy.services.assets.thumbnails import asset_thumbnail_key
+
+        state = AppState()
+        asset = {"name": "a.nef", "path": "/a.nef", "hash": "h1"}
+        state.uploaded_files = [asset]
+        key = asset_thumbnail_key(asset)
+        state.thumbnail_fingerprints[key] = "a" * 32
+        state.expected_thumbnail_fingerprints[key] = "b" * 32
+        model = AssetListModel(state)
+        self.assertIn("predates a settings change", model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole))
+        state.thumbnail_fingerprints[key] = "b" * 32
+        self.assertNotIn("predates a settings change", model.data(model.index(0, 0), Qt.ItemDataRole.ToolTipRole))
 
 
 class TestSearchFacts(unittest.TestCase):
