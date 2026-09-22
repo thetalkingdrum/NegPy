@@ -18,9 +18,9 @@ rather than blind percentile spans, but does its own measurement rather than reu
 Cast Removal's already-computed `neutral_axis_refs`: those are metered downstream of
 whatever fade correction is *already* configured, which is the identity at the default
 survival ratios (1.0, 1.0, 1.0) regardless of delta -- so at the moment this feature is
-actually used, nothing has removed the dye set's own measurement mixing yet, and reusing
-that metric would silently reintroduce the bias fixed below. `fade_measurement_unmix`
-does that unmixing explicitly, independent of the current ratio state.
+actually used, nothing has removed the dye set's own measurement mixing yet.
+`fade_measurement_unmix` does that unmixing explicitly, independent of the current ratio
+state.
 """
 
 from typing import Optional
@@ -74,15 +74,13 @@ def measure_neutral_axis_ratios(
     toggle keeps the estimate independent of that setting, per-frame bounds are just the
     correct read of a compressed slide either way. Falls back to reading measured density
     directly when no profile is selected -- a real, if delta-biased, estimate beats none.
-    reject_reason is set (refs is None) only when the detector itself finds no trustworthy
-    neutral axis; delta's own degeneracy is separate (see fade_ratios_from_neutral_axis's
-    caller)."""
+    reject_reason is set (refs is None) when delta is degenerate or the detector finds no
+    trustworthy neutral axis."""
     grid = prefilter_log_grid(image, roi, analysis_buffer)
     if delta is not None:
-        found = fade_measurement_unmix(delta)
-        if found is None:
+        unmix = fade_measurement_unmix(delta)
+        if unmix is None:
             return None, "the dye-set side-absorption profile is degenerate — check the delta values"
-        unmix, _row_sums = found
         grid = unmix_log_image(grid, unmix)
     bounds = analyze_log_exposure_bounds_from_log(grid, None, 0.0, ProcessMode.E6, e6_normalize=True)
     refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0)
@@ -91,18 +89,16 @@ def measure_neutral_axis_ratios(
     return refs, ""
 
 
-def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], delta: Optional[tuple]) -> tuple[float, float, str]:
+def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs]) -> tuple[float, float, str]:
     """(ratio_g, ratio_b, reason) from two neutral references (midtone, shadow) already
-    unmixed by `delta` via `fade_measurement_unmix` -- `refs` must come from
+    unmixed by `fade_measurement_unmix` -- `refs` must come from
     `measure_neutral_axis_ratios`, not from a render's own `neutral_axis_refs` metric,
-    which is metered before this unmix and carries the bias this function corrects for.
+    which is metered before that unmix.
 
     A channel's midtone-to-shadow spread is proportional to its survival fraction. Red is
     the fade matrix's reference channel (Cast Removal's is green: `neutral_axis_affine`
     lands red/blue on green's refs instead), so ratios here are spread-relative-to-red, not
-    green. The row-normalization in `fade_measurement_unmix` that keeps the detector working
-    introduces a per-channel bias equal to inv(S)'s own row sums, corrected back out here --
-    skipping it is a real, double-digit-percent error, not a rounding correction.
+    green.
 
     reason is "" for a real estimate, otherwise which fail-closed condition fired -- a
     silent identity is indistinguishable from a broken feature. A legitimately
@@ -110,11 +106,6 @@ def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], delta: Option
     statistics alone, which is why the estimate is a suggestion, not a lock."""
     if refs is None:
         return 1.0, 1.0, "no neutral axis available"
-    row_sums = (1.0, 1.0, 1.0)
-    if delta is not None:
-        found = fade_measurement_unmix(delta)
-        if found is not None:
-            _unmix, row_sums = found
     mid, shadow = refs[0], refs[1]
     spreads = tuple(float(mid[ch]) - float(shadow[ch]) for ch in range(3))
     r, g, b = spreads
@@ -123,8 +114,8 @@ def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], delta: Option
         return 1.0, 1.0, f"a channel's neutral-axis spread is below the {SPREAD_FLOOR:g}-density noise floor"
     if max(abs_spreads) - min(abs_spreads) <= AGREEMENT_TOLERANCE * max(abs_spreads):
         return 1.0, 1.0, "channel spreads agree — no evidence of differential fade"
-    ratio_g = (g / r) * (row_sums[1] / row_sums[0])
-    ratio_b = (b / r) * (row_sums[2] / row_sums[0])
+    ratio_g = g / r
+    ratio_b = b / r
     lo, hi = RATIO_BOUNDS
     if not (lo <= ratio_g <= hi) or not (lo <= ratio_b <= hi):
         clamped_g = min(max(ratio_g, lo), hi)
@@ -142,14 +133,13 @@ def estimate_fade_ratios(
     (`sensor.measure_capture` / `build_sensor_matrix`).
 
     `delta` should be the currently selected fade profile's, if any: the estimate then
-    depends on that profile (both the unmix and the row-sum correction), so a profile
-    change should be treated as invalidating a previous estimate."""
+    depends on that profile's unmix, so a profile change invalidates a previous estimate."""
     if process_mode is not None and str(process_mode) != str(ProcessMode.E6):
         return 1.0, 1.0, "not a transparency"
     refs, reason = measure_neutral_axis_ratios(image, roi, analysis_buffer, delta)
     if refs is None:
         return 1.0, 1.0, reason
-    return fade_ratios_from_neutral_axis(refs, delta)
+    return fade_ratios_from_neutral_axis(refs)
 
 
 def fade_estimate_available(process: ProcessConfig) -> bool:

@@ -12,7 +12,6 @@ render already did (test_delta_unmix_is_required_even_at_default_ratios pins thi
 
 import numpy as np
 
-from negpy.features.exposure.normalization import fade_measurement_unmix
 from negpy.features.process.fade import (
     RATIO_BOUNDS,
     SPREAD_FLOOR,
@@ -28,31 +27,39 @@ _GENERIC_E6_DELTA = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
 def _synthetic_neutral_slide(
     ratio_g: float, ratio_b: float, delta: tuple, span: float = 3.0, size: int = 200, seed: int = 0, ratio_r: float = 1.0
 ) -> np.ndarray:
-    """A synthetic (size, size, 3) linear capture: every pixel is neutral by construction
-    (a single shared per-pixel factor t, scaled per channel by the true survival ratios --
-    concentration-space densities), then mixed through the dye set's own side-absorption
-    matrix S -- what a real scan of a faded, perfectly neutral gray card would read as
-    measured density. `span` covers E-6's full transfer window so both the midtone and
-    shadow luma bands have real pixels to find *when ratio_r == 1* -- `ratio_r` scales the
-    whole capture's density down the same way a real fade_ratio_r < 1 does, shrinking the
-    actual span well below `span` regardless of what `span` is set to."""
+    """A synthetic (size, size, 3) linear capture of a faded gray card. Unfaded, every pixel
+    is neutral in measured density (a shared per-pixel factor t on all three channels): film
+    is balanced so a gray subject reads gray, side absorptions included. The fade is then
+    F = S·diag(ratio_r, ratio_r·ratio_g, ratio_r·ratio_b)·inv(S) on measured density, built
+    here from scratch rather than from `_fade_forward_matrix`. `span` covers E-6's full
+    transfer window when ratio_r == 1; ratio_r < 1 shrinks the actual span below it."""
     rng = np.random.default_rng(seed)
     t = rng.uniform(0.03, 0.97, (size, size)).astype(np.float64)
     d_gr, d_br, d_rg, d_bg, d_rb, d_gb = delta
     s_matrix = np.array([[1.0, d_gr, d_br], [d_rg, 1.0, d_bg], [d_rb, d_gb, 1.0]])
-    concentration_log = np.stack([-t * span * ratio_r, -t * span * ratio_r * ratio_g, -t * span * ratio_r * ratio_b], axis=-1)
-    measured_log = concentration_log @ s_matrix.T
+    fade = s_matrix @ np.diag([ratio_r, ratio_r * ratio_g, ratio_r * ratio_b]) @ np.linalg.inv(s_matrix)
+    clean_log = np.stack([-t * span] * 3, axis=-1)
+    measured_log = clean_log @ fade.T
     return np.power(10.0, measured_log).astype(np.float32)
 
 
 def test_recovers_known_ratios_through_the_real_detector():
-    """End-to-end: a synthetic slide with known concentration-space survival ratios and
-    real generic-E6 delta, run through the actual production detector
-    (measure_neutral_axis_from_log) via measure_neutral_axis_ratios, recovers the true
-    ratios via fade_ratios_from_neutral_axis. This is the regression test for the row-sum
-    correction: without it, the recovered ratios are biased toward 1.0 by roughly the
-    row-sum ratio (~20% on green, for this delta)."""
+    """End-to-end: a synthetic slide with known survival ratios and real generic-E6 delta,
+    run through the actual production detector (measure_neutral_axis_from_log) via
+    measure_neutral_axis_ratios, recovers the true ratios via fade_ratios_from_neutral_axis."""
     ratio_g_true, ratio_b_true = 0.6, 0.85
+    image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
+
+    ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, _GENERIC_E6_DELTA)
+    assert reason == ""
+    assert abs(ratio_g - ratio_g_true) < 1e-2
+    assert abs(ratio_b - ratio_b_true) < 1e-2
+
+
+def test_recovers_a_mild_fade_without_overshooting():
+    """A mild fade is where a biased estimate hurts most: an overshoot over-corrects past
+    the uncorrected render."""
+    ratio_g_true, ratio_b_true = 0.85, 0.9
     image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
 
     ratio_g, ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, _GENERIC_E6_DELTA)
@@ -86,23 +93,9 @@ def test_delta_unmix_is_required_even_at_default_ratios():
     ratio_g_true, ratio_b_true = 0.6, 0.85
     image = _synthetic_neutral_slide(ratio_g_true, ratio_b_true, _GENERIC_E6_DELTA)
 
-    ratio_g_biased, ratio_b_biased, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
+    ratio_g_biased, _ratio_b, reason = estimate_fade_ratios(image, ProcessMode.E6, None, 0.0, None)
     assert reason == ""
     assert ratio_g_biased - ratio_g_true > 0.1  # biased toward 1.0, not a rounding difference
-    assert ratio_b_biased - ratio_b_true > 0.05
-
-
-def test_row_sum_correction_is_not_negligible():
-    """fade_measurement_unmix's row-normalization (needed to keep the neutral-axis
-    detector's fixed luma bands working) introduces a per-channel bias that
-    fade_ratios_from_neutral_axis must divide back out. Confirm the correction factor
-    itself is a real, double-digit-percent effect for the shipped generic E6 delta, not
-    something safe to drop as a simplification."""
-    found = fade_measurement_unmix(_GENERIC_E6_DELTA)
-    assert found is not None
-    _unmix, row_sums = found
-    green_factor = row_sums[1] / row_sums[0]
-    assert abs(green_factor - 1.0) > 0.1
 
 
 def test_documented_wrong_behavior_on_unequal_unfaded_spreads():
@@ -116,28 +109,28 @@ def test_documented_wrong_behavior_on_unequal_unfaded_spreads():
 
 
 def test_fails_closed_when_spreads_agree():
-    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 1.01, 0.99), (0.0, 0.0, 0.0), None, 1.0), None)
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 1.01, 0.99), (0.0, 0.0, 0.0), None, 1.0))
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
 
 def test_fails_closed_below_spread_floor():
     tiny = SPREAD_FLOOR / 2
-    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((tiny, tiny, tiny), (0.0, 0.0, 0.0), None, 1.0), None)
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((tiny, tiny, tiny), (0.0, 0.0, 0.0), None, 1.0))
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
 
 def test_clamps_and_reports_an_out_of_bounds_ratio():
     lo, hi = RATIO_BOUNDS
-    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 10.0, 1.0), (0.0, 0.0, 0.0), None, 1.0), None)
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 10.0, 1.0), (0.0, 0.0, 0.0), None, 1.0))
     assert ratio_g == hi
     assert ratio_b == 1.0
     assert reason
 
 
 def test_no_neutral_axis_found_fails_closed():
-    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(None, None)
+    ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(None)
     assert (ratio_g, ratio_b) == (1.0, 1.0)
     assert reason
 
