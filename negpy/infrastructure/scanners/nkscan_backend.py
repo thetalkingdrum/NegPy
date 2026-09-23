@@ -9,6 +9,7 @@ closes and until the film moves.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
@@ -366,6 +367,13 @@ class NkscanBackend:
         detected = rect
         rect = _shift_frame(rect, _offset_units(params.frame_offset_mm, optical))
         rect = _crop_frame(rect, params.window)
+        # [bleed-debug] TEST ONLY: manually reintroduce the old GATE_OFFSET constant to isolate
+        # its contribution to the positioning-precision finding. NEGPY_TEST_GATE_OFFSET=100 to
+        # match the removed upstream default; unset/0 for normal behavior.
+        test_gate_offset = int(os.environ.get("NEGPY_TEST_GATE_OFFSET", "0"))
+        if test_gate_offset:
+            rect = _shift_frame(rect, test_gate_offset)
+            logger.info("[bleed-debug] applied test GATE_OFFSET=%s -> %s", test_gate_offset, rect)
         logger.info("Frame %s detected %s, scanning %s (%+0.2f mm)", params.frame, detected, rect, params.frame_offset_mm)
         with self._mapped_errors():
             result = self.scan_frame(
@@ -444,6 +452,10 @@ class NkscanBackend:
         if thumbnail:
             self._strips[device_id] = _stack_rgb(thumbnail)
             self._columns[device_id] = float(discovery.addresses_per_column)
+            # [bleed-debug] TEST ONLY: dump the actual thumbnail pixels so a preview slice can
+            # be compared pixel-for-pixel against a real scan, not just by shape/address.
+            with suppress(Exception):
+                np.save("/tmp/negpy_bleed_debug_thumb.npy", self._strips[device_id])
         logger.info("Detected %d frames on %s", len(self._frames[device_id]), device_id)
         logger.info(
             "[bleed-debug] discover_frames rects=%s thumbnail_shape=%s addresses_per_column=%s",
