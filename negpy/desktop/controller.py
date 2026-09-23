@@ -893,11 +893,11 @@ class AppController(QObject):
         if missing:
             self._thumbnail_queue_active = True
             self.thumb_worker.cancel_pending()
-            # Copies, carrying each frame's stored film process. The source decode cannot
+            # Copies, carrying the film process each placeholder inverts by. The source decode cannot
             # tell a slide from a negative reliably, and inverting a positive is what put
             # negatives in the filmstrip. They are copies because these dicts cross to a
             # worker thread and uploaded_files must not grow a stale mode.
-            self.thumbnail_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f)} for f in missing])
+            self.thumbnail_requested.emit([{**f, "process_mode": self.session.placeholder_process_mode(f)} for f in missing])
 
     def _turn_thumbnails(self, keys: list, qt_transform: QTransform, pil_transpose: Any) -> bool:
         """Turns each cached thumbnail in place by one step. Memory and disk turn from
@@ -1037,7 +1037,7 @@ class AppController(QObject):
             return
         self._embedding_batch_owner = "embeddings"
         self.set_status("Indexing for search by meaning…")
-        self.embedding_requested.emit([{**f, "process_mode": self.session.stored_process_mode(f)} for f in missing])
+        self.embedding_requested.emit([{**f, "process_mode": self.session.placeholder_process_mode(f)} for f in missing])
 
     def index_library(self) -> None:
         """Indexes every file under library_roots() for search by meaning, not just

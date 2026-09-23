@@ -1211,6 +1211,17 @@ class DesktopSessionManager(QObject):
         )
         return str(saved.process.process_mode) if saved is not None else ""
 
+    def placeholder_process_mode(self, asset: dict) -> str:
+        """The film process a placeholder thumbnail inverts by, or "" to let it detect.
+
+        With autodetect off, opening an unsaved frame takes its hydrated mode (sticky,
+        then roll defaults) without a decode, so the placeholder takes it too. With
+        autodetect on, the open detects, which only a decode can answer."""
+        stored = self.stored_process_mode(asset)
+        if stored or self.state.autodetect_enabled:
+            return stored
+        return str(self.config_for_asset(asset).process.process_mode)
+
     def select_file(self, index: int, selection_override: Optional[List[int]] = None) -> None:
         """
         Changes active file and hydrates state from repository.
