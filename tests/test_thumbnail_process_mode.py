@@ -19,7 +19,7 @@ def _controller(stored: dict):
     c = MagicMock()
     c.state.uploaded_files = [dict(SLIDE), dict(FRESH)]
     c.state.thumbnails = {}
-    c.session.stored_process_mode = lambda asset: stored.get(asset["hash"], "")
+    c.session.placeholder_process_mode = lambda asset: stored.get(asset["hash"], "")
     return c
 
 
@@ -170,6 +170,60 @@ class StoredMode(unittest.TestCase):
 
         with patch("negpy.desktop.session.load_or_promote", return_value=None):
             self.assertEqual(DesktopSessionManager.stored_process_mode(session, dict(FRESH)), "")
+
+
+class PlaceholderMode(unittest.TestCase):
+    """With a real repository: the placeholder inverts by what opening the frame decides."""
+
+    def setUp(self):
+        import tempfile
+
+        from negpy.infrastructure.storage.repository import StorageRepository
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = StorageRepository(f"{self.tmp.name}/edits.db", f"{self.tmp.name}/settings.db")
+        self.repo.initialize()
+        self.session = DesktopSessionManager(self.repo)
+        self.fresh = {**FRESH, "path": f"{self.tmp.name}/b.nef"}
+
+    def _in_roll(self, mode: str) -> None:
+        from negpy.services.assets.rolls import create_virtual_roll, set_roll_defaults
+
+        roll_id = create_virtual_roll(self.repo, "Roll", [self.fresh["path"]])
+        set_roll_defaults(self.repo, roll_id, process_mode=mode)
+        self.session.state.active_roll_id = roll_id
+
+    def test_an_unsaved_frame_takes_the_roll_default(self):
+        self._in_roll("B&W Negative")
+
+        self.assertEqual(self.session.placeholder_process_mode(self.fresh), "B&W Negative")
+
+    def test_an_unsaved_frame_matches_what_opening_it_decides(self):
+        self._in_roll("Transparency")
+
+        expected = str(self.session.config_for_asset(self.fresh).process.process_mode)
+        self.assertEqual(self.session.placeholder_process_mode(self.fresh), expected)
+        self.assertEqual(expected, "Transparency")
+
+    def test_an_unsaved_frame_outside_a_roll_is_never_left_to_detection(self):
+        self.assertEqual(
+            self.session.placeholder_process_mode(self.fresh), str(self.session.config_for_asset(self.fresh).process.process_mode)
+        )
+        self.assertNotEqual(self.session.placeholder_process_mode(self.fresh), "")
+
+    def test_a_saved_edit_wins_over_the_roll_default(self):
+        from dataclasses import replace
+
+        from negpy.domain.models import WorkspaceConfig
+
+        config = WorkspaceConfig()
+        self.repo.save_file_settings(
+            self.fresh["hash"], replace(config, process=replace(config.process, process_mode="Transparency")), self.fresh["path"]
+        )
+        self._in_roll("B&W Negative")
+
+        self.assertEqual(self.session.placeholder_process_mode(self.fresh), "Transparency")
 
 
 if __name__ == "__main__":

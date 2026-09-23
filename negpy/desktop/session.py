@@ -1616,6 +1616,13 @@ class DesktopSessionManager(QObject):
         )
         return str(saved.process.process_mode) if saved is not None else ""
 
+    def placeholder_process_mode(self, asset: dict) -> str:
+        """The film process a placeholder thumbnail inverts by: the one opening the frame uses.
+
+        An unsaved frame opens with its hydrated mode (roll default, then sticky), never a
+        detected one, so the placeholder must not guess from the preview either."""
+        return self.stored_process_mode(asset) or str(self.config_for_asset(asset).process.process_mode)
+
     def select_file(self, index: int, selection_override: Optional[List[int]] = None) -> None:
         """
         Changes active file and hydrates state from repository.
