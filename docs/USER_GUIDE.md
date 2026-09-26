@@ -735,6 +735,7 @@ Needs **Linear RAW**; grayed out on Transparency and on a Trichrome triplet. **R
 
 *   **Matrix**: matrices for the current film process, grouped by source. *Generic C41* is built in; custom `.toml` matrices go in `<Documents>/NegPy/crosstalk/` (see [CROSSTALK.md](CROSSTALK.md)). The slider button opens the editor, with **Type** and **Process** (where the matrix applies); **+** makes one for the current process.
 *   **Strength** (0.0 to 1.0): how much unmix to apply. **Re-run Roll Analysis** after changing it.
+*   **Matrix Terms** (click to show; each −0.5 to 0.5): the Matrix's six off-diagonal terms as sliders, tuned live on the frame. **Green in Red** is how much of the green channel is mixed into red; negative removes it. A note says when they differ from the Matrix; the undo button puts the Matrix's values back, and the save button stores them as a new matrix for the same film process. Grayed out while Strength is 0.
 
 > The bundled film matrices, marked *(approx)*, come from spec sheets and describe the dyes alone. They fully correct only a capture that reads each dye cleanly (a Narrowband Scanner, Trichrome, or a calibrated single-shot narrowband rig); for broadband light and a Bayer sensor they are a starting point.
 
