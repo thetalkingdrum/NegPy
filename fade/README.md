@@ -3,23 +3,22 @@
 Community-contributed dye-fade parameters for NegPy's **Fade Restoration**
 control (Process panel, E-6 only).
 
-Every `.toml` here is bundled with the app and copied into a user's
-`<Documents>/NegPy/fade/` folder on first run, so they show up in the sidebar
-dropdown out of the box.
+Every `.toml` here is bundled with the app and shows up, read-only, in the
+sidebar dropdown. Your own profiles live in `<Documents>/NegPy/fade/`.
 
-A profile is `delta` plus the `bands` it was measured at: `delta` is the six
-side-absorption ratios between layers, in `(gr, br, rg, bg, rb, gb)` order —
-a property of the dye set, not of any one faded frame. `bands` is the
-scanner's R/G/B measurement wavelengths in nm; delta is meaningless without
-it (see below), so a profile missing `bands` is rejected outright, the same
-as a malformed `delta`. The two surviving-dye ratios that *do* vary per
+A profile is `delta`: the six side-absorption ratios between layers, in
+`(gr, br, rg, bg, rb, gb)` order — a property of the dye set and the capture,
+not of any one faded frame. A measured or spec-sheet profile also records the
+`bands` it was read at, the R/G/B wavelengths in nm (see below); a profile
+tuned by eye on a rig has none. A malformed `bands` is rejected, the same as a
+malformed `delta`. The two surviving-dye ratios that *do* vary per
 frame (relative green/blue survival against red) are not profile data; they
 live as sliders in the sidebar, or from the Estimate action, next to
 Strength.
 
 ```toml
 process = "Transparency"   # or "Color Negative", once a negative dye set exists
-bands = [650, 550, 450]    # R, G, B measurement wavelengths, nm
+bands = [650, 550, 450]    # R, G, B wavelengths, nm; omitted for a tuned profile
 ```
 
 ## Where these numbers come from
@@ -45,9 +44,14 @@ the red band to a broadband/colorimetric sensor's response peak (~590 nm)
 changes green's leak into red by roughly an order of magnitude on the stocks
 checked — a fade profile is meaningless without knowing the scanner's channel
 wavelengths, exactly as NegPy already treats Crosstalk profiles as belonging
-to a whole scanning setup, not the film alone. This is why the feature is
-tractable on a Narrowband Scanner or Trichrome rig and much less so on a
-broadband flatbed.
+to a whole scanning setup, not the film alone.
+
+**On a broadband light** (a white LED, a flash, a flatbed lamp) the side
+absorption is much larger and depends on the light and the camera, so no
+bundled number describes it. Copy a bundled profile or start a new one in the
+editor, then tune the six terms by eye on a frame with known neutrals, the
+same way a Crosstalk profile is tuned for a negative. It saves as
+`type = "tuned"`, with no `bands`.
 
 `Generic E6` is the mean of Ektachrome 100D, Provia 100F and Velvia 50 — a
 reasonable default, not a specific stock's numbers. Per-stock profiles differ
