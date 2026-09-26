@@ -116,6 +116,7 @@ Every feature lives in `negpy/features/<name>/`:
   - `gradient_icon(name, sweep)`: a glyph filled with a `Sweep` (token stops and an angle), for the one icon in a row that must stand out. A sweep shows what its tool changes or paints, and every sweep is a named constant beside `RGB_SWEEP`; never reuse one for a different meaning.
   - `templates.field_label`: label beside a combo/entry; `width=` makes it a right-aligned label column. `field_row` builds the whole label + field + icon-button row; in a card with sliders the row takes the slider label column and track width. `templates.hint_label`: a line of help under a control.
   - `section_subheader` for grouping; `header_row(header, *icons)` puts icon tools that act on the whole subsection at its right end.
+  - `disclosure_subheader`: a subheader that hides or shows the rows under it, for tuning most edits leave alone (Matrix Terms under Crosstalk Strength).
   - `CollapsibleSection`: a panel section, and the only reset affordance.
   - `CompactSlider`: one row of label, track, value. `CollapsibleSection.set_content` aligns a card's label and value columns, so one slider per row, never two side by side.
   - `SliderGroup`: a rail under the control its members depend on: a main slider's modifiers (Toe Width under Toe), or the settings of the feature that a toggle or dropdown above turns on. The main control stays outside the rail, and peers of equal rank get no rail.
