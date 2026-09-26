@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout
 
 from negpy.desktop.view.sidebar.base import BaseSidebar
+from negpy.desktop.view.sidebar.color import CAST_REMOVAL_TOOLTIP
 from negpy.desktop.view.styles.templates import field_label, hint_label, section_subheader, wrap_tooltip
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider
@@ -220,6 +221,12 @@ class SensorSidebar(BaseSidebar):
         self.fade_estimate_hint.setVisible(False)
         self.layout.addWidget(self.fade_estimate_hint)
 
+        # Filtration's Cast Removal, repeated here: it corrects the residual the fade
+        # sliders leave, so the two are tuned together. Both write the same field.
+        self.fade_cast_removal_slider = CompactSlider("Cast Removal", 0.0, 1.0, self.state.config.exposure.cast_removal_strength)
+        self.fade_cast_removal_slider.setToolTip(wrap_tooltip(CAST_REMOVAL_TOOLTIP))
+        self.layout.addWidget(self.fade_cast_removal_slider)
+
         self.layout.addWidget(section_subheader("SINGLE-SHOT NARROWBAND CALIBRATION"))
 
         row = QHBoxLayout()
@@ -390,6 +397,12 @@ class SensorSidebar(BaseSidebar):
             lambda v: self._on_fade_ratio_changed(self.fade_ratio_g_slider.value(), v, persist=True)
         )
         self.estimate_fade_btn.clicked.connect(self._on_estimate_fade)
+        self.fade_cast_removal_slider.valueChanged.connect(
+            lambda v: self.update_config_section("exposure", render=True, persist=False, readback_metrics=False, cast_removal_strength=v)
+        )
+        self.fade_cast_removal_slider.valueCommitted.connect(
+            lambda v: self.update_config_section("exposure", render=True, persist=True, readback_metrics=True, cast_removal_strength=v)
+        )
 
         self.hue_trim_slider.valueChanged.connect(lambda v: self._on_hue_trim_changed(v, persist=False))
         self.hue_trim_slider.valueCommitted.connect(lambda v: self._on_hue_trim_changed(v, persist=True))
@@ -725,6 +738,7 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_r_slider.setValue(conf.fade_ratio_r)
             self.fade_ratio_g_slider.setValue(conf.fade_ratio_g)
             self.fade_ratio_b_slider.setValue(conf.fade_ratio_b)
+            self.fade_cast_removal_slider.setValue(self.state.config.exposure.cast_removal_strength)
             for w in (
                 self.fade_header,
                 self.fade_label,
@@ -736,6 +750,7 @@ class SensorSidebar(BaseSidebar):
                 self.fade_ratio_b_slider,
                 self.estimate_fade_label,
                 self.estimate_fade_btn,
+                self.fade_cast_removal_slider,
             ):
                 w.setVisible(e6)
             self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
@@ -761,6 +776,7 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_r_slider,
             self.fade_ratio_g_slider,
             self.fade_ratio_b_slider,
+            self.fade_cast_removal_slider,
             self.hue_trim_slider,
         ):
             w.blockSignals(blocked)
