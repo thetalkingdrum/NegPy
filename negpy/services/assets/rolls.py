@@ -397,6 +397,11 @@ ROLL_DEFAULT_FIELDS: Dict[str, tuple] = {
             # without disk I/O -- travels with them, or another frame's roll-derived
             # crosstalk would be read back through its own, unrelated film process.
             "crosstalk_process",
+            # The dye set's fade profile. The survival ratios and Fade Strength describe
+            # one slide's fade, so they stay per-frame.
+            "fade_profile",
+            "fade_delta",
+            "fade_process",
             "hue_trim",
         ),
     ),

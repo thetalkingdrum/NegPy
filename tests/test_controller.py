@@ -799,6 +799,29 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(cfg[0].process.hue_trim, 2.5)
         self.assertTrue(kwargs["persist"])
 
+    def test_set_roll_default_matches_a_tuple_the_store_read_back_as_a_list(self):
+        """The roll store is JSON, so fade_delta comes back as a list. Picking the roll's
+        own fade profile again must still read as matching the roll."""
+        from dataclasses import replace
+
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.create_virtual_roll(repo, "Velvia", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.current_file_hash = "h1"
+        delta = (0.01, 0.02, 0.03, 0.04, 0.05, 0.06)
+        state.config = replace(WorkspaceConfig(), process=replace(WorkspaceConfig().process, fade_profile="Velvia 50", fade_delta=delta))
+        stored = {name: list(v) if isinstance(v, tuple) else v for name, v in self.controller._card_values(state.config, "sensor").items()}
+        rolls.set_roll_defaults(repo, roll_id, **stored)
+
+        self.controller.set_roll_default("sensor", fade_profile="Velvia 50", fade_delta=delta)
+
+        self.assertEqual(rolls.frame_override_cards(repo, roll_id, "h1"), set())
+
     def test_set_roll_default_writes_the_cards_own_config_section(self):
         """The Lens Correction card edits GeometryConfig, not ProcessConfig."""
         from negpy.services.assets import rolls

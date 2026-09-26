@@ -571,6 +571,30 @@ class TestRollDefaults:
         set_frame_override(repo, roll_id, "h1", "flatfield", locked=True)
         assert resolve_roll_config(repo, roll_id, "h1", WorkspaceConfig()).flatfield.profile_id == ""
 
+    def test_the_fade_profile_follows_the_roll_but_the_survival_ratios_do_not(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Velvia", [])
+        set_roll_defaults(
+            repo,
+            roll_id,
+            fade_profile="Velvia 50",
+            fade_delta=[0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+            fade_process=ProcessMode.E6,
+            fade_ratio_g=0.5,
+            fade_strength=0.5,
+        )
+        frame = WorkspaceConfig(process=ProcessConfig(fade_ratio_g=0.8))
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", frame)
+
+        assert resolved.process.fade_profile == "Velvia 50"
+        assert resolved.process.fade_delta == (0.01, 0.02, 0.03, 0.04, 0.05, 0.06)
+        assert resolved.process.fade_ratio_g == 0.8
+        assert resolved.process.fade_strength == 1.0
+
+        set_frame_override(repo, roll_id, "h1", "sensor", locked=True)
+        assert resolve_roll_config(repo, roll_id, "h1", frame).process.fade_profile == "None"
+
     def test_positive_source_can_be_locked_away_on_the_film_card(self):
         repo = _repo()
         roll_id = create_virtual_roll(repo, "Portra", [])

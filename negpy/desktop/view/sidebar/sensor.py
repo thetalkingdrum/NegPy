@@ -516,10 +516,8 @@ class SensorSidebar(BaseSidebar):
         # was computed against the old delta (the estimator unmixes by it), so the hint
         # is now stale and is cleared rather than left showing a number for a profile
         # that no longer applies.
-        self.update_config_section(
-            "process",
-            persist=True,
-            render=True,
+        self.controller.set_roll_default(
+            "sensor",
             fade_profile=name,
             fade_delta=FadeProfiles.get_delta(name),
             fade_process=FadeProfiles.get_process(name),
@@ -592,10 +590,9 @@ class SensorSidebar(BaseSidebar):
         dlg.show()
 
     def _on_fade_preview(self, delta: object, strength: float) -> None:
-        self.update_config_section(
-            "process",
+        self.controller.set_roll_default(
+            "sensor",
             persist=False,
-            render=True,
             fade_delta=tuple(delta),
             fade_strength=strength,
             fade_process=ProcessMode.E6,
@@ -606,10 +603,8 @@ class SensorSidebar(BaseSidebar):
         if result == QDialog.DialogCode.Accepted:
             name = dlg.selected_name() or FadeProfiles.NONE_NAME
             snap_strength = self._fade_snapshot[2]
-            self.update_config_section(
-                "process",
-                persist=True,
-                render=True,
+            self.controller.set_roll_default(
+                "sensor",
                 fade_profile=name,
                 fade_delta=FadeProfiles.get_delta(name),
                 # Preview strength is view-only; only adopt it if the edit had fade off.
@@ -619,10 +614,8 @@ class SensorSidebar(BaseSidebar):
             )
         else:
             profile, delta, strength, process = self._fade_snapshot
-            self.update_config_section(
-                "process",
-                persist=True,
-                render=True,
+            self.controller.set_roll_default(
+                "sensor",
                 fade_profile=profile,
                 fade_delta=delta,
                 fade_strength=strength,
