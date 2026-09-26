@@ -1,5 +1,5 @@
-"""Action id -> live widget, the one-shot-button counterpart to slider_targets.py,
-toggle_targets.py and combo_targets.py. Favourites resolves action entries through
+"""Action id -> live widget, the one-shot-button counterpart to slider_targets.py
+and combo_targets.py. Favourites resolves action entries through
 here. A one-shot action has no value or checked state to mirror and, being icon-only,
 no on-panel text either -- forwarding a click is the whole job, and the label comes
 from ACTION_LABELS rather than the widget."""

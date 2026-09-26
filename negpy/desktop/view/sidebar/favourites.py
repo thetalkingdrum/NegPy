@@ -13,7 +13,6 @@ from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUPS
 from negpy.desktop.view.slider_targets import SLIDER_ATTRS, slider_widget_map
 from negpy.desktop.view.styles.templates import field_label, hint_label
 from negpy.desktop.view.styles.theme import THEME
-from negpy.desktop.view.toggle_targets import TOGGLE_ATTRS, TOGGLE_LABELS, toggle_widget_map
 from negpy.desktop.view.widgets.collapsible import hidden_by_gating
 from negpy.desktop.view.widgets.favourites_dialog import FavouritesDialog
 from negpy.desktop.view.widgets.sliders import align_slider_columns, clone_slider
@@ -22,31 +21,19 @@ _SETTING_KEY = "favourite_sliders"
 
 
 def load_favourites(repo) -> list[str]:
-    """Drop ids that no longer exist so a retired slider, toggle, combo or action degrades
+    """Drop ids that no longer exist so a retired slider, combo or action degrades
     quietly."""
     stored = repo.get_global_setting(_SETTING_KEY)
     if not isinstance(stored, list):
         return []
-    known = SLIDER_ATTRS.keys() | TOGGLE_ATTRS.keys() | COMBO_ATTRS.keys() | ACTION_ATTRS.keys()
+    known = SLIDER_ATTRS.keys() | COMBO_ATTRS.keys() | ACTION_ATTRS.keys()
     return [item_id for item_id in stored if item_id in known]
-
-
-def _clone_toggle(src: QPushButton) -> QPushButton:
-    """A second checkable button onto the same control, mirroring clone_slider's role
-    for sliders: forwards to the original via a real click rather than duplicating its
-    binding, so persistence, mode-gating and rendering all stay with the source."""
-    clone = QPushButton(src.text())
-    clone.setCheckable(True)
-    clone.setChecked(src.isChecked())
-    clone.setIcon(src.icon())
-    clone.setToolTip(src.toolTip())
-    return clone
 
 
 def _clone_action(src: QPushButton) -> QPushButton:
     """A second one-shot button onto the same action: forwards to the original via a
     real click, so its side effects (populating the survival sliders, clearing a stale
-    hint) stay with the source, same as _clone_toggle."""
+    hint) stay with the source."""
     clone = QPushButton()
     clone.setIcon(src.icon())
     clone.setToolTip(src.toolTip())
@@ -88,7 +75,7 @@ def _sync_combo(clone: QComboBox, src: QComboBox) -> None:
 
 
 class FavouritesSidebar(BaseSidebar):
-    """User-chosen sliders and toggles gathered in one tab. Each favourite is a *mirror*
+    """User-chosen sliders, combos and actions gathered in one tab. Each favourite is a *mirror*
     of the real control, not the control itself — a QWidget has one parent, so
     re-parenting would tear it out of its home section. The mirror forwards to the
     original, which keeps its existing binding, mode-gating and channel-retargeting
@@ -98,10 +85,10 @@ class FavouritesSidebar(BaseSidebar):
 
     def __init__(self, controller: AppController, controls):
         self.controls = controls
-        # (container, clone, src, "slider" | "toggle" | "combo" | "action") -- container
+        # (container, clone, src, "slider" | "combo" | "action") -- container
         # is what was added to the layout (a combo's or an action's is a label+widget
-        # row, so its label hides and disables along with it; a slider or toggle's
-        # container is the clone itself). Each kind needs different value and forwarding
+        # row, so its label hides and disables along with it; a slider's container
+        # is the clone itself). Each kind needs different value and forwarding
         # calls, so sync_ui and _rebuild branch on the tag rather than probing the widget
         # type.
         self._mirrors: list[tuple[object, object, object, str]] = []
@@ -138,15 +125,14 @@ class FavouritesSidebar(BaseSidebar):
         self.controls.modified_synced.connect(self.sync_ui)
 
     def _choices(self) -> list[tuple[str, str, str]]:
-        """Sliders, then toggles, then combos, then actions, stably grouped by category so
+        """Sliders, then combos, then actions, stably grouped by category so
         each lands inside its matching category block (e.g. Process) rather than opening a
         duplicate header of its own at the end."""
         widgets = slider_widget_map(self.controls)
         sliders = [(group.id, group.category, widgets[group.id]().label.text()) for group in SLIDER_GROUPS]
-        toggles = [(toggle_id, category, label) for toggle_id, (category, label) in TOGGLE_LABELS.items()]
         combos = [(combo_id, category, label) for combo_id, (category, label) in COMBO_LABELS.items()]
         actions = [(action_id, category, label) for action_id, (category, label) in ACTION_LABELS.items()]
-        combined = sliders + toggles + combos + actions
+        combined = sliders + combos + actions
         category_order: dict[str, int] = {}
         for _id, category, _label in combined:
             category_order.setdefault(category, len(category_order))
@@ -167,7 +153,6 @@ class FavouritesSidebar(BaseSidebar):
         self._action_hints.clear()
 
         slider_widgets = slider_widget_map(self.controls)
-        toggle_widgets = toggle_widget_map(self.controls)
         combo_widgets = combo_widget_map(self.controls)
         action_widgets = action_widget_map(self.controls)
         action_hint_widgets = action_hint_widget_map(self.controls)
@@ -179,12 +164,6 @@ class FavouritesSidebar(BaseSidebar):
                 clone.valueCommitted.connect(lambda v, s=src: s.mirror_value(v, commit=True))
                 self._container_layout.addWidget(clone)
                 self._mirrors.append((clone, clone, src, "slider"))
-            elif item_id in TOGGLE_ATTRS:
-                src = toggle_widgets[item_id]()
-                clone = _clone_toggle(src)
-                clone.clicked.connect(lambda _checked, s=src: s.click())
-                self._container_layout.addWidget(clone)
-                self._mirrors.append((clone, clone, src, "toggle"))
             elif item_id in COMBO_ATTRS:
                 src = combo_widgets[item_id]()
                 _category, item_label = COMBO_LABELS[item_id]
@@ -223,8 +202,6 @@ class FavouritesSidebar(BaseSidebar):
         for container, clone, src, kind in self._mirrors:
             if kind == "slider":
                 clone.setValue(src.value())
-            elif kind == "toggle":
-                clone.setChecked(src.isChecked())
             elif kind == "combo":
                 _sync_combo(clone, src)
             # An action has no value or checked state -- only visibility and enabled
