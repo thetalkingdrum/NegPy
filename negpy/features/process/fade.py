@@ -139,7 +139,13 @@ def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs]) -> tuple[floa
     if not (lo <= ratio_g <= hi) or not (lo <= ratio_b <= hi):
         clamped_g = min(max(ratio_g, lo), hi)
         clamped_b = min(max(ratio_b, lo), hi)
-        return clamped_g, clamped_b, f"implied ratio outside {lo:g}–{hi:g} — clamped"
+        out = [(n, raw, c) for n, raw, c in (("green", ratio_g, clamped_g), ("blue", ratio_b, clamped_b)) if raw != c]
+        reason = "; ".join(f"implied {n} {raw:.1f} is outside {lo:g}–{hi:g}, set to {c:.1f}" for n, raw, c in out)
+        # Above the range, red has faded far more than that layer: Red Survival, set by
+        # eye, is the one control that carries the rest.
+        if any(raw > hi for _n, raw, _c in out):
+            reason += ". Red has faded further than this range covers: lower Red Survival by eye"
+        return clamped_g, clamped_b, reason[0].upper() + reason[1:]
     return ratio_g, ratio_b, ""
 
 
