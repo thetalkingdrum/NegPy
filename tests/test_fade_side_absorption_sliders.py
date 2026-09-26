@@ -42,7 +42,7 @@ def _sidebar(**process):
     ctrl.state.config = replace(cfg, process=replace(cfg.process, **fields))
     w = SensorSidebar(ctrl)
     w.sync_ui()
-    w.fade_delta_header.setChecked(True)
+    w.fade_terms.header.setChecked(True)
     return w, ctrl
 
 
@@ -53,7 +53,7 @@ def _set(w, ctrl, **process):
 
 def test_a_drag_writes_only_its_own_term():
     w, ctrl = _sidebar()
-    w.fade_delta_sliders[2].valueCommitted.emit(0.3)
+    w.fade_terms.sliders[2].valueCommitted.emit(0.3)
     kwargs = ctrl.set_roll_default.call_args.kwargs
     assert kwargs["fade_delta"] == (_DELTA[0], _DELTA[1], 0.3, *_DELTA[3:])
     assert kwargs["persist"] is True
@@ -61,40 +61,40 @@ def test_a_drag_writes_only_its_own_term():
 
 def test_an_edit_away_from_the_profile_is_shown_and_can_be_reset():
     w, ctrl = _sidebar()
-    assert w.fade_delta_hint.text() == ""
-    assert not w.fade_delta_reset_btn.isEnabled()
+    assert w.fade_terms.note.text() == ""
+    assert not w.fade_terms.reset_btn.isEnabled()
 
     _set(w, ctrl, fade_delta=(0.2, *_DELTA[1:]))
-    assert w.fade_delta_hint.text() == f"Edited from {_NAME}"
-    assert w.fade_delta_reset_btn.isEnabled()
+    assert w.fade_terms.note.text() == f"Edited from {_NAME}"
+    assert w.fade_terms.reset_btn.isEnabled()
 
-    w.fade_delta_reset_btn.click()
+    w.fade_terms.reset_btn.click()
     assert ctrl.set_roll_default.call_args.kwargs["fade_delta"] == _DELTA
 
 
 def test_the_edited_note_shows_with_the_sliders_hidden():
     w, ctrl = _sidebar(fade_delta=(0.2, *_DELTA[1:]))
     w.show()
-    w.fade_delta_header.setChecked(False)
-    assert not w.fade_delta_sliders[0].isVisible()
-    assert w.fade_delta_hint.isVisible()
+    w.fade_terms.header.setChecked(False)
+    assert not w.fade_terms.sliders[0].isVisible()
+    assert w.fade_terms.note.isVisible()
 
 
 def test_sliders_grey_out_while_the_layers_faded_equally():
     w, ctrl = _sidebar(fade_ratio_g=1.0, fade_ratio_b=1.0, fade_ratio_r=0.7)
-    assert not w.fade_delta_sliders[0].isEnabled()
-    assert "Green or Blue Survival" in w.fade_delta_gate_hint.text()
+    assert not w.fade_terms.sliders[0].isEnabled()
+    assert "Green or Blue Survival" in w.fade_terms.gate_hint.text()
 
     _set(w, ctrl, fade_ratio_b=1.2)
-    assert w.fade_delta_sliders[0].isEnabled()
-    assert w.fade_delta_gate_hint.text() == ""
+    assert w.fade_terms.sliders[0].isEnabled()
+    assert w.fade_terms.gate_hint.text() == ""
 
 
 def test_save_as_profile_writes_the_tuned_delta_and_selects_it(monkeypatch):
     tuned = (0.2, *_DELTA[1:])
     w, ctrl = _sidebar(fade_delta=tuned)
-    monkeypatch.setattr("negpy.desktop.view.sidebar.sensor.QInputDialog.getText", lambda *a, **k: ("Mine", True))
-    w.fade_delta_save_btn.click()
+    monkeypatch.setattr("negpy.desktop.view.sidebar.profile_terms.QInputDialog.getText", lambda *a, **k: ("Mine", True))
+    w.fade_terms.save_btn.click()
     assert FadeProfiles.get_delta("Mine") == pytest.approx(tuned)
     assert ctrl.set_roll_default.call_args.kwargs["fade_profile"] == "Mine"
 
@@ -102,9 +102,9 @@ def test_save_as_profile_writes_the_tuned_delta_and_selects_it(monkeypatch):
 def test_save_refuses_a_bundled_or_none_name(monkeypatch):
     w, ctrl = _sidebar()
     warned = []
-    monkeypatch.setattr("negpy.desktop.view.sidebar.sensor.QInputDialog.getText", lambda *a, **k: ("None", True))
-    monkeypatch.setattr("negpy.desktop.view.sidebar.sensor.QMessageBox.warning", lambda *a, **k: warned.append(a))
-    w.fade_delta_save_btn.click()
+    monkeypatch.setattr("negpy.desktop.view.sidebar.profile_terms.QInputDialog.getText", lambda *a, **k: ("None", True))
+    monkeypatch.setattr("negpy.desktop.view.sidebar.profile_terms.QMessageBox.warning", lambda *a, **k: warned.append(a))
+    w.fade_terms.save_btn.click()
     assert warned
     ctrl.set_roll_default.assert_not_called()
 
