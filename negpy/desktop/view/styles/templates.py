@@ -414,6 +414,30 @@ def section_subheader(text: str) -> QLabel:
     return lbl
 
 
+def disclosure_subheader(text: str, expanded: bool = False) -> QPushButton:
+    """A section_subheader that hides or reveals the rows under it. Checked means shown;
+    the caller connects `toggled` to the rows' visibility."""
+    btn = QPushButton(text.upper())
+    btn.setCheckable(True)
+    btn.setChecked(expanded)
+    btn.setFlat(True)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet(
+        "QPushButton, QPushButton:checked, QPushButton:hover {"
+        "background: transparent; border: none; text-align: left; padding: 0px; "
+        f"font-size: {THEME.font_size_small}px; color: {THEME.text_hint}; "
+        f"font-weight: {THEME.weight_semibold}; margin-top: {THEME.space_xl}px;}}"
+    )
+
+    def _chevron(shown: bool) -> None:
+        btn.setIcon(qta.icon("fa5s.chevron-down" if shown else "fa5s.chevron-right", color=THEME.text_hint))
+
+    btn.setIconSize(QSize(THEME.font_size_small - 2, THEME.font_size_small - 2))
+    _chevron(expanded)
+    btn.toggled.connect(_chevron)
+    return btn
+
+
 def field_label_qss() -> str:
     """Style for labels sitting next to a combo/entry field (muted, semibold)."""
     return f"font-size: {THEME.font_size_base}px; color: {THEME.text_secondary}; font-weight: {THEME.weight_semibold};"
