@@ -616,10 +616,13 @@ The paper margin takes the mat color, so it joins the border with no seam.
 
 ## 8. Favorites tab
 
-The sliders, toggles, dropdowns and one-shot actions you use most, in one place. Empty until you fill it.
+The sliders, dropdowns and one-shot actions you use most, in one place. Empty until you fill it.
 
 *   **Edit Favorites**: tick controls on the left, drag them into order on the right, then press **Apply**.
-*   They are the same controls as in their home panels, so a change here is a change there: clicking a favorited toggle or action button clicks the original, and picking a dropdown option picks it in the original. A favorite hides when its original does (a Filtration slider in black & white).
+The sliders, dropdowns and one-shot actions you use most, in one place. Empty until you fill it.
+
+*   **Edit Favorites**: tick controls on the left, drag them into order on the right, then press **Apply**.
+*   They are the same controls as in their home panels, so a change here is a change there: clicking a favorited action button clicks the original, and picking a dropdown option picks it in the original. A favorite hides when its original does (a Filtration slider in black & white).
 *   Your selection is remembered between sessions.
 
 <!-- panel:presets -->

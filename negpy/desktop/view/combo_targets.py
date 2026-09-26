@@ -1,8 +1,7 @@
-"""Combo-box id -> live widget, the dropdown counterpart to slider_targets.py's and
-toggle_targets.py's registries. Favourites resolves combo entries through here. Kept
-separate from the other two: a combo has no step, no checked state, and its own item
-list can be rebuilt by its owner (e.g. on a process-mode change), which the other kinds
-never need to account for."""
+"""Combo-box id -> live widget, the dropdown counterpart to slider_targets.py's
+registry. Favourites resolves combo entries through here. Kept separate from it: a combo
+has no step, and its own item list can be rebuilt by its owner (e.g. on a process-mode
+change), which a slider never needs to account for."""
 
 from __future__ import annotations
 

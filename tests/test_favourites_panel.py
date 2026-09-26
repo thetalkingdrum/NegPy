@@ -7,7 +7,6 @@ from negpy.desktop.view.sidebar.favourites import FavouritesSidebar, load_favour
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUP_BY_ID
 from negpy.desktop.view.slider_targets import SLIDER_ATTRS, slider_widget_map
 from negpy.desktop.view.combo_targets import COMBO_ATTRS, combo_widget_map
-from negpy.desktop.view.toggle_targets import TOGGLE_ATTRS, toggle_widget_map
 from negpy.desktop.view.widgets.favourites_dialog import FavouritesDialog
 from negpy.desktop.view.widgets.sliders import CompactSlider, HueSlider, KelvinSlider, PowerWarpSlider, clone_slider
 
@@ -50,13 +49,6 @@ def test_clone_round_trips_hue_and_kelvin(qapp):
     kelvin = clone_slider(KelvinSlider("Temperature"))
     assert isinstance(kelvin, KelvinSlider)
     assert (kelvin._min, kelvin._max) == (3000.0, 12000.0)
-
-
-def test_every_favouritable_toggle_resolves(controls):
-    widgets = toggle_widget_map(controls)
-    for toggle_id in TOGGLE_ATTRS:
-        src = widgets[toggle_id]()
-        assert src.isCheckable()
 
 
 def test_every_favouritable_combo_resolves(controls):
@@ -149,43 +141,13 @@ def test_sync_hides_a_mirror_only_when_the_original_is_explicitly_hidden(control
     assert not container.isHidden()
 
 
-def test_choices_includes_a_toggle_grouped_with_its_category(controls, qapp):
-    ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
-    assert "e6_normalize" in ids_in_order
-    process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
-    process_run = [i for i in ids_in_order if i in process_ids or i == "e6_normalize"]
-    # e6_normalize's category is "Process": it must land inside that contiguous run, not
-    # split off into a second, duplicate "Process" block at the end of the list.
-    assert process_run[-1] == "e6_normalize"
-    assert ids_in_order.index("e6_normalize") == ids_in_order.index(process_run[0]) + len(process_run) - 1
-
-
-def test_clicking_a_toggle_mirror_clicks_the_original(controls, qapp):
-    panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
-    _container, clone, src, kind = panel._mirrors[0]
-    assert kind == "toggle"
-    before = src.isChecked()
-
-    clone.click()
-    assert src.isChecked() != before
-
-
-def test_sync_reflects_a_toggle_mirror_checked_state(controls, qapp):
-    panel = _favourites(controls, _Repo(favourite_sliders=["e6_normalize"]))
-    _container, clone, src, _kind = panel._mirrors[0]
-
-    src.setChecked(not src.isChecked())
-    panel.sync_ui()
-    assert clone.isChecked() == src.isChecked()
-
-
 def test_choices_includes_a_combo_grouped_with_its_category(controls, qapp):
     ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
     assert "fade_profile" in ids_in_order
     process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
-    process_run = [i for i in ids_in_order if i in process_ids or i in ("e6_normalize", "fade_profile")]
-    # fade_profile's category is "Process": it must land inside that contiguous run, after
-    # the toggle that's already grouped there, not open a duplicate header of its own.
+    process_run = [i for i in ids_in_order if i in process_ids or i == "fade_profile"]
+    # fade_profile's category is "Process": it must land inside that contiguous run, not
+    # open a duplicate header of its own.
     assert process_run[-1] == "fade_profile"
 
 
@@ -219,10 +181,10 @@ def test_choices_includes_an_action_grouped_with_its_category(controls, qapp):
     ids_in_order = [choice_id for choice_id, _category, _label in FavouritesSidebar(controls.controller, controls)._choices()]
     assert "estimate_fade" in ids_in_order
     process_ids = {group_id for group_id, group in SLIDER_GROUP_BY_ID.items() if group.category == "Process"}
-    process_tag = ("e6_normalize", "fade_profile", "estimate_fade")
+    process_tag = ("fade_profile", "estimate_fade")
     process_run = [i for i in ids_in_order if i in process_ids or i in process_tag]
     # estimate_fade's category is "Process": it must land inside that contiguous run,
-    # after the toggle and combo already grouped there, not open a duplicate header.
+    # after the combo already grouped there, not open a duplicate header.
     assert process_run[-1] == "estimate_fade"
 
 
