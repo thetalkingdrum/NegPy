@@ -134,9 +134,9 @@ class SensorSidebar(BaseSidebar):
             "crosstalk unmix. Labelled restoration rather than correction, because it undoes fading "
             "rather than the ordinary channel bleed a fresh scan already has.<br><br>"
             "<b>The bundled profiles are computed from published spectral dye-density curves at "
-            "450/550/650 nm</b> (Gschwind's narrowband bands) — they describe a Narrowband Scanner or "
-            "Trichrome capture, not a broadband scan, where the real side absorption is much larger. "
-            "Custom .toml profiles live in the NegPy/fade folder."
+            "450/550/650 nm</b> (Gschwind's narrowband bands), so they describe a Narrowband Scanner or "
+            "Trichrome capture. On a broadband light, copy one or start a new one in the editor and "
+            "tune it by eye. Custom .toml profiles live in the NegPy/fade folder."
             "</td></tr></table>"
         )
         self.manage_fade_btn = self._icon_action(

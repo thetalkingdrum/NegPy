@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from negpy.desktop.view.sidebar.tone import _CH_COLORS
-from negpy.desktop.view.styles.templates import dialog_pane_qss, hint_label, pane_header_qss, pin_dialog_default
+from negpy.desktop.view.styles.templates import dialog_pane_qss, hint_label, pane_header_qss, pin_dialog_default, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.crosstalk_editor_dialog import _MatrixGridWidget, unique_copy_name
 from negpy.desktop.view.widgets.floating_panel import float_over_app
@@ -42,8 +42,11 @@ _TYPE_CHOICES: tuple[tuple[str, str], ...] = (
 _DELTA_POSITIONS: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1))
 
 #: Gschwind's canonical narrowband bands (R, G, B, nm) -- the only convention any bundled
-#: profile uses today, so the sane default for a profile with no bands of its own yet.
+#: profile uses today, so the starting value when a profile first gets bands.
 _DEFAULT_BANDS: tuple[float, float, float] = (650.0, 550.0, 450.0)
+
+#: Types whose numbers were read at known wavelengths. A profile tuned by eye has none.
+_BANDED_TYPES: tuple[str, ...] = (str(CrosstalkType.MEASURED), str(CrosstalkType.SPECSHEET))
 
 
 class FadeEditorDialog(QDialog):
@@ -143,8 +146,11 @@ class FadeEditorDialog(QDialog):
         )
         type_row.addWidget(self.type_combo, 1)
         rl.addLayout(type_row)
+        self.type_combo.currentIndexChanged.connect(lambda _i: self._sync_bands_visible())
 
-        bands_row = QHBoxLayout()
+        self.bands_row = QWidget()
+        bands_row = QHBoxLayout(self.bands_row)
+        bands_row.setContentsMargins(0, 0, 0, 0)
         bands_row.addWidget(QLabel("Bands (nm)"))
         self.band_r_spin = self._band_spin()
         self.band_g_spin = self._band_spin()
@@ -153,13 +159,15 @@ class FadeEditorDialog(QDialog):
             bands_row.addWidget(QLabel(label))
             bands_row.addWidget(spin)
         bands_row.addStretch()
-        self.band_r_spin.setToolTip(
-            "The scanner's R/G/B measurement wavelengths this profile's delta was read at. Delta is "
-            "meaningless without them -- moving the red band from a narrowband LED to a colorimetric "
-            "sensor's peak changes it by roughly an order of magnitude. Gschwind's canonical "
-            "650/550/450 nm is the only convention any bundled profile uses today."
+        band_tip = wrap_tooltip(
+            "The R/G/B wavelengths a measured or spec-sheet profile was read at. Moving the red band "
+            "from a narrowband LED to a broadband sensor's peak changes delta by roughly an order of "
+            "magnitude, so these record which capture the numbers describe. A profile tuned by eye "
+            "on a rig has no bands."
         )
-        rl.addLayout(bands_row)
+        for spin in (self.band_r_spin, self.band_g_spin, self.band_b_spin):
+            spin.setToolTip(band_tip)
+        rl.addWidget(self.bands_row)
 
         info = QLabel(
             "<b>Dye-fade restoration — side absorptions</b><br>"
@@ -313,8 +321,19 @@ class FadeEditorDialog(QDialog):
         found = FadeProfiles.get_bands(name)
         return list(found) if found is not None else list(_DEFAULT_BANDS)
 
-    def working_bands(self) -> List[float]:
+    def working_bands(self) -> Optional[List[float]]:
+        """The bands to save: none for a profile tuned by eye."""
+        if self.selected_type() not in _BANDED_TYPES:
+            return None
         return [self.band_r_spin.value(), self.band_g_spin.value(), self.band_b_spin.value()]
+
+    def _sync_bands_visible(self) -> None:
+        # A bundled profile shows the bands it has; the Type box cannot show every bundled type.
+        name = self._selected_name
+        if name is not None and FadeProfiles.is_bundled(name):
+            self.bands_row.setVisible(FadeProfiles.get_bands(name) is not None)
+        else:
+            self.bands_row.setVisible(self.selected_type() in _BANDED_TYPES)
 
     def _set_bands(self, bands: List[float]) -> None:
         self.band_r_spin.setValue(bands[0])
@@ -388,6 +407,7 @@ class FadeEditorDialog(QDialog):
         self.name_edit.setText(name)
         self._set_type(FadeProfiles.get_type(name))
         self._updating = False
+        self._sync_bands_visible()
 
         self.name_edit.setEnabled(editable)
         self.type_combo.setEnabled(editable)
@@ -412,7 +432,7 @@ class FadeEditorDialog(QDialog):
         while name in existing:
             name = f"New Profile {i}"
             i += 1
-        FadeProfiles.save(name, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], list(_DEFAULT_BANDS))
+        FadeProfiles.save(name, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.profiles_changed.emit()
         self._reload_list(select=name)
 
@@ -420,7 +440,7 @@ class FadeEditorDialog(QDialog):
         if self._selected_name is None:
             return
         new_name = unique_copy_name(self._selected_name, self._all_names())
-        FadeProfiles.save(new_name, self.working_delta(), self.working_bands())
+        FadeProfiles.save(new_name, self.working_delta())
         self.profiles_changed.emit()
         self._reload_list(select=new_name)
 

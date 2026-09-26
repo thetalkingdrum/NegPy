@@ -19,13 +19,14 @@ class FadeProfiles:
     """
     TOML I/O for dye-fade restoration profiles: the six side-absorption ratios `delta`
     (gr/br/rg/bg/rb/gb order) `resolve_fade_matrix` builds a restoration operator from,
-    and the R/G/B measurement wavelengths (`bands`, nm) delta was read at.
+    and, for a measured or spec-sheet profile, the R/G/B wavelengths (`bands`, nm) it
+    was read at.
 
-    Delta is a property of the dye set *and the scanner's bands* -- moving the red band
-    from a narrowband LED to a colorimetric sensor's response peak changes delta by an
-    order of magnitude on stocks checked (see fade/README.md), so a profile without its
-    bands is not just incomplete, it invites silently applying the wrong numbers. `bands`
-    is required; a profile missing it is rejected the same way a malformed delta is.
+    Delta is a property of the dye set *and the capture's light and sensor* -- moving the
+    red band from a narrowband LED to a colorimetric sensor's response peak changes delta
+    by an order of magnitude on stocks checked (see fade/README.md). A profile tuned by
+    eye on a rig has no bands to record, so `bands` is optional; a malformed one is
+    rejected the same way a malformed delta is.
 
     The three surviving-dye ratios are a property of one faded slide instead, and live on
     ProcessConfig directly (`fade_ratio_r`/`fade_ratio_g`/`fade_ratio_b`), not in a
@@ -42,8 +43,8 @@ class FadeProfiles:
 
     @staticmethod
     def _scan_dir(directory: str) -> dict:
-        """Maps display-name -> (delta 6-float tuple, bands 3-float tuple) for valid
-        .toml files in a directory."""
+        """Maps display-name -> (delta 6-float tuple, bands 3-float tuple or None) for
+        valid .toml files in a directory."""
         result: dict = {}
         if not os.path.isdir(directory):
             return result
@@ -76,8 +77,8 @@ class FadeProfiles:
 
     @staticmethod
     def _parse_file(path: str) -> Optional[tuple]:
-        """Parses a .toml file to (name, delta 6-float list, bands 3-float list), or
-        None if invalid -- including when `bands` is missing or malformed. `type`/
+        """Parses a .toml file to (name, delta 6-float list, bands 3-float list or None),
+        or None if invalid -- including when `bands` is present but malformed. `type`/
         `process` are read separately: callers unpack this tuple positionally."""
         try:
             with open(path, "rb") as f:
@@ -89,15 +90,16 @@ class FadeProfiles:
                 if not isinstance(v, (int, float)) or isinstance(v, bool):
                     return None
             bands = data.get("bands")
-            if not isinstance(bands, list) or len(bands) != 3 or any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in bands):
-                # The likelier real-world trigger than a malformed delta: a profile saved
-                # before `bands` existed. Logged (unlike a malformed delta, silent like
-                # crosstalk's own precedent) because it otherwise vanishes with no sign why.
-                logger.warning("Fade profile %s has no valid `bands` (R/G/B measurement wavelengths) -- skipping", path)
+            if bands is not None and (
+                not isinstance(bands, list) or len(bands) != 3 or any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in bands)
+            ):
+                # Logged, unlike a malformed delta, because the profile otherwise vanishes
+                # from the dropdown with no sign why.
+                logger.warning("Fade profile %s has malformed `bands` (R/G/B wavelengths) -- skipping", path)
                 return None
             raw_name = data.get("name")
             name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
-            return name, [float(v) for v in delta], [float(v) for v in bands]
+            return name, [float(v) for v in delta], [float(v) for v in bands] if bands is not None else None
         except Exception:
             return None
 
@@ -205,12 +207,12 @@ class FadeProfiles:
 
     @staticmethod
     def get_bands(name: str) -> Optional[tuple]:
-        """(R, G, B) measurement wavelengths in nm a profile's delta was read at, or None
-        for "None" / missing / invalid."""
+        """(R, G, B) wavelengths in nm a profile's delta was read at, or None for "None",
+        a missing profile, or one with no bands (tuned by eye)."""
         if name == NONE_NAME:
             return None
         found = FadeProfiles._scan().get(name)
-        if found is None:
+        if found is None or found[1] is None:
             return None
         return tuple(found[1])
 
@@ -228,7 +230,7 @@ class FadeProfiles:
     def save(
         name: str,
         delta: List[float],
-        bands: List[float],
+        bands: Optional[List[float]] = None,
         profile_type: str = CrosstalkType.TUNED,
         process: Optional[str] = None,
     ) -> str:
@@ -236,18 +238,17 @@ class FadeProfiles:
 
         Defaults to `tuned` so editor saves are not grouped with the spec-sheet
         estimates. `process` is always written: a profile only reaches the render in
-        the film process it declares. `bands` is required: delta means nothing without
-        the R/G/B wavelengths it was measured at."""
+        the film process it declares. `bands` is written only when given."""
         from negpy.features.process.models import ProcessMode
 
         os.makedirs(APP_CONFIG.fade_dir, exist_ok=True)
         delta_row = "[{:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}, {:.6g}]".format(*delta)
-        bands_row = "[{:.6g}, {:.6g}, {:.6g}]".format(*bands)
+        bands_line = "bands = [{:.6g}, {:.6g}, {:.6g}]\n".format(*bands) if bands is not None else ""
         content = (
             f'name = "{escape_toml_string(name)}"\n'
             f'type = "{escape_toml_string(profile_type)}"\n'
             f'process = "{escape_toml_string(str(ProcessMode(process or ProcessMode.E6)))}"\n'
-            f"bands = {bands_row}\n"
+            f"{bands_line}"
             f"delta = {delta_row}\n"
         )
         path = FadeProfiles.path_for_name(name)
