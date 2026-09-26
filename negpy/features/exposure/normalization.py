@@ -251,17 +251,38 @@ def fade_delta_conflict_reason(process: "ProcessConfig", process_mode: Optional[
     """
     from negpy.features.process.models import ProcessMode
 
-    profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
-    crosstalk_active = (process_mode is None or profile_mode == str(process_mode)) and (
-        resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix) is not None
-    )
-    if not crosstalk_active:
+    if not _crosstalk_active(process, process_mode):
         return ""
     fade_mode = str(getattr(process, "fade_process", ProcessMode.E6) or ProcessMode.E6)
     fade_mode_matches = process_mode is None or fade_mode == str(process_mode)
     delta_nonzero = process.fade_delta is not None and any(float(v) != 0.0 for v in process.fade_delta)
     if fade_mode_matches and delta_nonzero and float(process.fade_strength) > 0.0:
         return "a crosstalk profile is already active for this dye set — its side-absorption profile is ignored to avoid double-correcting (survival ratios still apply)"
+    return ""
+
+
+def _crosstalk_active(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
+    """A crosstalk unmix for this film process runs ahead of the fade factor."""
+    from negpy.features.process.models import ProcessMode
+
+    profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
+    return (process_mode is None or profile_mode == str(process_mode)) and (
+        resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix) is not None
+    )
+
+
+def fade_delta_inert_reason(process: "ProcessConfig", process_mode: Optional[str]) -> str:
+    """Why the side absorptions cannot change the render right now, or "" when they can.
+
+    F = S @ D @ inv(S) reduces to a scalar whenever green and blue survival match red, for
+    any S, so delta has an effect only while the layers faded unequally."""
+    if _crosstalk_active(process, process_mode):
+        return "Not used while a Crosstalk profile is active."
+    s = float(process.fade_strength)
+    if s <= 0.0:
+        return "Takes effect once Fade Strength is above 0."
+    if s * (float(process.fade_ratio_g) - 1.0) == 0.0 and s * (float(process.fade_ratio_b) - 1.0) == 0.0:
+        return "Takes effect once Green or Blue Survival moves off 1.00."
     return ""
 
 

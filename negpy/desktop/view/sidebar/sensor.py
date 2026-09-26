@@ -1,21 +1,29 @@
-from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout
+from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QInputDialog, QMessageBox
 
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.sidebar.color import CAST_REMOVAL_TOOLTIP
-from negpy.desktop.view.styles.templates import field_label, hint_label, section_subheader, wrap_tooltip
+from negpy.desktop.view.styles.templates import disclosure_subheader, field_label, hint_label, section_subheader, wrap_tooltip
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider
-from negpy.features.exposure.normalization import fade_delta_conflict_reason, fade_reject_reason
+from negpy.features.exposure.normalization import fade_delta_conflict_reason, fade_delta_inert_reason, fade_reject_reason
 from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS
 from negpy.features.process.models import ProcessMode, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.services.assets.crosstalk import CrosstalkProfiles
 from negpy.services.assets.fade import FadeProfiles
+from negpy.services.assets.presets import is_valid_preset_name
 from negpy.services.assets.sensor import SensorProfiles
 
 #: The manual sliders share the estimator's sane bounds: a hand-set value the estimator
 #: itself could never produce (and vice versa) is exactly the inconsistency to avoid.
 _RATIO_SLIDER_RANGE = RATIO_BOUNDS
+
+#: fade_delta's (gr, br, rg, bg, rb, gb) order as slider labels: the source layer, then the
+#: layer whose channel reads it.
+_FADE_DELTA_LABELS = ("Green in Red", "Blue in Red", "Red in Green", "Blue in Green", "Red in Blue", "Green in Blue")
+_NO_DELTA = (0.0,) * 6
+#: The fade editor's own delta range.
+_FADE_DELTA_RANGE = (-0.3, 0.3)
 
 
 class SensorSidebar(BaseSidebar):
@@ -227,6 +235,42 @@ class SensorSidebar(BaseSidebar):
         self.fade_cast_removal_slider.setToolTip(wrap_tooltip(CAST_REMOVAL_TOOLTIP))
         self.layout.addWidget(self.fade_cast_removal_slider)
 
+        # The profile only seeds these: tuning them edits this frame's delta live, and
+        # Save as Profile… is the one step that writes a file.
+        self.fade_delta_header = disclosure_subheader("Side Absorption")
+        self.fade_delta_header.toggled.connect(lambda _on: self._sync_fade_delta_visibility())
+        self.fade_delta_header.setToolTip(
+            wrap_tooltip(
+                "The dye set's six side absorptions: how much of each dye's density the other two "
+                "channels read. The profile fills them in; drag to tune them on this frame. The "
+                "edit belongs to the Fade card, so the Roll button pushes it to the roll. Save as "
+                "Profile… keeps it for other rolls."
+            )
+        )
+        self.layout.addWidget(self.fade_delta_header)
+        # Why the sliders are greyed: they can move the render only while the layers faded unequally.
+        self.fade_delta_gate_hint = hint_label("")
+        self.layout.addWidget(self.fade_delta_gate_hint)
+        self._fade_profile_delta_cache: tuple = ("", _NO_DELTA)
+        self._fade_e6 = False
+        self.fade_delta_sliders: list[CompactSlider] = []
+        for label in _FADE_DELTA_LABELS:
+            sld = CompactSlider(label, *_FADE_DELTA_RANGE, 0.0, step=0.001, precision=1000, has_neutral=True)
+            source, _, target = label.split()
+            sld.spin.setDecimals(3)
+            sld.setToolTip(wrap_tooltip(f"How much of the {source.lower()} dye's density the {target.lower()} channel reads."))
+            self.fade_delta_sliders.append(sld)
+            self.layout.addWidget(sld)
+
+        delta_actions = QHBoxLayout()
+        self.fade_delta_hint = hint_label("")
+        self.fade_delta_reset_btn = self._icon_action("fa5s.undo", "Put back the selected profile's side absorptions")
+        self.fade_delta_save_btn = self._icon_action("fa5s.save", "Save these side absorptions as a new fade profile…")
+        delta_actions.addWidget(self.fade_delta_hint, 1)
+        delta_actions.addWidget(self.fade_delta_reset_btn)
+        delta_actions.addWidget(self.fade_delta_save_btn)
+        self.layout.addLayout(delta_actions)
+
         self.layout.addWidget(section_subheader("SINGLE-SHOT NARROWBAND CALIBRATION"))
 
         row = QHBoxLayout()
@@ -397,6 +441,11 @@ class SensorSidebar(BaseSidebar):
             lambda v: self._on_fade_ratio_changed(self.fade_ratio_g_slider.value(), v, persist=True)
         )
         self.estimate_fade_btn.clicked.connect(self._on_estimate_fade)
+        for i, sld in enumerate(self.fade_delta_sliders):
+            sld.valueChanged.connect(lambda v, i=i: self._on_fade_delta_changed(i, v, persist=False))
+            sld.valueCommitted.connect(lambda v, i=i: self._on_fade_delta_changed(i, v, persist=True))
+        self.fade_delta_reset_btn.clicked.connect(self._on_fade_delta_reset)
+        self.fade_delta_save_btn.clicked.connect(self._on_fade_delta_save)
         self.fade_cast_removal_slider.valueChanged.connect(
             lambda v: self.update_config_section("exposure", render=True, persist=False, readback_metrics=False, cast_removal_strength=v)
         )
@@ -539,6 +588,76 @@ class SensorSidebar(BaseSidebar):
         self.fade_estimate_hint.setText("")
         self.fade_estimate_hint.setVisible(False)
 
+    def _profile_delta(self, name: str) -> tuple:
+        """The profile's own delta, zeros for "None". Cached by name: sync_ui runs on every
+        config change, and a profile lookup reads the fade folder."""
+        if self._fade_profile_delta_cache[0] != name:
+            self._fade_profile_delta_cache = (name, FadeProfiles.get_delta(name) or _NO_DELTA)
+        return self._fade_profile_delta_cache[1]
+
+    def _fade_delta_edited(self, conf) -> bool:
+        current = conf.fade_delta or _NO_DELTA
+        return any(abs(a - b) > 5e-4 for a, b in zip(current, self._profile_delta(conf.fade_profile)))
+
+    def _on_fade_delta_changed(self, index: int, value: float, persist: bool) -> None:
+        # One term at a time: the sliders round, so reading all six back would round the rest.
+        delta = list(self.state.config.process.fade_delta or _NO_DELTA)
+        delta[index] = value
+        delta = tuple(delta)
+        self.controller.set_roll_default(
+            "sensor",
+            persist=persist,
+            readback_metrics=persist,
+            fade_delta=None if delta == _NO_DELTA else delta,
+            fade_process=ProcessMode.E6,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+        if persist:
+            # An Estimate was read against the previous delta.
+            self.fade_estimate_hint.setText("")
+            self.fade_estimate_hint.setVisible(False)
+
+    def _on_fade_delta_reset(self) -> None:
+        name = self.state.config.process.fade_profile
+        self._fade_profile_delta_cache = ("", _NO_DELTA)
+        self.controller.set_roll_default(
+            "sensor",
+            fade_delta=FadeProfiles.get_delta(name),
+            fade_process=FadeProfiles.get_process(name),
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_fade_delta_save(self) -> None:
+        title = "Fade Restoration"
+        name, ok = QInputDialog.getText(self, title, "Profile name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if not is_valid_preset_name(name) or name == FadeProfiles.NONE_NAME or FadeProfiles.is_bundled(name):
+            QMessageBox.warning(self, title, f"“{name}” cannot be used: it names a bundled profile or holds characters a file name cannot.")
+            return
+        if name in FadeProfiles.list_profiles():
+            answer = QMessageBox.question(self, title, f"Replace your profile “{name}”?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        delta = self.state.config.process.fade_delta or _NO_DELTA
+        FadeProfiles.save(name, list(delta), process=ProcessMode.E6)
+        self._fade_profile_delta_cache = ("", _NO_DELTA)
+        self.controller.set_roll_default(
+            "sensor",
+            fade_profile=name,
+            fade_delta=FadeProfiles.get_delta(name),
+            fade_process=ProcessMode.E6,
+        )
+        self.sync_ui()
+
+    def _sync_fade_delta_visibility(self) -> None:
+        shown = self._fade_e6 and self.fade_delta_header.isChecked()
+        for w in (*self.fade_delta_sliders, self.fade_delta_reset_btn, self.fade_delta_save_btn):
+            w.setVisible(shown)
+        self.fade_delta_gate_hint.setVisible(shown and bool(self.fade_delta_gate_hint.text()))
+        self.fade_delta_hint.setVisible(self._fade_e6 and bool(self.fade_delta_hint.text()))
+
     def _on_fade_strength_changed(self, val: float, persist: bool = True) -> None:
         self.update_config_section(
             "process",
@@ -597,10 +716,14 @@ class SensorSidebar(BaseSidebar):
         self._fade_snapshot = (conf.fade_profile, conf.fade_delta, conf.fade_strength, conf.fade_process)
         dlg = FadeEditorDialog(conf.fade_profile, conf.fade_strength, parent=self)
         dlg.delta_previewed.connect(self._on_fade_preview)
-        dlg.profiles_changed.connect(self.sync_ui)
+        dlg.profiles_changed.connect(self._on_fade_profiles_changed)
         dlg.finished.connect(lambda result: self._on_fade_editor_finished(dlg, result))
         self._fade_dialog = dlg  # keep a reference so the modeless dialog isn't GC'd
         dlg.show()
+
+    def _on_fade_profiles_changed(self) -> None:
+        self._fade_profile_delta_cache = ("", _NO_DELTA)
+        self.sync_ui()
 
     def _on_fade_preview(self, delta: object, strength: float) -> None:
         self.controller.set_roll_default(
@@ -739,8 +862,20 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_g_slider.setValue(conf.fade_ratio_g)
             self.fade_ratio_b_slider.setValue(conf.fade_ratio_b)
             self.fade_cast_removal_slider.setValue(self.state.config.exposure.cast_removal_strength)
+            for sld, v in zip(self.fade_delta_sliders, conf.fade_delta or _NO_DELTA):
+                sld.setValue(v)
+            edited = self._fade_delta_edited(conf)
+            self.fade_delta_hint.setText(
+                ("Tuned by hand" if conf.fade_profile == FadeProfiles.NONE_NAME else f"Edited from {conf.fade_profile}") if edited else ""
+            )
+            self.fade_delta_reset_btn.setEnabled(edited)
+            inert = fade_delta_inert_reason(conf, conf.process_mode)
+            self.fade_delta_gate_hint.setText(inert)
+            for sld in self.fade_delta_sliders:
+                sld.setEnabled(not inert)
             for w in (
                 self.fade_header,
+                self.fade_delta_header,
                 self.fade_label,
                 self.fade_combo,
                 self.manage_fade_btn,
@@ -754,6 +889,8 @@ class SensorSidebar(BaseSidebar):
             ):
                 w.setVisible(e6)
             self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
+            self._fade_e6 = e6
+            self._sync_fade_delta_visibility()
             reject_reason = fade_delta_conflict_reason(conf, conf.process_mode) or fade_reject_reason(
                 conf.fade_strength, conf.fade_ratio_r, conf.fade_ratio_g, conf.fade_ratio_b, conf.fade_delta
             )
@@ -778,5 +915,6 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_b_slider,
             self.fade_cast_removal_slider,
             self.hue_trim_slider,
+            *self.fade_delta_sliders,
         ):
             w.blockSignals(blocked)
