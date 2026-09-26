@@ -1,7 +1,7 @@
 """Fade Restoration and Cast Removal on a transparency: composition, not competition.
 
 Per PLAN_after_cast_removal.md §1: Cast Removal's neutral-axis meter reads the film
-*after* the fade matrix (features/exposure/processor.py), so it fits whatever per-channel
+*after* the fade matrix (features/transparency/processor.py), so it fits whatever per-channel
 residual the fade correction leaves rather than colliding with it. No conflict guard
 exists between the two -- this file pins that as a deliberate invariant, not an oversight,
 so nobody adds one later on the assumption they collide (mirrors fade_delta_conflict_reason,
@@ -15,9 +15,9 @@ from dataclasses import replace
 import numpy as np
 
 from negpy.domain.interfaces import PipelineContext
-from negpy.features.exposure.processor import NormalizationProcessor, PhotometricProcessor
 from negpy.features.process.models import ProcessMode
 from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
+from negpy.services.rendering.engine import base_processor, exposure_processor
 
 _GENERIC_E6_DELTA = (0.0689, 0.0111, 0.2246, 0.0486, 0.0854, 0.1815)
 
@@ -49,8 +49,8 @@ def _render(image, cfg):
         camera_wb=None,
         wants_uv_grid=False,
     )
-    norm = NormalizationProcessor(cfg.process, cfg.exposure.cast_removal_strength).process(image, ctx)
-    return np.asarray(PhotometricProcessor(cfg.exposure, cfg.local, cfg.process).process(norm, ctx)), ctx
+    norm = base_processor(cfg).process(image, ctx)
+    return np.asarray(exposure_processor(cfg).process(norm, ctx)), ctx
 
 
 def _faded_neutral_wedge(ratio_g=1.0, ratio_b=1.0, delta=(0.0,) * 6, seed=5):

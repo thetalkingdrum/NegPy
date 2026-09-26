@@ -25,9 +25,11 @@ state.
 
 from typing import Optional
 
+import numpy as np
+
 from negpy.domain.types import ImageBuffer
 from negpy.features.exposure.normalization import (
-    analyze_log_exposure_bounds_from_log,
+    LogNegativeBounds,
     fade_measurement_unmix,
     measure_neutral_axis_from_log,
     prefilter_log_grid,
@@ -70,9 +72,7 @@ def measure_neutral_axis_ratios(
     restore (see its docstring in models.py); against a window sized for an undegraded
     slide, the detector's luma bands find no content past roughly fade_ratio_r < 0.85 and
     fail outright rather than return a degraded estimate, on precisely the slides that need
-    the estimate most. Forcing `e6_normalize=True` here regardless of the live Normalize
-    toggle keeps the estimate independent of that setting, per-frame bounds are just the
-    correct read of a compressed slide either way. Falls back to reading measured density
+    the estimate most. Falls back to reading measured density
     directly when no profile is selected -- a real, if delta-biased, estimate beats none.
     reject_reason is set (refs is None) when delta is degenerate or the detector finds no
     trustworthy neutral axis."""
@@ -82,11 +82,30 @@ def measure_neutral_axis_ratios(
         if unmix is None:
             return None, "the dye-set side-absorption profile is degenerate — check the delta values"
         grid = unmix_log_image(grid, unmix)
-    bounds = analyze_log_exposure_bounds_from_log(grid, None, 0.0, ProcessMode.E6, e6_normalize=True)
+    bounds = _measured_slide_bounds(grid)
     refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0)
     if refs is None:
         return None, "no trustworthy neutral axis found on this frame"
     return refs, ""
+
+
+def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
+    """This frame's own bounds in the slide orientation (floor above ceiling): the luma span
+    from the base clip, each channel's offset from its extreme percentiles. The negative
+    analyzer does not fit, since its dense end is chroma-gated for an orange mask."""
+    from negpy.features.exposure.models import EXPOSURE_CONSTANTS
+
+    def _pct(p: float) -> list:
+        return [float(np.percentile(grid[:, :, ch], p)) for ch in range(3)]
+
+    base = float(EXPOSURE_CONSTANTS["base_luma_clip"])
+    luma_f, luma_c = _pct(100.0 - base), _pct(base)
+    color_f, color_c = _pct(100.0 - 0.00001), _pct(0.00001)
+    mean_f, mean_c = sum(luma_f) / 3.0, sum(luma_c) / 3.0
+    mid_f, mid_c = sorted(color_f)[1], sorted(color_c)[1]
+    floors = tuple(mean_f + (color_f[ch] - mid_f) for ch in range(3))
+    ceils = tuple(mean_c + (color_c[ch] - mid_c) for ch in range(3))
+    return LogNegativeBounds(floors, ceils)
 
 
 def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs]) -> tuple[float, float, str]:
