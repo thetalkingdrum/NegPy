@@ -126,7 +126,15 @@ def test_clamps_and_reports_an_out_of_bounds_ratio():
     ratio_g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 10.0, 1.0), (0.0, 0.0, 0.0), None, 1.0))
     assert ratio_g == hi
     assert ratio_b == 1.0
-    assert reason
+    assert reason.startswith("Implied green 10.0 is outside 0.2–5, set to 5.0")
+    assert "Red Survival" in reason
+    assert "blue" not in reason
+
+
+def test_a_ratio_below_the_range_does_not_point_at_red_survival():
+    _g, ratio_b, reason = fade_ratios_from_neutral_axis(((1.0, 1.0, 0.1), (0.0, 0.0, 0.0), None, 1.0))
+    assert ratio_b == RATIO_BOUNDS[0]
+    assert reason == "Implied blue 0.1 is outside 0.2–5, set to 0.2"
 
 
 def test_no_neutral_axis_found_fails_closed():
