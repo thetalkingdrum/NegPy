@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from negpy.desktop.view.sidebar.tone import _CH_COLORS
-from negpy.desktop.view.styles.templates import dialog_pane_qss, hint_label, pane_header_qss
+from negpy.desktop.view.styles.templates import dialog_pane_qss, hint_label, pane_header_qss, pin_dialog_default
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.crosstalk_editor_dialog import _MatrixGridWidget, unique_copy_name
 from negpy.desktop.view.widgets.floating_panel import float_over_app
@@ -197,7 +197,7 @@ class FadeEditorDialog(QDialog):
 
         save_row = QHBoxLayout()
         save_row.addStretch()
-        self.save_btn = QPushButton(" Save to disk")
+        self.save_btn = QPushButton(" Save to Disk")
         self.save_btn.setIcon(qta.icon("fa5s.save", color=THEME.text_primary))
         self.save_btn.setToolTip("Write this profile as a .toml in the NegPy/fade folder so it's reusable")
         self.save_btn.clicked.connect(self._on_save)
@@ -207,8 +207,7 @@ class FadeEditorDialog(QDialog):
         close_row = QHBoxLayout()
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        apply_btn = QPushButton("Apply and close")
-        apply_btn.setDefault(True)
+        apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.accept)
         close_row.addStretch()
         close_row.addWidget(cancel_btn)
@@ -220,6 +219,7 @@ class FadeEditorDialog(QDialog):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([210, 450])
         root.addWidget(splitter)
+        pin_dialog_default(apply_btn, scope=self)
 
     def _build_grid(self) -> QWidget:
         # The diagonal is fixed (a profile is delta only), so only off-diagonal cells
@@ -436,7 +436,7 @@ class FadeEditorDialog(QDialog):
         self._reload_list(select=name)
 
     def accept(self) -> None:
-        # Apply-and-close persists the edited profile too (bundled/None are read-only).
+        # Apply persists the edited profile too (bundled/None are read-only).
         if self._selected_name is not None and not FadeProfiles.is_bundled(self._selected_name):
             self._on_save()
         super().accept()
