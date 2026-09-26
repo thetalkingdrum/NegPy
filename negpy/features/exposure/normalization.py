@@ -211,6 +211,18 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     return resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix)
 
 
+def crosstalk_terms_inert_reason(process: "ProcessConfig", process_mode: Optional[str]) -> str:
+    """Why the crosstalk matrix cannot change the render right now, or "" when it can."""
+    from negpy.features.process.models import ProcessMode
+
+    if float(process.crosstalk_strength) <= 0.0:
+        return "Takes effect once Strength is above 0."
+    profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
+    if process_mode is not None and profile_mode != str(process_mode):
+        return "This matrix is for another film process."
+    return ""
+
+
 def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Optional[np.ndarray]:
     """
     Effective spectral-crosstalk (dye-unmix) matrix — identity↔calibration blend

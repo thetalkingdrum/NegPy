@@ -1,13 +1,22 @@
-from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout
+from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QVBoxLayout
 
 from negpy.desktop.view.sidebar.base import BaseSidebar
+from negpy.desktop.view.sidebar.profile_terms import OFF_DIAGONAL, ProfileTermsGroup, ask_profile_name, terms_differ
+from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.styles.templates import field_label, header_row, hint_label, section_subheader, wrap_tooltip
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
-from negpy.features.process.models import ProcessMode, invalidate_local_bounds
+from negpy.features.exposure.normalization import crosstalk_terms_inert_reason
+from negpy.features.process.models import DEFAULT_CROSSTALK_MATRIX, ProcessMode, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.services.assets.crosstalk import CrosstalkProfiles
 from negpy.services.assets.sensor import SensorProfiles
+
+
+#: The crosstalk editor's own term range.
+_CROSSTALK_TERM_RANGE = (-0.5, 0.5)
+#: Flat row-major indices of a 3x3 matrix's off-diagonal terms.
+_OFF_DIAGONAL_FLAT = tuple(r * 3 + c for r, c in OFF_DIAGONAL)
 
 
 class SensorSidebar(BaseSidebar):
@@ -131,7 +140,26 @@ class SensorSidebar(BaseSidebar):
         self.layout.addWidget(self.crosstalk_hint)
 
         self.crosstalk_strength_slider = CompactSlider("Strength", 0.0, 1.0, conf.crosstalk_strength, has_neutral=True)
-        self.crosstalk_strength_rail = SliderGroup(self.crosstalk_strength_slider)
+        self._crosstalk_profile_matrix_cache: tuple = ("", DEFAULT_CROSSTALK_MATRIX)
+        terms_layout = QVBoxLayout()
+        terms_layout.setContentsMargins(0, 0, 0, 0)
+        terms_layout.setSpacing(THEME.space_xs)
+        self.crosstalk_terms = ProfileTermsGroup(
+            terms_layout,
+            "Matrix Terms",
+            "The matrix's six off-diagonal terms: how much of each channel is mixed into the other "
+            "two, negative to remove it. The matrix fills them in; drag to tune them on this frame. "
+            "The edit belongs to the Crosstalk card, so the Roll button pushes it to the roll. Save "
+            "keeps it as a matrix for other rolls.",
+            _CROSSTALK_TERM_RANGE,
+            lambda source, target: f"How much of the {source} channel is mixed into {target}. Negative removes it.",
+            "Put back the selected matrix's terms",
+            "Save these terms as a new crosstalk matrix…",
+            self._on_crosstalk_term_changed,
+            self._on_crosstalk_terms_reset,
+            self._on_crosstalk_terms_save,
+        )
+        self.crosstalk_strength_rail = SliderGroup(self.crosstalk_strength_slider, terms_layout)
         self.layout.addWidget(self.crosstalk_strength_rail)
 
         # Balances each dye layer against the frame's own grays: a fact of the stock, so it is a
@@ -314,6 +342,48 @@ class SensorSidebar(BaseSidebar):
             **invalidate_local_bounds(self.state.config.process),
         )
 
+    def _profile_matrix(self, name: str) -> tuple:
+        """The profile's own matrix, the built-in one for the default. Cached by name: sync_ui
+        runs on every config change, and a profile lookup reads the crosstalk folder."""
+        if self._crosstalk_profile_matrix_cache[0] != name:
+            matrix = CrosstalkProfiles.get_matrix(name)
+            self._crosstalk_profile_matrix_cache = (name, tuple(matrix) if matrix is not None else DEFAULT_CROSSTALK_MATRIX)
+        return self._crosstalk_profile_matrix_cache[1]
+
+    def _on_crosstalk_term_changed(self, index: int, value: float, persist: bool) -> None:
+        matrix = list(self.state.config.process.crosstalk_matrix or DEFAULT_CROSSTALK_MATRIX)
+        matrix[_OFF_DIAGONAL_FLAT[index]] = value
+        self.controller.set_roll_default(
+            "sensor",
+            persist=persist,
+            readback_metrics=persist,
+            crosstalk_matrix=tuple(matrix),
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_crosstalk_terms_reset(self) -> None:
+        self._crosstalk_profile_matrix_cache = ("", DEFAULT_CROSSTALK_MATRIX)
+        self._on_crosstalk_profile_changed(self.state.config.process.crosstalk_profile)
+
+    def _on_crosstalk_terms_save(self) -> None:
+        name = ask_profile_name(self, "Crosstalk", CrosstalkProfiles.is_bundled, CrosstalkProfiles.list_profiles())
+        if name is None:
+            return
+        conf = self.state.config.process
+        CrosstalkProfiles.save(name, list(conf.crosstalk_matrix or DEFAULT_CROSSTALK_MATRIX), process=conf.crosstalk_process)
+        self._crosstalk_profile_matrix_cache = ("", DEFAULT_CROSSTALK_MATRIX)
+        self.controller.set_roll_default(
+            "sensor",
+            crosstalk_profile=name,
+            crosstalk_matrix=tuple(CrosstalkProfiles.get_matrix(name) or DEFAULT_CROSSTALK_MATRIX),
+            crosstalk_process=conf.crosstalk_process,
+        )
+        self.sync_ui()
+
+    def _on_profiles_changed(self) -> None:
+        self._crosstalk_profile_matrix_cache = ("", DEFAULT_CROSSTALK_MATRIX)
+        self.sync_ui()
+
     def _on_crosstalk_strength_changed(self, val: float, persist: bool = True) -> None:
         self.controller.set_roll_default(
             "sensor",
@@ -330,7 +400,7 @@ class SensorSidebar(BaseSidebar):
         self._crosstalk_snapshot = (conf.crosstalk_profile, conf.crosstalk_matrix, conf.crosstalk_strength, conf.crosstalk_process)
         dlg = CrosstalkEditorDialog(conf.crosstalk_profile, conf.crosstalk_strength, conf.process_mode, parent=self)
         dlg.matrix_previewed.connect(self._on_crosstalk_preview)
-        dlg.profiles_changed.connect(self.sync_ui)
+        dlg.profiles_changed.connect(self._on_profiles_changed)
         dlg.finished.connect(lambda result: self._on_crosstalk_editor_finished(dlg, result))
         self._crosstalk_dialog = dlg  # keep a reference so the modeless dialog isn't GC'd
         dlg.show()
@@ -472,6 +542,15 @@ class SensorSidebar(BaseSidebar):
             self.crosstalk_hint.setVisible(not is_bw and not has_profiles)
             self.crosstalk_combo.setEnabled(has_profiles)
             self.crosstalk_strength_slider.setEnabled(has_profiles)
+            matrix = conf.crosstalk_matrix or DEFAULT_CROSSTALK_MATRIX
+            terms = [matrix[i] for i in _OFF_DIAGONAL_FLAT]
+            edited = terms_differ(terms, [self._profile_matrix(conf.crosstalk_profile)[i] for i in _OFF_DIAGONAL_FLAT])
+            self.crosstalk_terms.sync(
+                terms,
+                f"Edited from {conf.crosstalk_profile}" if edited else "",
+                crosstalk_terms_inert_reason(conf, conf.process_mode) if has_profiles else "No matrix for this film process.",
+                not is_bw,
+            )
 
             self.hue_trim_slider.setValue(conf.hue_trim)
         finally:
