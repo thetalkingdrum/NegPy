@@ -1668,8 +1668,8 @@ def apply_fine_rotation(img: ImageBuffer, angle: float) -> ImageBuffer:
 # the image half-diagonal (r=1 at the corner), so it is rotation and aspect invariant.
 # Forward resample map (corrected pixel -> distorted sample), s = scale-to-fill:
 #     P_src = (s * P_out) * (1 + k1 * |s * P_out|^2 / halfdiag^2)
-# Mirrored in transform.wgsl (uv/aspect form) and inverted in map_point_radial. Change
-# the model in all three.
+# Mirrored in transform.wgsl (uv/aspect form) and radial_source_points, inverted in
+# map_point_radial. Change the model in all four.
 
 _DISTORT_EPS = 1e-6
 
@@ -1744,6 +1744,17 @@ def apply_radial_distortion(img: ImageBuffer, k1: float) -> ImageBuffer:
     map_x, map_y = _radial_maps(k1, w, h)
     res = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     return ensure_image(res)
+
+
+def radial_source_points(pts: np.ndarray, k1: float, w: int, h: int) -> np.ndarray:
+    """The resample map at (N, 2) x, y points: where each corrected output point samples the input."""
+    if abs(k1) < _DISTORT_EPS:
+        return pts
+    cx, cy, halfdiag = _radial_center(w, h)
+    s = compute_distortion_scale(k1, w, h)
+    sx, sy = (pts[:, 0] - cx) * s, (pts[:, 1] - cy) * s
+    f = 1.0 + k1 * (sx * sx + sy * sy) / (halfdiag * halfdiag)
+    return np.stack([cx + sx * f, cy + sy * f], axis=1)
 
 
 def map_point_radial(px: float, py: float, k1: float, w: int, h: int) -> Tuple[float, float]:

@@ -660,6 +660,18 @@ class ExportSidebar(BaseSidebar):
         self.linear_lens_checkbox.toggled.connect(self._on_linear_correction_changed)
         box.addWidget(self.linear_lens_checkbox)
 
+        self.linear_crop_checkbox = QCheckBox("Apply crop")
+        self.linear_crop_checkbox.setToolTip(
+            wrap_tooltip(
+                "Cut the file to the frame's crop and, for a half-frame scan, to its half. The pixels are not resampled: "
+                "with fine rotation or Tilt/Swing, the file is the smallest upright box that holds the crop"
+            )
+        )
+        self.linear_crop_checkbox.setChecked(self.state.linear_apply_crop)
+        self.linear_crop_checkbox.setVisible(False)
+        self.linear_crop_checkbox.toggled.connect(self._on_linear_correction_changed)
+        box.addWidget(self.linear_crop_checkbox)
+
         self.linear_ice_checkbox = QCheckBox("Apply ICE dust removal")
         self.linear_ice_checkbox.setToolTip("Apply IR-based dust and scratch correction")
         self.linear_ice_checkbox.setChecked(self.state.linear_apply_ice)
@@ -722,6 +734,7 @@ class ExportSidebar(BaseSidebar):
             self.linear_flatfield_checkbox.setVisible(False)
             self.linear_sensor_checkbox.setVisible(False)
             self.linear_lens_checkbox.setVisible(False)
+            self.linear_crop_checkbox.setVisible(False)
             self.linear_ice_checkbox.setVisible(False)
             self.linear_corrections_hint.setVisible(False)
         if hasattr(self, "_presets_section"):
@@ -811,8 +824,9 @@ class ExportSidebar(BaseSidebar):
         is_camera = source_type == "camera"
         has_ir = self.state.has_ir
         lens_visible, has_lens = self._linear_lens_state(path, is_camera)
-        show_corrections = is_camera or has_ir or lens_visible
+        show_corrections = source_type != "unsupported"
         self.linear_corrections_label.setVisible(show_corrections)
+        self.linear_crop_checkbox.setVisible(show_corrections)
         self.linear_lens_checkbox.setVisible(lens_visible)
         self.linear_lens_checkbox.setEnabled(has_lens)
         self.linear_lens_checkbox.setToolTip(wrap_tooltip(self._LINEAR_LENS_TOOLTIP if has_lens else "Distortion and CA are off in Optics"))
@@ -857,6 +871,7 @@ class ExportSidebar(BaseSidebar):
             or (self.state.linear_apply_flatfield and has_flatfield)
             or (self.state.linear_apply_sensor and has_matrix)
             or (self.state.linear_apply_lens and has_lens)
+            or self.state.linear_apply_crop
             or (self.state.linear_apply_ice and has_ir)
         )
         self.linear_corrections_hint.setVisible(show_corrections and any_on)
@@ -927,6 +942,7 @@ class ExportSidebar(BaseSidebar):
         self.state.linear_apply_flatfield = self.linear_flatfield_checkbox.isChecked()
         self.state.linear_apply_sensor = self.linear_sensor_checkbox.isChecked()
         self.state.linear_apply_lens = self.linear_lens_checkbox.isChecked()
+        self.state.linear_apply_crop = self.linear_crop_checkbox.isChecked()
         self.state.linear_apply_ice = self.linear_ice_checkbox.isChecked()
         self.controller.session.save_flat_output_prefs()
         any_on = (
@@ -934,6 +950,7 @@ class ExportSidebar(BaseSidebar):
             or self.state.linear_apply_flatfield
             or self.state.linear_apply_sensor
             or self.state.linear_apply_lens
+            or self.state.linear_apply_crop
             or self.state.linear_apply_ice
         )
         self.linear_corrections_hint.setVisible(any_on)
@@ -1569,6 +1586,7 @@ class ExportSidebar(BaseSidebar):
             self.linear_flatfield_checkbox.setChecked(self.state.linear_apply_flatfield)
             self.linear_sensor_checkbox.setChecked(self.state.linear_apply_sensor)
             self.linear_lens_checkbox.setChecked(self.state.linear_apply_lens)
+            self.linear_crop_checkbox.setChecked(self.state.linear_apply_crop)
             self.linear_ice_checkbox.setChecked(self.state.linear_apply_ice)
             self._refresh_linear_gamma_combo()
         finally:
@@ -1606,6 +1624,7 @@ class ExportSidebar(BaseSidebar):
             self.linear_flatfield_checkbox,
             self.linear_sensor_checkbox,
             self.linear_lens_checkbox,
+            self.linear_crop_checkbox,
             self.linear_ice_checkbox,
             self.linear_gamma_combo,
         ]

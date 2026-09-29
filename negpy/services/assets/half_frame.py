@@ -105,7 +105,7 @@ def saved_crop_rect(value: Any) -> Optional[tuple[float, float, float, float]]:
     return (x1, y1, x2, y2)
 
 
-def _slice_half_bounds(
+def slice_half_bounds(
     height: int,
     width: int,
     half: int,
@@ -147,7 +147,7 @@ def slice_half_dimensions(
 ) -> tuple[int, int]:
     """Return the full-resolution image-space dimensions of a half slice."""
     height, width = dimensions
-    y1, y2, x1, x2 = _slice_half_bounds(height, width, half, split_x, crop_rect, gutter_thickness)
+    y1, y2, x1, x2 = slice_half_bounds(height, width, half, split_x, crop_rect, gutter_thickness)
     return (y2 - y1, x2 - x1)
 
 
@@ -167,7 +167,7 @@ def slice_half(
     between the two exposures does not bleed into either half.
     """
     h, w = buf.shape[:2]
-    y1, y2, x1, x2 = _slice_half_bounds(h, w, half, split_x, crop_rect, gutter_thickness)
+    y1, y2, x1, x2 = slice_half_bounds(h, w, half, split_x, crop_rect, gutter_thickness)
     return buf[y1:y2, x1:x2]
 
 

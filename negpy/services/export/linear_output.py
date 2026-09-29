@@ -41,6 +41,9 @@ from negpy.features.stitch.logic import stitch_composite
 from negpy.features.stitch.models import StitchConfig, stitch_has_triplets
 from negpy.infrastructure.loaders.constants import SUPPORTED_JPEG_EXTENSIONS, SUPPORTED_RAW_EXTENSIONS, SUPPORTED_TIFF_EXTENSIONS
 from negpy.infrastructure.loaders.lens_metadata import bind_decode, read_lens_metadata
+from negpy.kernel.system.config import APP_CONFIG
+from negpy.services.assets.half_frame import HalfGeometry, slice_half_bounds
+from negpy.services.export.linear_crop import crop_unresolved, embedded_unwarp, linear_crop_roi
 from negpy.infrastructure.loaders.helpers import NonStandardFileWrapper, read_orientation, resolve_demosaic
 from negpy.infrastructure.loaders.pakon_loader import PakonLoader
 from negpy.infrastructure.loaders.fff_loader import is_flextight_fff
@@ -75,6 +78,11 @@ class _SourceMeta:
     # source with no CFA. Set only by a camera-RAW decode; carried through every merge.
     demosaic: Optional[str] = None
     lens_corrected: bool = False
+    # The bound embedded profile of a single camera RAW, for Apply crop to map through.
+    lens_profile: Optional[LensMetadata] = None
+    # "", "cropped" or "unresolved" (an armed Auto Crop no preview has resolved).
+    crop: str = ""
+    half: int = 0
 
 
 def _read_source_meta_tiff(file_path: str) -> _SourceMeta:
@@ -347,9 +355,16 @@ def _decode_linear(
     apply_flatfield: bool = False,
     apply_sensor: bool = False,
     apply_lens: bool = False,
+    apply_crop: bool = False,
+    half: int = 0,
+    half_geometry: HalfGeometry = HalfGeometry(),
     gamma_key: str = "linear",
 ) -> tuple[np.ndarray, Optional[np.ndarray], Optional[_CameraWB], _SourceMeta]:
-    """Decode to an oriented float32 buffer. Returns (rgb, ir_or_none, camera_wb_or_none, source_meta)."""
+    """Decode to an oriented float32 buffer. Returns (rgb, ir_or_none, camera_wb_or_none, source_meta).
+
+    Apply crop takes the half-frame slice after the source bakes, as the export does, and the
+    crop after user geometry.
+    """
     lens = LensCorrections()
     if apply_lens and geometry is not None:
         lens = LensCorrections(geometry.lens_distortion_from_metadata, geometry.lens_ca_from_metadata)
@@ -367,6 +382,18 @@ def _decode_linear(
         lens=lens,
         gamma_key=gamma_key,
     )
+    source_shape = (rgb.shape[0], rgb.shape[1])
+    offset = (0, 0)
+    if apply_crop and half:
+        y1, y2, x1, x2 = slice_half_bounds(
+            source_shape[0], source_shape[1], half, half_geometry.split_x, half_geometry.crop_rect, half_geometry.gutter_thickness
+        )
+        rgb = np.ascontiguousarray(rgb[y1:y2, x1:x2])
+        if ir is not None:
+            ir = np.ascontiguousarray(ir[y1:y2, x1:x2])
+        offset = (y1, x1)
+        meta = replace(meta, half=half)
+    half_shape = (rgb.shape[0], rgb.shape[1])
     # The engine applies k1 after rot90 and flips; the radius is normalized to the half-diagonal,
     # so it commutes with them. IR takes the same warp so that ICE stays aligned.
     if apply_lens and geometry is not None and geometry.distortion_k1 != 0.0:
@@ -378,7 +405,39 @@ def _decode_linear(
         rgb = _apply_user_geometry(rgb, geometry)
         if ir is not None:
             ir = _apply_user_geometry(ir, geometry)
+    if apply_crop and geometry is not None:
+        rgb, ir, meta = _apply_crop(rgb, ir, meta, geometry, file_path, source_shape, offset, half_shape, apply_lens)
     return rgb, ir, wb, meta
+
+
+def _apply_crop(
+    rgb: np.ndarray,
+    ir: Optional[np.ndarray],
+    meta: _SourceMeta,
+    geometry: GeometryConfig,
+    file_path: str,
+    source_shape: tuple[int, int],
+    offset: tuple[int, int],
+    half_shape: tuple[int, int],
+    apply_lens: bool,
+) -> tuple[np.ndarray, Optional[np.ndarray], _SourceMeta]:
+    """Slice RGB and IR to the frame's crop. An armed Auto Crop is not detected here."""
+    if crop_unresolved(geometry):
+        return rgb, ir, replace(meta, crop="unresolved")
+    unwarp = None
+    profile = meta.lens_profile
+    if geometry.lens_distortion_from_metadata and not apply_lens and profile is not None and profile.distortion:
+        unwarp = embedded_unwarp(profile, read_orientation(file_path), source_shape, offset, half_shape, geometry)
+    # The export's margin scale: the sliced source's long edge over the preview render size.
+    scale = max(half_shape) / float(APP_CONFIG.preview_render_size)
+    roi = linear_crop_roi(rgb.shape, geometry, scale, k1_applied=apply_lens, unwarp=unwarp)
+    if roi is None:
+        return rgb, ir, meta
+    y1, y2, x1, x2 = roi
+    rgb = np.ascontiguousarray(rgb[y1:y2, x1:x2])
+    if ir is not None:
+        ir = np.ascontiguousarray(ir[y1:y2, x1:x2])
+    return rgb, ir, replace(meta, crop="cropped")
 
 
 def _decode_source(
@@ -461,6 +520,7 @@ def _decode_source(
             datetime=meta.datetime or decode_meta.datetime,
             demosaic=decode_meta.demosaic,
             lens_corrected=warped,
+            lens_profile=lens_meta if lens_meta.available else None,
         )
         if apply_sensor and process is not None and process.sensor_matrix is not None:
             rgb = apply_sensor_correction(rgb, process.sensor_matrix)
@@ -960,6 +1020,8 @@ def _linear_description(
     gamma_key: str,
     demosaic: Optional[str] = None,
     lens_applied: bool = False,
+    crop: str = "",
+    half: int = 0,
 ) -> str:
     """The processing record both linear writers stamp on their output."""
     parts = [f"source: {source_format or source_name}"]
@@ -980,10 +1042,20 @@ def _linear_description(
             parts.append(f"no WB applied (as-shot: {r:.3f} {g:.3f} {b:.3f})")
     else:
         parts.append("no WB applied")
-    applied = (("flatfield", flatfield_applied), ("lens", lens_applied), ("sensor", sensor_applied), ("ICE", ice_applied))
+    if half:
+        parts.append(f"half-frame {half}")
+    applied = (
+        ("flatfield", flatfield_applied),
+        ("lens", lens_applied),
+        ("sensor", sensor_applied),
+        ("ICE", ice_applied),
+        ("crop", crop == "cropped"),
+    )
     corrections = [s for s, on in applied if on]
     if corrections:
         parts.append(f"corrections: {', '.join(corrections)}")
+    if crop == "unresolved":
+        parts.append("crop: not resolved")
     parts.append("no color management")
     return f"NegPy Linear Output -- {', '.join(parts)}."
 
@@ -1043,6 +1115,8 @@ def _write_tiff(
         gamma_key,
         demosaic=source_meta.demosaic if source_meta is not None else None,
         lens_applied=source_meta is not None and source_meta.lens_corrected,
+        crop=source_meta.crop if source_meta is not None else "",
+        half=source_meta.half if source_meta is not None else 0,
     )
 
     extratags: list[tuple] = []
@@ -1224,6 +1298,8 @@ def _write_jxl(
             gamma_key,
             demosaic=source_meta.demosaic if source_meta is not None else None,
             lens_applied=source_meta is not None and source_meta.lens_corrected,
+            crop=source_meta.crop if source_meta is not None else "",
+            half=source_meta.half if source_meta is not None else 0,
         ),
         camera_wb,
         source_path,
@@ -1252,6 +1328,9 @@ def export_linear_output(
     apply_flatfield: bool = False,
     apply_sensor: bool = False,
     apply_lens: bool = False,
+    apply_crop: bool = False,
+    half: int = 0,
+    half_geometry: HalfGeometry = HalfGeometry(),
     apply_ice: bool = False,
     retouch: Optional[RetouchConfig] = None,
     gamma_key: str = "linear",
@@ -1284,6 +1363,9 @@ def export_linear_output(
         apply_flatfield=apply_flatfield,
         apply_sensor=apply_sensor,
         apply_lens=apply_lens,
+        apply_crop=apply_crop,
+        half=half,
+        half_geometry=half_geometry,
         gamma_key=gamma_key,
     )
     ice_applied = False

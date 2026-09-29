@@ -6262,8 +6262,8 @@ class AppController(QObject):
             frames = hdr_frame_paths(f)
             out_dir = resolve_output_dir(f["path"], delivery, roll_root)
             # Same naming rule as a normal export: the bracket's first frame, suffixed so
-            # the merge does not write over that frame's own linear output. No border and no
-            # half: a linear dump is the whole decoded source, whatever the print crop says.
+            # the merge does not write over that frame's own linear output. No border: a
+            # linear dump is the decoded source, cut to the half and crop only with Apply crop.
             stem = render_export_filename(
                 min(frames, key=lambda p: os.path.basename(p).lower()) if frames else f["path"],
                 delivery,
@@ -6296,6 +6296,13 @@ class AppController(QObject):
                         "apply_flatfield": self.state.linear_apply_flatfield,
                         "apply_sensor": self.state.linear_apply_sensor,
                         "apply_lens": self.state.linear_apply_lens,
+                        "apply_crop": self.state.linear_apply_crop,
+                        "half": int(f.get("half") or 0),
+                        "half_geometry": HalfGeometry(
+                            crop_rect=tuple(f["crop_rect"]) if f.get("crop_rect") else None,
+                            split_x=float(f.get("split_x") or 0.5),
+                            gutter_thickness=float(f.get("gutter_thickness") or 0.0),
+                        ),
                         "apply_ice": self.state.linear_apply_ice,
                         "retouch": params.retouch,
                         "gamma_key": self.state.linear_gamma_key,

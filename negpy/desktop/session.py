@@ -289,6 +289,7 @@ class AppState:
     linear_apply_flatfield: bool = False
     linear_apply_sensor: bool = False
     linear_apply_lens: bool = False
+    linear_apply_crop: bool = False
     linear_apply_ice: bool = False
     linear_gamma_key: str = "linear"
     linear_format: str = "tiff"
@@ -879,7 +880,14 @@ class DesktopSessionManager(QObject):
         saved_linear_output = self.repo.get_global_setting("linear_output")
         if saved_linear_output is not None:
             self.state.linear_output = bool(saved_linear_output)
-        for key in ("linear_apply_wb", "linear_apply_flatfield", "linear_apply_sensor", "linear_apply_lens", "linear_apply_ice"):
+        for key in (
+            "linear_apply_wb",
+            "linear_apply_flatfield",
+            "linear_apply_sensor",
+            "linear_apply_lens",
+            "linear_apply_crop",
+            "linear_apply_ice",
+        ):
             val = self.repo.get_global_setting(key)
             if val is not None:
                 setattr(self.state, key, bool(val))
@@ -1026,6 +1034,7 @@ class DesktopSessionManager(QObject):
         self.repo.save_global_setting("linear_apply_flatfield", self.state.linear_apply_flatfield)
         self.repo.save_global_setting("linear_apply_sensor", self.state.linear_apply_sensor)
         self.repo.save_global_setting("linear_apply_lens", self.state.linear_apply_lens)
+        self.repo.save_global_setting("linear_apply_crop", self.state.linear_apply_crop)
         self.repo.save_global_setting("linear_apply_ice", self.state.linear_apply_ice)
         self.repo.save_global_setting("linear_gamma_key", self.state.linear_gamma_key)
         self.repo.save_global_setting("linear_format", self.state.linear_format)

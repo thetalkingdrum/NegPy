@@ -2729,6 +2729,52 @@ class TestLinearOutputDestination(unittest.TestCase):
         self._set_export(output_mode=ExportPresetOutputMode.ABSOLUTE)
         self.assertEqual(self._out_path(), os.path.join("/abs/out", "IMG_0001_linear.tiff"))
 
+    def _write_halves(self, apply_crop: bool):
+        import tifffile
+
+        from negpy.services.export.linear_output import export_linear_output
+
+        src = os.path.join(self.tmp.name, "src", "scan.tif")
+        data = np.zeros((40, 100, 3), dtype=np.uint16)
+        data[:] = np.linspace(0, 60000, 100, dtype=np.uint16)[None, :, None]
+        tifffile.imwrite(src, data, photometric="rgb")
+        infos = [
+            {
+                "name": "scan.tif",
+                "path": src,
+                "hash": f"h#{h}",
+                "half": h,
+                "split_x": 0.45,
+                "crop_rect": self._HALF_CROP,
+                "gutter_thickness": 0.04,
+            }
+            for h in (1, 2)
+        ]
+        self._set_export(output_mode=ExportPresetOutputMode.ABSOLUTE)
+        self.controller.state.linear_apply_crop = apply_crop
+        tasks = self.controller._linear_output_tasks(infos, os.path.join(self.tmp.name, "out"))
+        written = []
+        for task in tasks:
+            export_linear_output(src, task.out_path, **task.options)
+            written.append(tifffile.imread(task.out_path).astype(np.float32) / 65535.0)
+        return data.astype(np.float32) / 65535.0, written
+
+    _HALF_CROP = (0.05, 0.1, 0.95, 0.9)
+
+    def test_each_half_frame_writes_its_own_half_with_apply_crop(self):
+        from negpy.services.assets.half_frame import slice_half
+
+        full, written = self._write_halves(apply_crop=True)
+        for h, arr in zip((1, 2), written):
+            expected = slice_half(full, h, 0.45, crop_rect=self._HALF_CROP, gutter_thickness=0.04)
+            self.assertEqual(arr.shape, expected.shape)
+            np.testing.assert_allclose(arr, expected, atol=1.0 / 65535.0)
+
+    def test_half_frames_write_the_whole_scan_without_apply_crop(self):
+        full, written = self._write_halves(apply_crop=False)
+        for arr in written:
+            np.testing.assert_allclose(arr, full, atol=1.0 / 65535.0)
+
     def test_filename_template_is_honoured_and_keeps_the_linear_suffix(self):
         # The suffix is not cosmetic: without it, "same as source" plus the default pattern
         # writes the dump over the source file it was decoded from.
