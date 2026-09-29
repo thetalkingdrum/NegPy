@@ -6295,6 +6295,7 @@ class AppController(QObject):
                         "apply_wb": self.state.linear_apply_wb,
                         "apply_flatfield": self.state.linear_apply_flatfield,
                         "apply_sensor": self.state.linear_apply_sensor,
+                        "apply_lens": self.state.linear_apply_lens,
                         "apply_ice": self.state.linear_apply_ice,
                         "retouch": params.retouch,
                         "gamma_key": self.state.linear_gamma_key,
