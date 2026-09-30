@@ -218,18 +218,20 @@ class TiffLoader(IImageLoader):
             icc_bytes = None
 
         color_space = None
-        if not linear_raw:
+        # A 16-bit or float negative is scanner-raw linear whatever its tag says; only a
+        # finished positive reads its profile. Slide as captured arrives with linear_raw set.
+        literal = linear_raw or (img.dtype != np.uint8 and not positive_source)
+        if not literal:
             # A label only, for "Same as Source": the decode reads the profile's own curves.
             color_space = identify_color_space_from_icc(icc_bytes)
-            if color_space is None and (img.dtype == np.uint8 or positive_source):
-                # Untagged 8-bit is display-encoded in practice. Untagged 16-bit is scanner-raw
-                # linear, which no ColorSpace names, so it stays None; a positive source has
-                # resolved that ambiguity and takes the 8-bit assumption.
+            if color_space is None:
+                # Untagged 8-bit is display-encoded in practice; a positive source takes the
+                # same assumption.
                 color_space = ColorSpace.SRGB.value
             decoded = _decode_embedded_trc(icc_bytes, img, f32, file_path) if icc_bytes else None
             if decoded is not None:
                 f32 = decoded
-            elif img.dtype == np.uint8 or positive_source:
+            else:
                 f32 = srgb_to_linear(f32)
         metadata = {
             "orientation": read_orientation(file_path),

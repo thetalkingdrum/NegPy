@@ -167,27 +167,47 @@ class TestTiffEncodingAssumptions:
             np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 255.0), atol=1e-6)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
-    def test_srgb_icc_uint16_gets_srgb_decode(self) -> None:
+    @pytest.mark.parametrize(
+        "icc",
+        [
+            ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes(),
+            _ADOBE_RGB_ICC,
+            _icc("Custom scanner profile", _curv_gamma(2.2)),
+        ],
+        ids=["srgb", "adobe", "custom"],
+    )
+    def test_tagged_uint16_negative_ignores_its_profile(self, icc: bytes) -> None:
+        """A 16-bit negative is scanner-raw linear: its profile neither decodes nor labels it."""
+        data = _rgb16()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f32, metadata = _load(_write_tagged(tmpdir, data, icc))
+        np.testing.assert_array_equal(f32, data.astype(np.float32) / 65535.0)
+        assert metadata["color_space"] is None
+
+    def test_tagged_float_negative_ignores_its_profile(self) -> None:
+        data = (_rgb16().astype(np.float32) / 65535.0).astype(np.float32)
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f32, metadata = _load(_write_tagged(tmpdir, data, icc))
+        np.testing.assert_array_equal(f32, data)
+        assert metadata["color_space"] is None
+
+    def test_srgb_icc_uint16_positive_gets_srgb_decode(self) -> None:
         icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
         data = _rgb16()
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "tagged.tif")
-            tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
-            f32, metadata = _load(path)
-            np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=_TRC_ATOL)
-            assert metadata["color_space"] == ColorSpace.SRGB.value
+            f32, metadata = _load(_write_tagged(tmpdir, data, icc), positive_source=True)
+        np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=_TRC_ATOL)
+        assert metadata["color_space"] == ColorSpace.SRGB.value
 
-    def test_adobe_rgb_icc_uint16_gets_the_working_oetf_decode(self) -> None:
+    def test_adobe_rgb_icc_uint16_positive_gets_the_working_oetf_decode(self) -> None:
         """Adobe RGB's curv tag is the working space's own gamma, so its decode matches
         working_oetf_decode."""
         data = _rgb16()
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "tagged.tif")
-            tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(_ADOBE_RGB_ICC), _ADOBE_RGB_ICC, True)])
-            f32, metadata = _load(path)
-            expected = working_oetf_decode(data.astype(np.float32) / 65535.0)
-            np.testing.assert_allclose(f32, expected, atol=1e-6)
-            assert metadata["color_space"] == ColorSpace.ADOBE_RGB.value
+            f32, metadata = _load(_write_tagged(tmpdir, data, _ADOBE_RGB_ICC), positive_source=True)
+        np.testing.assert_allclose(f32, working_oetf_decode(data.astype(np.float32) / 65535.0), atol=1e-6)
+        assert metadata["color_space"] == ColorSpace.ADOBE_RGB.value
 
     def test_linear_raw_ignores_srgb_icc_tag(self) -> None:
         """Linear RAW couples to the loader: a stitched/scanner TIFF that lies about
@@ -223,12 +243,13 @@ class TestTiffEncodingAssumptions:
 
 
 class TestEmbeddedTrcDecode:
-    """The decode follows the profile's own TRC curves; the description is a label only."""
+    """Where a profile is read (Positive, 8-bit), the decode follows its own TRC curves;
+    the description is a label only."""
 
     def _load_tagged(self, icc: bytes, data: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, dict]:
         data = _rgb16() if data is None else data
         with tempfile.TemporaryDirectory() as tmpdir:
-            f32, metadata = _load(_write_tagged(tmpdir, data, icc))
+            f32, metadata = _load(_write_tagged(tmpdir, data, icc), positive_source=True)
         return data.astype(np.float32) / 65535.0, f32, metadata
 
     @pytest.mark.parametrize("trc", [_CURV_IDENTITY, _curv_gamma(1.0), _para(0, 1.0)])
@@ -238,9 +259,8 @@ class TestEmbeddedTrcDecode:
         assert metadata["color_space"] == ColorSpace.SRGB.value
 
     def test_custom_profile_decodes_its_gamma(self) -> None:
-        x, f32, metadata = self._load_tagged(_icc("Custom scanner profile", _curv_gamma(2.2)))
+        x, f32, _ = self._load_tagged(_icc("Custom scanner profile", _curv_gamma(2.2)))
         np.testing.assert_allclose(f32, np.power(x, _u8f8(2.2)), atol=_TRC_ATOL)
-        assert metadata["color_space"] is None
 
     def test_display_p3_para_type_3_matches_srgb(self) -> None:
         trc = _para(3, 2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045)
@@ -264,17 +284,17 @@ class TestEmbeddedTrcDecode:
         x, f32, _ = self._load_tagged(_icc("Gray Gamma 2.2", _curv_gamma(2.2), space=b"GRAY"), data)
         np.testing.assert_allclose(f32, np.power(np.stack([x] * 3, axis=-1), _u8f8(2.2)), atol=_TRC_ATOL)
 
-    def test_lut_profile_is_not_decoded(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_lut_profile_takes_the_untagged_srgb_decode(self, caplog: pytest.LogCaptureFixture) -> None:
         icc = _icc("sRGB LUT", _curv_gamma(2.2), extra=((b"A2B0", b"mft2" + b"\0" * 48),))
         with caplog.at_level(logging.WARNING, logger="negpy"):
             x, f32, _ = self._load_tagged(icc)
-        np.testing.assert_array_equal(f32, x)
+        np.testing.assert_allclose(f32, srgb_to_linear(x), atol=1e-6)
         assert "is not decoded" in caplog.text
 
-    def test_unsupported_curve_type_is_not_decoded(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_unsupported_curve_type_takes_the_untagged_srgb_decode(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="negpy"):
             x, f32, _ = self._load_tagged(_icc("sRGB IEC61966-2.1", b"xxxx\0\0\0\0\0\0\0\0"))
-        np.testing.assert_array_equal(f32, x)
+        np.testing.assert_allclose(f32, srgb_to_linear(x), atol=1e-6)
         assert "unsupported TRC curve type" in caplog.text
 
 
@@ -291,7 +311,7 @@ class TestPositiveSourceOnTheTransferPath:
             tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
 
             process = ProcessConfig(process_mode=ProcessMode.E6, positive_source=True)
-            f32, metadata = _load(path, linear_raw=effective_linear_raw(process))
+            f32, metadata = _load(path, linear_raw=effective_linear_raw(process), positive_source=process.positive_source)
             np.testing.assert_allclose(f32, srgb_to_linear(data.astype(np.float32) / 65535.0), atol=_TRC_ATOL)
             assert metadata["color_space"] == ColorSpace.SRGB.value
 
@@ -304,7 +324,7 @@ class TestPositiveSourceOnTheTransferPath:
             tifffile.imwrite(path, data, photometric="rgb", extratags=[(34675, 7, len(icc), icc, True)])
 
             process = ProcessConfig(process_mode=ProcessMode.E6, positive_source=False)
-            f32, metadata = _load(path, linear_raw=effective_linear_raw(process))
+            f32, metadata = _load(path, linear_raw=effective_linear_raw(process), positive_source=process.positive_source)
             np.testing.assert_allclose(f32, data.astype(np.float32) / 65535.0, atol=1e-7)
             assert metadata["color_space"] is None
 
