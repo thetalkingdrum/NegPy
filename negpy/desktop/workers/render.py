@@ -1591,9 +1591,10 @@ class ThumbnailRenderWorker(QObject):
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, preview_service) -> None:
+    def __init__(self, preview_service, live_preview_service=None) -> None:
         super().__init__()
         self._preview_service = preview_service
+        self._live_preview_service = live_preview_service
         self._processor = ImageProcessor(use_gpu=False)
         self._cancel_lock = threading.RLock()
         self._cancelled_generations: set[int] = set()
@@ -1618,6 +1619,42 @@ class ThumbnailRenderWorker(QObject):
     def _cancel_requested(self, generation: int) -> bool:
         with self._cancel_lock:
             return generation in self._cancelled_generations
+
+    def _peek_live_preview(self, frame: ThumbnailRenderInput, workspace_color_space: str) -> Optional[tuple[np.ndarray, dict]]:
+        """A plain frame's decode from the navigation cache, copied, or None; never writes or
+        reorders it. The key is the whole-scan one `_decode_asset_preview_with_meta` slices, so
+        a half-frame asset or roll fork the live path cached under its own hash and half slice
+        is not found."""
+        from negpy.services.assets.half_frame import base_hash, slice_for_asset
+
+        config = frame.config
+        if self._live_preview_service is None or stitch_active(config.stitch) or hdr_active(config.hdr) or is_rgb_triplet(config.rgbscan):
+            return None
+        hit = self._live_preview_service.peek_linear_preview(
+            frame.file_info["path"],
+            workspace_color_space,
+            use_camera_wb=not effective_linear_raw(config.process),
+            file_hash=base_hash(frame.file_info.get("hash")),
+            demosaic=config.process.demosaic_preview,
+            positive_source=config.process.positive_source,
+            highlight_mode=effective_highlight_reconstruction(config.process),
+            bake_camera_wb=highlight_reconstruction_bakes_wb(config.process),
+            lens_corrections=metadata_lens_corrections(config),
+            lens_flatfield=config.flatfield,
+        )
+        logger.debug("thumbnail refresh live cache %s: %s", "miss" if hit is None else "hit", frame.file_info["path"])
+        if hit is None:
+            return None
+        raw, _dims, meta = hit
+        # The navigation cache still serves these arrays, so the pipeline gets its own.
+        meta = {k: np.copy(v) if isinstance(v, np.ndarray) else v for k, v in meta.items()}
+        return slice_for_asset(np.copy(raw), frame.file_info), meta
+
+    def _decode(self, frame: ThumbnailRenderInput, workspace_color_space: str) -> tuple[np.ndarray, dict]:
+        hit = self._peek_live_preview(frame, workspace_color_space)
+        if hit is not None:
+            return hit
+        return _decode_asset_preview_with_meta(self._preview_service, frame.file_info, frame.config, workspace_color_space)
 
     def _emit_finished_unless_cancelled(self, generation: int, rendered_count: int) -> None:
         """Atomically choose the terminal signal for a generation, so a `cancel()` racing
@@ -1653,9 +1690,7 @@ class ThumbnailRenderWorker(QObject):
                     break
                 name = str(frame.file_info.get("name") or frame.file_info.get("path") or done)
                 try:
-                    buffer, meta = _decode_asset_preview_with_meta(
-                        self._preview_service, frame.file_info, frame.config, task.workspace_color_space
-                    )
+                    buffer, meta = self._decode(frame, task.workspace_color_space)
                     cam_xyz = meta.get("cam_xyz")
                     if frame.icc_input_active:
                         cam_xyz = wb_only_cam_xyz(cam_xyz)
