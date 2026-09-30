@@ -166,6 +166,16 @@ def extract_trc_decode_samples(data: bytes, x: np.ndarray) -> Optional[np.ndarra
     return np.stack(rows)
 
 
+def extract_gray_trc_decode_samples(data: bytes, x: np.ndarray) -> Optional[np.ndarray]:
+    """(len(x),) float64: a GRAY TRC profile's kTRC decode at encoded points ``x``, or None
+    when the tag is missing, of an unsupported curve type, or overridden by an A2B0/B2A0 LUT."""
+    tags = _read_tag_table(data)
+    entry = tags.get(b"kTRC")
+    if entry is None or any(sig in tags for sig in (b"A2B0", b"B2A0")):
+        return None
+    return _decode_trc_at(data, *entry, x)
+
+
 def extract_primaries_matrix(data: bytes) -> Optional[np.ndarray]:
     """Extract the 3x3 D65-referenced RGB→XYZ matrix from rXYZ/gXYZ/bXYZ colorant tags.
 

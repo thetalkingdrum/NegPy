@@ -7,7 +7,12 @@ from PIL import Image
 from typing import Any, ContextManager, Optional, Tuple
 from negpy.domain.interfaces import IImageLoader
 from negpy.domain.models import ColorSpace
-from negpy.kernel.image.logic import srgb_to_linear, uint8_to_float32, uint16_to_float32, working_oetf_decode
+from negpy.infrastructure.display.icc_profile import (
+    extract_gray_trc_decode_samples,
+    extract_trc_decode_samples,
+    is_matrix_trc_profile,
+)
+from negpy.kernel.image.logic import srgb_to_linear, uint8_to_float32, uint16_to_float32
 from negpy.infrastructure.loaders.constants import IR_SIDECAR_SUFFIXES, SUPPORTED_TIFF_EXTENSIONS
 from negpy.infrastructure.loaders.helpers import (
     NonStandardFileWrapper,
@@ -131,6 +136,45 @@ def _extract_ir_from_extrasamples(file_path: str, img: np.ndarray) -> Tuple[np.n
     return np.ascontiguousarray(img[:, :, :3]), None
 
 
+_FLOAT_TRC_SAMPLES = 4096
+
+
+def _decode_embedded_trc(icc_bytes: bytes, img: np.ndarray, f32: np.ndarray, file_path: str) -> Optional[np.ndarray]:
+    """`f32` linearized through the profile's own TRC curves, or None (logged) when the
+    profile has no curve to read: a LUT profile or an unsupported curve type.
+
+    Integer data indexes a table sampled at every code value, so the decode is exact.
+    """
+    if img.dtype == np.uint8 or img.dtype == np.uint16:
+        top = np.iinfo(img.dtype).max
+        x = np.arange(top + 1, dtype=np.float64) / top
+    else:
+        x = np.linspace(0.0, 1.0, _FLOAT_TRC_SAMPLES)
+
+    if is_matrix_trc_profile(icc_bytes):
+        dec = extract_trc_decode_samples(icc_bytes, x)
+        reason = "an unsupported TRC curve type"
+    else:
+        gray = extract_gray_trc_decode_samples(icc_bytes, x)
+        dec = None if gray is None else np.stack([gray] * 3)
+        reason = "no matrix/TRC or gray TRC curves (LUT-based or unreadable)"
+    if dec is None:
+        logger.warning(f"Embedded ICC profile in {file_path} has {reason}; its encoding is not decoded")
+        return None
+
+    dec = np.clip(dec, 0.0, 1.0)
+    if np.max(np.abs(dec - x)) <= 0.5 / 65535.0:
+        return f32
+    lut = dec.astype(np.float32)
+    out = np.empty_like(f32)
+    for c in range(3):
+        if img.dtype == np.uint8 or img.dtype == np.uint16:
+            out[..., c] = lut[c][img[..., c]]
+        else:
+            out[..., c] = np.interp(f32[..., c], x, dec[c])
+    return out
+
+
 class TiffLoader(IImageLoader):
     """
     Loader for TIFF scans. Surfaces an IR channel via `metadata["ir"]` when present
@@ -175,18 +219,18 @@ class TiffLoader(IImageLoader):
 
         color_space = None
         if not linear_raw:
+            # A label only, for "Same as Source": the decode reads the profile's own curves.
             color_space = identify_color_space_from_icc(icc_bytes)
             if color_space is None and (img.dtype == np.uint8 or positive_source):
                 # Untagged 8-bit is display-encoded in practice. Untagged 16-bit is scanner-raw
                 # linear, which no ColorSpace names, so it stays None; a positive source has
                 # resolved that ambiguity and takes the 8-bit assumption.
                 color_space = ColorSpace.SRGB.value
-            if color_space == ColorSpace.SRGB.value:
+            decoded = _decode_embedded_trc(icc_bytes, img, f32, file_path) if icc_bytes else None
+            if decoded is not None:
+                f32 = decoded
+            elif img.dtype == np.uint8 or positive_source:
                 f32 = srgb_to_linear(f32)
-            elif color_space == ColorSpace.ADOBE_RGB.value:
-                # Adobe RGB's TRC is the working space's own gamma, so its decode is the
-                # inverse of the pipeline OETF encode.
-                f32 = working_oetf_decode(f32)
         metadata = {
             "orientation": read_orientation(file_path),
             "color_space": color_space,
