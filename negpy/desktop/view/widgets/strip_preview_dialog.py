@@ -6,8 +6,8 @@ Read after ``exec()`` via ``selected_frames()`` / ``frame_windows()`` /
 """
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import QPixmap, QTransform
+from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QColor, QPainter, QPixmap, QTransform
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,13 +19,15 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from negpy.kernel.system.text import count_of, plural
 from negpy.desktop.converters import ImageConverter
-from negpy.desktop.view.styles.templates import StatusStrip, pin_dialog_default
+from negpy.desktop.view.styles.templates import EditedDot, StatusStrip, hint_label, pin_dialog_default, slider_handle_qss
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.scan_preview_common import RollPreviewSignalsMixin, preview_positive
@@ -114,6 +116,54 @@ class _ResetSlider(QSlider):
         self.setValue(self._default)
 
 
+# The groove is centered on zero, so a fill from the left end reads as an offset at rest.
+_CENTERED_QSS = "QSlider::sub-page:horizontal { background: transparent; }"
+_MOVED_BAND_H = 4
+
+
+class _CenteredSlider(_ResetSlider):
+    """A slider centered on its default: off the default, the handle takes the accent and a band
+    fills from the default to the handle."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._moved: bool | None = None
+        self.valueChanged.connect(self._sync_moved)
+        self._sync_moved(self.value())
+
+    def is_moved(self) -> bool:
+        return self.value() != self._default
+
+    def _sync_moved(self, _value: int) -> None:
+        moved = self.is_moved()
+        if moved == self._moved:
+            return
+        self._moved = moved
+        self.setStyleSheet(_CENTERED_QSS + (slider_handle_qss(THEME.accent_primary) if moved else ""))
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.is_moved():
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self)
+        span = groove.width() - handle.width()
+        zero = groove.x() + handle.width() // 2 + QStyle.sliderPositionFromValue(self.minimum(), self.maximum(), self._default, span)
+        left, right = (zero, handle.left()) if handle.center().x() > zero else (handle.right() + 1, zero)
+        if right <= left:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(THEME.accent_primary))
+        top = groove.center().y() - _MOVED_BAND_H // 2 + 1
+        painter.drawRoundedRect(QRectF(left, top, right - left, _MOVED_BAND_H), 2, 2)
+        painter.end()
+
+
 class _Tile:
     """One strip position: its preview label and include box."""
 
@@ -123,8 +173,10 @@ class _Tile:
         label: ScanWindowLabel,
         checkbox: QCheckBox,
         preview_btn: QPushButton,
-        offset_slider: "_ResetSlider",
+        offset_slider: _CenteredSlider,
         widget: QWidget,
+        offset_value: QLabel,
+        edited_dot: EditedDot,
     ) -> None:
         self.frame = frame
         self.previewed_offset: float | None = None  # offset the shown preview was scanned at
@@ -133,6 +185,8 @@ class _Tile:
         self.preview_btn = preview_btn
         self.offset_slider = offset_slider
         self.widget = widget
+        self.offset_value = offset_value
+        self.edited_dot = edited_dot
 
 
 class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
@@ -272,6 +326,10 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         top.addWidget(self.preview_all_btn)
         layout.addLayout(top)
 
+        # Always holds a line, so the grid under it does not move as offsets come and go.
+        self.own_offsets_lbl = hint_label()
+        layout.addWidget(self.own_offsets_lbl)
+
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -355,6 +413,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.drift_slider.valueChanged.connect(self._on_offset_changed)
         self.size_slider.valueChanged.connect(self._on_tile_size_changed)
         self._on_offset_changed(self.offset_slider.value())
+        self._update_own_offsets_line()
         self._update_ok_enabled()
 
         self._connect_preview_signals()
@@ -396,6 +455,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
             f"#frameOverlay QCheckBox {{ color: {THEME.text_primary}; font-size: {THEME.font_size_base}px;"
             " font-weight: 600; spacing: 6px; }"
             "#frameOverlay QCheckBox::indicator { width: 16px; height: 16px; }"
+            f"#frameOverlay QLabel {{ color: {THEME.channel_red_text}; font-size: {THEME.font_size_small}px; }}"
         )
         oh = QHBoxLayout(overlay)
         oh.setContentsMargins(7, 4, 7, 4)
@@ -410,9 +470,14 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         preview_btn.setFixedSize(24, 20)
         preview_btn.clicked.connect(lambda _checked=False, f=frame: self._on_preview_one(f))
         oh.addWidget(preview_btn)
+        offset_value = QLabel()
+        oh.addWidget(offset_value)
         grid.addWidget(overlay, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        offset_slider = _ResetSlider()
+        edited_dot = EditedDot(overlay_on=label)
+        edited_dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        offset_slider = _CenteredSlider()
         offset_slider.setRange(-_MAX_MEASURED_OFFSET_TENTHS, _MAX_MEASURED_OFFSET_TENTHS)
         offset_slider.setFixedSize(self._tile_size()[0], _TILE_SLIDER_H)
         # Set before connecting, so building a tile does not refresh a half-built dialog.
@@ -420,8 +485,8 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         offset_slider.valueChanged.connect(lambda _v, f=frame: self._on_tile_offset_changed(f))
         grid.addWidget(offset_slider, 1, 0)
 
-        tile = _Tile(frame, label, checkbox, preview_btn, offset_slider, widget)
-        self._set_tile_offset_tooltip(tile)
+        tile = _Tile(frame, label, checkbox, preview_btn, offset_slider, widget, offset_value, edited_dot)
+        self._sync_tile_offset_cue(tile)
         return tile
 
     def _fitting_columns(self) -> int:
@@ -591,13 +656,27 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
             self.status_strip.stop_progress()
         self._update_ok_enabled()
 
-    def _set_tile_offset_tooltip(self, tile: _Tile) -> None:
-        tile.offset_slider.setToolTip(f"Frame {tile.frame}: {tile.offset_slider.value() / 10.0:+.1f} mm. {_TILE_OFFSET_TIP}")
+    def _sync_tile_offset_cue(self, tile: _Tile) -> None:
+        """Tooltip, corner reading and edited dot of a tile's own offset."""
+        value = tile.offset_slider.value() / 10.0
+        tile.offset_slider.setToolTip(f"Frame {tile.frame}: {value:+.1f} mm. {_TILE_OFFSET_TIP}")
+        tile.offset_value.setText(f"{value:+.1f} mm")
+        tile.offset_value.setVisible(bool(value))
+        tile.edited_dot.set_active(bool(value))
+
+    def _update_own_offsets_line(self) -> None:
+        frames = sorted(self.frame_offsets())
+        if frames:
+            listed = ", ".join(str(f) for f in frames)
+            self.own_offsets_lbl.setText(f"Own offset on {count_of(len(frames), 'frame')}: {listed}")
+        else:
+            self.own_offsets_lbl.setText("No frame has its own offset")
 
     def _on_tile_offset_changed(self, frame: int) -> None:
         tile = self._tiles.get(frame)
         if tile is not None:
-            self._set_tile_offset_tooltip(tile)
+            self._sync_tile_offset_cue(tile)
+        self._update_own_offsets_line()
         self._on_offset_changed(0)
 
     def _on_tile_size_changed(self, value: int) -> None:

@@ -1137,6 +1137,45 @@ def test_a_detected_strip_overrides_the_saved_correction() -> None:
     assert dialog.frame_offsets() == {2: -0.9}
 
 
+def test_a_tile_with_its_own_offset_is_marked() -> None:
+    dialog = StripPreviewDialog(_FakeController(), _device(4), initial_frame_offsets={3: 1.5})
+    moved, still = dialog._tiles[3], dialog._tiles[2]
+
+    assert moved.offset_slider.is_moved() and not still.offset_slider.is_moved()
+    assert not moved.edited_dot.isHidden() and still.edited_dot.isHidden()
+    assert not moved.offset_value.isHidden() and moved.offset_value.text() == "+1.5 mm"
+    assert still.offset_value.isHidden()
+
+
+def test_resetting_a_tile_offset_clears_its_marks() -> None:
+    dialog = StripPreviewDialog(_FakeController(), _device(4), initial_frame_offsets={3: 1.5})
+    tile = dialog._tiles[3]
+
+    tile.offset_slider.mouseDoubleClickEvent(None)
+
+    assert not tile.offset_slider.is_moved()
+    assert tile.edited_dot.isHidden() and tile.offset_value.isHidden()
+
+
+def test_the_dialog_lists_the_frames_with_their_own_offset() -> None:
+    dialog = StripPreviewDialog(_FakeController(), _device(4), initial_frame_offsets={3: 1.5})
+    assert dialog.own_offsets_lbl.text() == "Own offset on 1 frame: 3"
+
+    dialog._tiles[1].offset_slider.setValue(-4)
+    assert dialog.own_offsets_lbl.text() == "Own offset on 2 frames: 1, 3"
+
+    dialog._tiles[1].offset_slider.setValue(0)
+    dialog._tiles[3].offset_slider.setValue(0)
+    assert dialog.own_offsets_lbl.text() == "No frame has its own offset"
+
+
+def test_a_moved_tile_slider_paints_without_error() -> None:
+    dialog = StripPreviewDialog(_FakeController(), _device(4), initial_frame_offsets={2: -3.0, 3: 3.0})
+
+    for frame in (1, 2, 3):
+        dialog._tiles[frame].offset_slider.grab()
+
+
 # ── finding the frames as the dialog opens ────────────────────────────────
 
 
