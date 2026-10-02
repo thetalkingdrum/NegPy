@@ -101,8 +101,15 @@ _OFFSET_TIP = (
 )
 _DRIFT_TIP = "Adds progressively more (or less) offset per frame position, for a strip whose gaps creep."
 _TILE_OFFSET_TIP = "Corrects this frame alone, on top of Offset and Drift. Double-click to reset."
-# PROTOTYPE: "value" or "dot" for the per-tile mark; picked live from the dialog, removed before commit.
-_PROTO_TILE_MARK = "value"
+# PROTOTYPE: which edited-offset marks show, toggled live from the dialog. Removed before review.
+_PROTO = {"values": True, "red": False, "handle": False, "dot": False, "summary": True}
+_PROTO_LABELS = {
+    "values": "Tile values",
+    "red": "Red numbers",
+    "handle": "Red handles",
+    "dot": "Dots",
+    "summary": "Summary line",
+}
 _BACKGROUND_TIP = "Fill behind the frames. A gray reads against the dark film edge of a negative."
 _BACKGROUND_SETTING = "strip_preview_bg_index"
 _SIZE_TIP = "Tile size. The grid reflows to whatever fits the dialog. Double-click to reset."
@@ -117,6 +124,11 @@ def _mark_edited(slider: QSlider, edited: bool) -> None:
     if style is not None:
         style.unpolish(slider)
         style.polish(slider)
+
+
+def _number_color(label: QLabel, edited: bool) -> None:
+    color = THEME.channel_red_text if edited and _PROTO["red"] else THEME.text_secondary
+    label.setStyleSheet(f"color: {color};")
 
 
 class _ResetSlider(QSlider):
@@ -275,7 +287,6 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
             head.addWidget(QLabel(name))
             head.addWidget(dot)
             head.addStretch()
-            value.setStyleSheet(f"color: {THEME.text_secondary};")
             head.addWidget(value)
             block.addLayout(head)
             block.addWidget(slider)
@@ -296,14 +307,16 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.preview_all_btn = QPushButton(qta.icon("fa5s.eye", color=THEME.text_primary), label)
         self.preview_all_btn.clicked.connect(self._on_preview_all)
         top.addWidget(self.preview_all_btn)
-        # PROTOTYPE switch, removed before commit.
-        self._proto_mark = QComboBox()
-        self._proto_mark.addItems(["value", "dot", "handle", "value+handle"])
-        self._proto_mark.setToolTip("Prototype: how a tile shows its own offset")
-        self._proto_mark.currentTextChanged.connect(self._on_proto_mark)
-        top.addWidget(QLabel("Tile mark"))
-        top.addWidget(self._proto_mark)
         layout.addLayout(top)
+        proto = QHBoxLayout()
+        proto.addWidget(QLabel("Prototype marks:"))
+        for key, text in _PROTO_LABELS.items():
+            box = QCheckBox(text)
+            box.setChecked(_PROTO[key])
+            box.toggled.connect(lambda on, k=key: self._on_proto_toggled(k, on))
+            proto.addWidget(box)
+        proto.addStretch()
+        layout.addLayout(proto)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -458,7 +471,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         preview_btn.clicked.connect(lambda _checked=False, f=frame: self._on_preview_one(f))
         oh.addWidget(preview_btn)
         offset_value = QLabel()
-        offset_value.setStyleSheet(f"color: {THEME.text_primary}; font-size: {THEME.font_size_small}px;")
+        offset_value.setStyleSheet(f"color: {THEME.text_secondary};")
         offset_value.hide()
         oh.addWidget(offset_value)
         offset_dot = EditedDot()
@@ -654,16 +667,27 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         """Mark a tile that carries its own correction, so it reads without a hover."""
         value = tile.offset_slider.value() / 10.0
         tile.offset_value.setText(f"{value:+.1f} mm")
-        tile.offset_value.setVisible(bool(value) and _PROTO_TILE_MARK.startswith("value"))
-        tile.offset_dot.set_active(bool(value) and _PROTO_TILE_MARK == "dot")
-        _mark_edited(tile.offset_slider, bool(value) and _PROTO_TILE_MARK.endswith("handle"))
+        tile.offset_value.setVisible(bool(value) and _PROTO["values"])
+        _number_color(tile.offset_value, bool(value))
+        tile.offset_dot.set_active(bool(value) and _PROTO["dot"])
+        _mark_edited(tile.offset_slider, bool(value) and _PROTO["handle"])
 
-    def _on_proto_mark(self, mark: str) -> None:
-        global _PROTO_TILE_MARK
-        _PROTO_TILE_MARK = mark
+    def _on_proto_toggled(self, key: str, on: bool) -> None:
+        _PROTO[key] = on
         for tile in self._tiles.values():
             self._show_tile_offset(tile)
-        self._on_offset_changed(0)
+        self._show_roll_marks()
+        self._update_offset_summary()
+
+    def _show_roll_marks(self) -> None:
+        for slider, value, dot in (
+            (self.offset_slider, self.offset_label, self.offset_dot),
+            (self.drift_slider, self.drift_label, self.drift_dot),
+        ):
+            edited = bool(slider.value())
+            dot.set_active(edited and _PROTO["dot"])
+            _mark_edited(slider, edited and _PROTO["handle"])
+            _number_color(value, edited)
 
     def _on_tile_offset_changed(self, frame: int) -> None:
         tile = self._tiles.get(frame)
@@ -673,7 +697,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self._on_offset_changed(0)
 
     def _update_offset_summary(self) -> None:
-        frames = sorted(f for f, t in self._tiles.items() if t.offset_slider.value())
+        frames = sorted(f for f, t in self._tiles.items() if t.offset_slider.value()) if _PROTO["summary"] else []
         self.status_strip.set_summary(f"Own offset on {plural(len(frames), 'frame')} {', '.join(map(str, frames))}" if frames else "")
 
     def _on_background_changed(self, index: int) -> None:
@@ -699,11 +723,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
     def _on_offset_changed(self, _value: int) -> None:
         self.offset_label.setText(f"{self.frame_offset():.1f} mm")
         self.drift_label.setText(f"{self.frame_offset_modifier():+.2f} mm/frame")
-        handle = _PROTO_TILE_MARK.endswith("handle")
-        self.offset_dot.set_active(bool(self.offset_slider.value()) and not handle)
-        self.drift_dot.set_active(bool(self.drift_slider.value()) and not handle)
-        _mark_edited(self.offset_slider, bool(self.offset_slider.value()) and handle)
-        _mark_edited(self.drift_slider, bool(self.drift_slider.value()) and handle)
+        self._show_roll_marks()
         self._update_offset_summary()
         self._refresh_offset_indicators()
         if self._discovers and self._tiles:
