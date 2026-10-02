@@ -469,6 +469,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         preview_btn.setFlat(True)
         preview_btn.setFixedSize(24, 20)
         preview_btn.clicked.connect(lambda _checked=False, f=frame: self._on_preview_one(f))
+        preview_btn.setVisible(not self._caps.strip_pass)
         oh.addWidget(preview_btn)
         offset_value = QLabel()
         oh.addWidget(offset_value)

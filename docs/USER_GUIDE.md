@@ -1078,6 +1078,7 @@ Dialogs end with **Cancel**, **Apply** (keep the framing) and **Scan**. Apply re
 *   **Per-frame offset**: the slider under a tile, on top of Offset and Drift. Double-click resets. A moved slider turns red and fills from 0, its tile shows the value and a red dot, and the line above the tiles lists every frame with its own offset. It is not kept when NegPy restarts.
 *   **Size**: tile size, remembered. Double-click resets.
 *   **Which frames**: each tile has a tick; **All** and **None** set all, with a count. Eject clears ticks, crops and per-frame offsets.
+*   **Preview frame** (eye, beside the tick): scans that one frame again. Hidden where the tiles are cut from one pass over the strip, because a moved offset re-cuts them.
 
 ---
 

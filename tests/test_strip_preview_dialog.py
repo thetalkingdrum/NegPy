@@ -1371,3 +1371,13 @@ def test_the_unit_returning_the_strip_drops_its_frame_state_and_measures_it_agai
     assert dialog.frame_offset() == 1.5
     assert len(controller.preview_reqs) == 3  # measured again
     assert "returned the strip" in dialog.status_strip.message()
+
+
+def test_the_eye_shows_only_where_previewing_one_frame_scans_it_again() -> None:
+    import dataclasses
+
+    scanned = _device(3)
+    cut = dataclasses.replace(scanned, capabilities=dataclasses.replace(scanned.capabilities, strip_pass=True))
+
+    assert not any(t.preview_btn.isHidden() for t in StripPreviewDialog(_FakeController(), scanned)._tiles.values())
+    assert all(t.preview_btn.isHidden() for t in StripPreviewDialog(_FakeController(), cut)._tiles.values())
