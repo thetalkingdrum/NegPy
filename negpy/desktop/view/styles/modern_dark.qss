@@ -173,6 +173,9 @@ QSlider::handle:horizontal {
 
 QSlider::handle:horizontal:hover { background: @text_primary; }
 QSlider::handle:horizontal:pressed { background: @accent_primary; }
+/* A slider off its default. Set with the "edited" property, then repolish. */
+QSlider[edited="true"]::handle:horizontal,
+QSlider[edited="true"]::handle:horizontal:hover { background: @accent_primary; }
 
 QSlider::sub-page:horizontal {
     background: @border_hover;

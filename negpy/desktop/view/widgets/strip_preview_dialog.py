@@ -25,8 +25,9 @@ from PyQt6.QtWidgets import (
 
 from negpy.kernel.system.text import count_of, plural
 from negpy.desktop.converters import ImageConverter
-from negpy.desktop.view.styles.templates import StatusStrip, pin_dialog_default
+from negpy.desktop.view.styles.templates import EditedDot, StatusStrip, pin_dialog_default
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
 from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.scan_preview_common import RollPreviewSignalsMixin, preview_positive
 from negpy.desktop.view.widgets.section_help_dialog import SectionHelpDialog, has_guide
@@ -100,7 +101,22 @@ _OFFSET_TIP = (
 )
 _DRIFT_TIP = "Adds progressively more (or less) offset per frame position, for a strip whose gaps creep."
 _TILE_OFFSET_TIP = "Corrects this frame alone, on top of Offset and Drift. Double-click to reset."
+# PROTOTYPE: "value" or "dot" for the per-tile mark; picked live from the dialog, removed before commit.
+_PROTO_TILE_MARK = "value"
+_BACKGROUND_TIP = "Fill behind the frames. A gray reads against the dark film edge of a negative."
+_BACKGROUND_SETTING = "strip_preview_bg_index"
 _SIZE_TIP = "Tile size. The grid reflows to whatever fits the dialog. Double-click to reset."
+
+
+def _mark_edited(slider: QSlider, edited: bool) -> None:
+    """Hold the handle in the accent while the slider is off its default."""
+    if bool(slider.property("edited")) == edited:
+        return
+    slider.setProperty("edited", edited)
+    style = slider.style()
+    if style is not None:
+        style.unpolish(slider)
+        style.polish(slider)
 
 
 class _ResetSlider(QSlider):
@@ -124,6 +140,8 @@ class _Tile:
         checkbox: QCheckBox,
         preview_btn: QPushButton,
         offset_slider: "_ResetSlider",
+        offset_value: QLabel,
+        offset_dot: EditedDot,
         widget: QWidget,
     ) -> None:
         self.frame = frame
@@ -132,6 +150,8 @@ class _Tile:
         self.checkbox = checkbox
         self.preview_btn = preview_btn
         self.offset_slider = offset_slider
+        self.offset_value = offset_value
+        self.offset_dot = offset_dot
         self.widget = widget
 
 
@@ -240,14 +260,20 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.drift_slider.setToolTip(_DRIFT_TIP)
         self.drift_label = QLabel()
 
+        self.offset_dot = EditedDot()
+        self.drift_dot = EditedDot()
         # Name left, reading right, groove underneath — the panel sliders' shape. Beside the
         # groove the reading either clips or steals the width it is measuring.
-        for name, slider, value in (("Offset", self.offset_slider, self.offset_label), ("Drift", self.drift_slider, self.drift_label)):
+        for name, slider, value, dot in (
+            ("Offset", self.offset_slider, self.offset_label, self.offset_dot),
+            ("Drift", self.drift_slider, self.drift_label, self.drift_dot),
+        ):
             block = QVBoxLayout()
             block.setSpacing(0)
             head = QHBoxLayout()
             head.setSpacing(THEME.space_md)
             head.addWidget(QLabel(name))
+            head.addWidget(dot)
             head.addStretch()
             value.setStyleSheet(f"color: {THEME.text_secondary};")
             head.addWidget(value)
@@ -270,6 +296,13 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.preview_all_btn = QPushButton(qta.icon("fa5s.eye", color=THEME.text_primary), label)
         self.preview_all_btn.clicked.connect(self._on_preview_all)
         top.addWidget(self.preview_all_btn)
+        # PROTOTYPE switch, removed before commit.
+        self._proto_mark = QComboBox()
+        self._proto_mark.addItems(["value", "dot", "handle", "value+handle"])
+        self._proto_mark.setToolTip("Prototype: how a tile shows its own offset")
+        self._proto_mark.currentTextChanged.connect(self._on_proto_mark)
+        top.addWidget(QLabel("Tile mark"))
+        top.addWidget(self._proto_mark)
         layout.addLayout(top)
 
         self._scroll = QScrollArea()
@@ -277,6 +310,9 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         container = QWidget()
+        container.setObjectName("stripGrid")
+        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._grid_container = container
         strip = QGridLayout(container)
         strip.setContentsMargins(2, 2, 2, 2)
         strip.setSpacing(4)
@@ -321,6 +357,16 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.clear_btn.clicked.connect(self._on_clear_all)
         btns.addWidget(self.clear_btn)
         btns.addStretch()
+        from negpy.desktop.view.canvas.toolbar import CANVAS_COLORS
+
+        self._backgrounds = [hex_color for hex_color, _, _ in CANVAS_COLORS]
+        self.background_btn = ChoiceButton(tuple(("", label) for _, _, label in CANVAS_COLORS), _BACKGROUND_TIP)
+        saved_bg = repo.get_global_setting(_BACKGROUND_SETTING) if repo is not None else None
+        self.background_btn.setCurrentIndex(int(saved_bg) if saved_bg is not None and 0 <= int(saved_bg) < len(self._backgrounds) else 0)
+        self.background_btn.currentChanged.connect(self._on_background_changed)
+        btns.addWidget(QLabel("Background"))
+        btns.addWidget(self.background_btn)
+        btns.addSpacing(16)
         self.size_slider = _ResetSlider(_TILE_H)
         self.size_slider.setRange(_TILE_H_MIN, _TILE_H_MAX)
         self.size_slider.setSingleStep(10)
@@ -354,6 +400,7 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         self.offset_slider.valueChanged.connect(self._on_offset_changed)
         self.drift_slider.valueChanged.connect(self._on_offset_changed)
         self.size_slider.valueChanged.connect(self._on_tile_size_changed)
+        self._apply_background()
         self._on_offset_changed(self.offset_slider.value())
         self._update_ok_enabled()
 
@@ -410,6 +457,12 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         preview_btn.setFixedSize(24, 20)
         preview_btn.clicked.connect(lambda _checked=False, f=frame: self._on_preview_one(f))
         oh.addWidget(preview_btn)
+        offset_value = QLabel()
+        offset_value.setStyleSheet(f"color: {THEME.text_primary}; font-size: {THEME.font_size_small}px;")
+        offset_value.hide()
+        oh.addWidget(offset_value)
+        offset_dot = EditedDot()
+        oh.addWidget(offset_dot)
         grid.addWidget(overlay, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         offset_slider = _ResetSlider()
@@ -420,8 +473,11 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
         offset_slider.valueChanged.connect(lambda _v, f=frame: self._on_tile_offset_changed(f))
         grid.addWidget(offset_slider, 1, 0)
 
-        tile = _Tile(frame, label, checkbox, preview_btn, offset_slider, widget)
+        if hasattr(self, "background_btn"):
+            label.set_background(self._backgrounds[self.background_btn.currentIndex()])
+        tile = _Tile(frame, label, checkbox, preview_btn, offset_slider, offset_value, offset_dot, widget)
         self._set_tile_offset_tooltip(tile)
+        self._show_tile_offset(tile)
         return tile
 
     def _fitting_columns(self) -> int:
@@ -594,11 +650,42 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
     def _set_tile_offset_tooltip(self, tile: _Tile) -> None:
         tile.offset_slider.setToolTip(f"Frame {tile.frame}: {tile.offset_slider.value() / 10.0:+.1f} mm. {_TILE_OFFSET_TIP}")
 
+    def _show_tile_offset(self, tile: _Tile) -> None:
+        """Mark a tile that carries its own correction, so it reads without a hover."""
+        value = tile.offset_slider.value() / 10.0
+        tile.offset_value.setText(f"{value:+.1f} mm")
+        tile.offset_value.setVisible(bool(value) and _PROTO_TILE_MARK.startswith("value"))
+        tile.offset_dot.set_active(bool(value) and _PROTO_TILE_MARK == "dot")
+        _mark_edited(tile.offset_slider, bool(value) and _PROTO_TILE_MARK.endswith("handle"))
+
+    def _on_proto_mark(self, mark: str) -> None:
+        global _PROTO_TILE_MARK
+        _PROTO_TILE_MARK = mark
+        for tile in self._tiles.values():
+            self._show_tile_offset(tile)
+        self._on_offset_changed(0)
+
     def _on_tile_offset_changed(self, frame: int) -> None:
         tile = self._tiles.get(frame)
         if tile is not None:
             self._set_tile_offset_tooltip(tile)
+            self._show_tile_offset(tile)
         self._on_offset_changed(0)
+
+    def _update_offset_summary(self) -> None:
+        frames = sorted(f for f, t in self._tiles.items() if t.offset_slider.value())
+        self.status_strip.set_summary(f"Own offset on {plural(len(frames), 'frame')} {', '.join(map(str, frames))}" if frames else "")
+
+    def _on_background_changed(self, index: int) -> None:
+        if self._repo is not None:
+            self._repo.save_global_setting(_BACKGROUND_SETTING, index)
+        self._apply_background()
+
+    def _apply_background(self) -> None:
+        color = self._backgrounds[self.background_btn.currentIndex()]
+        self._grid_container.setStyleSheet(f"#stripGrid {{ background: {color}; }}")
+        for tile in self._tiles.values():
+            tile.label.set_background(color)
 
     def _on_tile_size_changed(self, value: int) -> None:
         """Resize every tile in place. The label letterboxes its kept pixmap, so nothing rescans."""
@@ -612,6 +699,12 @@ class StripPreviewDialog(RollPreviewSignalsMixin, QDialog):
     def _on_offset_changed(self, _value: int) -> None:
         self.offset_label.setText(f"{self.frame_offset():.1f} mm")
         self.drift_label.setText(f"{self.frame_offset_modifier():+.2f} mm/frame")
+        handle = _PROTO_TILE_MARK.endswith("handle")
+        self.offset_dot.set_active(bool(self.offset_slider.value()) and not handle)
+        self.drift_dot.set_active(bool(self.drift_slider.value()) and not handle)
+        _mark_edited(self.offset_slider, bool(self.offset_slider.value()) and handle)
+        _mark_edited(self.drift_slider, bool(self.drift_slider.value()) and handle)
+        self._update_offset_summary()
         self._refresh_offset_indicators()
         if self._discovers and self._tiles:
             self._recut.start()

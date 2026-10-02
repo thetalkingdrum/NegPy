@@ -1334,6 +1334,8 @@ class ScanSidebar(QWidget):
         offset_txt = f"  ·  offset {offset:.1f} mm" if offset else ""
         drift = self._settings.frame_offset_modifier_mm
         offset_txt += f"  ·  drift {drift:+.2f} mm/frame" if drift else ""
+        own = len(self._settings.frame_offsets)
+        offset_txt += f"  ·  {count_of(own, 'frame offset')}" if own else ""
         device = self._current_device()
         if device is not None and _reaches_a_strip(device.capabilities):
             n_windows = len(self._settings.frame_windows)

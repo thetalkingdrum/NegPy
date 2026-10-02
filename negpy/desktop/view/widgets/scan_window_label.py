@@ -41,6 +41,7 @@ class ScanWindowLabel(QLabel):
         self._press_frac: Optional[tuple[float, float]] = None
         self._rect_at_press: Optional[Rect] = None
         self._offset_indicators: list[tuple[float, str]] = []  # (frac 0..1, "left" | "right")
+        self._background: Optional[QColor] = None  # None: only the frame area is filled
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -52,6 +53,11 @@ class ScanWindowLabel(QLabel):
         lower offset than the slider now reads slides left and clips off the edge."""
         self._pixmap = pixmap
         self._coverage = coverage
+        self.update()
+
+    def set_background(self, color: str) -> None:
+        """Fill the whole label, around the frame as well as behind it."""
+        self._background = QColor(color)
         self.update()
 
     def set_coverage(self, coverage: Optional[tuple[float, float]]) -> None:
@@ -175,10 +181,12 @@ class ScanWindowLabel(QLabel):
 
     def paintEvent(self, _ev) -> None:
         painter = QPainter(self)
+        if self._background is not None:
+            painter.fillRect(self.rect(), self._background)
         draw_rect = self._display()
         if draw_rect is not None and self._pixmap is not None:
             content = self._content_rect(draw_rect)
-            if content != draw_rect:
+            if content != draw_rect and self._background is None:
                 painter.fillRect(draw_rect, QColor(THEME.bg_dark))
             painter.save()
             painter.setClipRect(draw_rect)
@@ -211,6 +219,6 @@ class ScanWindowLabel(QLabel):
             painter.setPen(QPen(QColor(THEME.accent_primary), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(draw_rect.adjusted(0, 0, -1, -1))
-        else:
+        elif self._background is None:
             painter.fillRect(self.rect(), QColor(THEME.bg_dark))
         painter.end()
