@@ -173,6 +173,45 @@ PAPER_PROFILES: Dict[str, PaperProfile] = {
     ),
 }
 
+# Fitted with scripts/fit_paper_profile.py to the spektrafilm datasheet curves (Andrea
+# Volpato, CC BY-SA 4.0), in neutral-balanced visual density above base. d_min is the
+# base's visual density under D50, read only with Paper White. A midtone gamma that fits to
+# ~0 leaves the width unconstrained, so those papers keep the default width. channel_gamma
+# stays 1: the negative's layers are already balanced, so the paper's own fitted crossover
+# would cast a neutral ramp away from the midtone.
+_DATASHEET_FITS: Dict[str, Tuple[str, Dict[str, float]]] = {
+    "kodak_endura_fit": (
+        "Kodak Endura Premier",
+        dict(d_max=2.206, d_min=0.104, shoulder_sharpness_base=2.18, toe_sharpness_base=3.7, paper_midtone_gamma=0.003),
+    ),
+    "fuji_crystal_fit": (
+        "Fujicolor Crystal Archive II",
+        dict(d_max=2.156, d_min=0.082, shoulder_sharpness_base=1.27, toe_sharpness_base=3.31, paper_midtone_gamma=0.0),
+    ),
+    "kodak_edge_fit": (
+        "Kodak Ektacolor Edge",
+        dict(
+            d_max=2.1,
+            d_min=0.104,
+            shoulder_sharpness_base=2.18,
+            toe_sharpness_base=3.16,
+            paper_midtone_gamma=0.184,
+            paper_gamma_width=0.593,
+        ),
+    ),
+    "kodak_portra_endura_fit": (
+        "Kodak Portra Endura",
+        dict(d_max=2.103, d_min=0.090, shoulder_sharpness_base=1.81, toe_sharpness_base=3.29, paper_midtone_gamma=0.0),
+    ),
+    "kodak_supra_endura_fit": (
+        "Kodak Supra Endura",
+        dict(d_max=2.215, d_min=0.082, shoulder_sharpness_base=1.2, toe_sharpness_base=2.91, paper_midtone_gamma=0.0),
+    ),
+}
+
+for _key, (_name, _tone) in _DATASHEET_FITS.items():
+    PAPER_PROFILES[_key] = PaperProfile(label=f"{_name} (datasheet fit)", kind="ra4", **_tone)
+
 
 def resolve_paper(key: str) -> PaperProfile:
     """Profile for `key`, falling back to the neutral default on unknown keys."""

@@ -102,6 +102,16 @@ class TestPaperProfiles(unittest.TestCase):
         chan_spread = np.max(np.abs(out[..., 0] - out[..., 2]))
         self.assertGreater(float(chan_spread), 1e-3)
 
+    def test_datasheet_fits_keep_neutral(self):
+        # The datasheet fits carry no layer crossover, so a neutral ramp stays neutral.
+        fits = [k for k in PAPER_PROFILES if k.endswith("_fit")]
+        self.assertTrue(fits)
+        for key in fits:
+            self.assertEqual(PAPER_PROFILES[key].channel_gamma, (1.0, 1.0, 1.0))
+            out = self._render(key)
+            np.testing.assert_allclose(out[..., 0], out[..., 1], atol=1e-6)
+            np.testing.assert_allclose(out[..., 2], out[..., 1], atol=1e-6)
+
     def test_channel_gamma_scales_slopes(self):
         paper = PAPER_PROFILES["fuji_crystal"]
         slopes, _, _ = per_channel_curve_params(115.0, 1.0, False, False, 1.3, None, None, paper=paper)
