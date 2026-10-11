@@ -855,6 +855,13 @@ class WaveformWidget(QWidget):
             painter.drawLine(0, y, w, y)
             painter.setPen(_alpha(THEME.text_hint, 200))
             painter.drawText(QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
+        if self._split():
+            # Channel letters, so the panel order reads without telling the traces apart by hue.
+            painter.setPen(_alpha(THEME.text_hint, 200))
+            for rect, letter in zip(rects, "RGB"):
+                painter.drawText(
+                    rect.adjusted(0, THEME.space_xs, -THEME.space_xs, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, letter
+                )
         if self._scan:
             painter.setPen(_alpha(THEME.text_hint, 200))
             painter.drawText(

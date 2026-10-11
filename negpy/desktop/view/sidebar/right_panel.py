@@ -263,12 +263,10 @@ class RightPanel(QWidget):
         self._sync_scale_btn()
 
         self.parade_overlay_btn = tool_toggle("fa5s.layer-group", "", "Parade Overlay: R, G and B on one plot, white where they agree")
-        self.parade_overlay_btn.setToolTip(
-            tooltip_with_shortcut("Parade Overlay: R, G and B on one plot, white where they agree", "toggle_parade_overlay")
-        )
         self.parade_overlay_btn.setChecked(bool(repo.get_global_setting("parade_overlay", False)))
-        self.parade_widget.set_overlay(self.parade_overlay_btn.isChecked())
         self.parade_overlay_btn.toggled.connect(self._on_parade_overlay)
+        self._sync_parade_overlay()
+        self.controller.session.color_vision_changed.connect(self._sync_parade_overlay)
         self.parade_overlay_btn.setVisible(self.view_btn.currentData() == "parade")
 
         chart_row = QHBoxLayout()
@@ -603,8 +601,18 @@ class RightPanel(QWidget):
         self._sync_scale_btn()
 
     def _on_parade_overlay(self, on: bool) -> None:
-        self.parade_widget.set_overlay(on)
         self.controller.session.repo.save_global_setting("parade_overlay", on)
+        self._sync_parade_overlay()
+
+    def _sync_parade_overlay(self) -> None:
+        """The overlay reads by hue alone (fringes of the primaries), so only Standard color vision gets it."""
+        standard = self.controller.state.color_vision == "standard"
+        self.parade_overlay_btn.setEnabled(standard)
+        tip = "Parade Overlay: R, G and B on one plot, white where they agree"
+        if not standard:
+            tip += ". Off under this Color vision: its fringes tell the channels apart by hue alone"
+        self.parade_overlay_btn.setToolTip(tooltip_with_shortcut(tip, "toggle_parade_overlay"))
+        self.parade_widget.set_overlay(standard and self.parade_overlay_btn.isChecked())
 
     def _scope_scale_key(self) -> str:
         bw = self.controller.state.config.process.process_mode == ProcessMode.BW

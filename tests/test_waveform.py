@@ -503,9 +503,46 @@ def test_the_overlay_choice_persists_and_shows_only_with_the_parade() -> None:
 
     panel = MagicMock()
     RightPanel._on_parade_overlay(panel, True)
-    panel.parade_widget.set_overlay.assert_called_once_with(True)
     panel.controller.session.repo.save_global_setting.assert_called_once_with("parade_overlay", True)
+    panel._sync_parade_overlay.assert_called_once_with()
 
     panel.view_btn.currentData.return_value = "waveform"
     RightPanel._on_analysis_view(panel, 1)
     panel.parade_overlay_btn.setVisible.assert_called_once_with(False)
+
+
+def test_the_overlay_is_off_and_grayed_under_a_color_vision_palette() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    for vision, on in (("standard", True), ("protan_deutan", False), ("achromat", False)):
+        panel = MagicMock()
+        panel.controller.state = AppState(color_vision=vision)
+        panel.parade_overlay_btn.isChecked.return_value = True
+
+        RightPanel._sync_parade_overlay(panel)
+
+        panel.parade_overlay_btn.setEnabled.assert_called_once_with(on)
+        panel.parade_widget.set_overlay.assert_called_once_with(on)
+
+
+def test_the_split_parade_names_its_panels(qapp) -> None:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    def top_right_lit(widget) -> list[bool]:
+        img = widget.grab().toImage()
+        return [
+            any(QColor(img.pixel(x, y)).lightness() > 60 for x in range(r.right() - 14, r.right() - 2) for y in range(3, 16))
+            for r in widget._panel_rects(3)
+        ]
+
+    widget = WaveformWidget(parade=True)
+    widget.resize(300, 120)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, 0, 0] = 1.0
+    widget.set_data(counts)
+
+    assert top_right_lit(widget) == [True, True, True]
+    widget.set_overlay(True)
+    assert not any(top_right_lit(widget)[1:])
