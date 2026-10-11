@@ -1011,6 +1011,112 @@ class WaveformWidget(QWidget):
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
 
+class CrossoverWidget(QWidget):
+    """The print's neutrals, R and B against G per tone: x is print tone on the zone scale, y the
+    channel's log10 ratio to green, 0 neutral and up more of that channel. A flat line off 0 is a
+    cast; a line that tilts or bends across the tones is crossover."""
+
+    _RANGE = 0.12  # log10 ratio at the plot's top and bottom edges
+    _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumHeight(40)
+        self._curve: dict | None = None
+        self._marker: tuple[float, float, float] | None = None
+
+    def set_data(self, curve: dict | None) -> None:
+        """A crossover_curve() result; None clears."""
+        if curve is None and self._curve is None:
+            return
+        self._curve = curve
+        self.update()
+
+    def set_marker(self, point: tuple[float, float, float] | None) -> None:
+        """The hovered pixel as (print tone, log10 R/G, log10 B/G); None hides."""
+        if point != self._marker:
+            self._marker = point
+            self.update()
+
+    def _y(self, ratio: float, h: int) -> float:
+        return h / 2.0 - float(np.clip(ratio / self._RANGE, -1.0, 1.0)) * (h / 2.0 - 4.0)
+
+    def paintEvent(self, event) -> None:
+        from negpy.features.exposure.analysis import encoded_of_zone
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        painter.fillRect(self.rect(), QColor(THEME.canvas_bg_black))
+        font = QFont(self.font())
+        font.setPixelSize(THEME.font_size_micro)
+        painter.setFont(font)
+
+        for zone, label in self._GUIDE_ZONES:
+            x = encoded_of_zone(zone) * w
+            painter.setPen(QPen(_alpha(THEME.border_hover, 200), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(x, 0), QPointF(x, h))
+            painter.setPen(_alpha(THEME.text_hint, 200))
+            painter.drawText(QRectF(x + 2, h - 14, 30, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
+        painter.setPen(QPen(_alpha(THEME.text_secondary, 160), 1))
+        painter.drawLine(QPointF(0, h / 2.0), QPointF(w, h / 2.0))
+        painter.setPen(_alpha(THEME.text_hint, 200))
+        painter.drawText(QRectF(THEME.space_xs, 2, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, f"+{self._RANGE:.2f}")
+        painter.drawText(
+            QRectF(THEME.space_xs, h - 14, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, f"-{self._RANGE:.2f}"
+        )
+
+        curve = self._curve
+        if curve is not None:
+            tone = np.asarray(curve["tone"])
+            count = np.asarray(curve["count"])
+            peak = float(count.max()) if count.size and count.max() > 0 else 1.0
+            for key, hex_, letter in (("rg", THEME.channel_red_text, "R"), ("bg", THEME.channel_blue_text, "B")):
+                vals = np.asarray(curve[key])
+                ok = np.flatnonzero(~np.isnan(vals))
+                if ok.size == 0:
+                    continue
+                pts = [QPointF(tone[i] * w, self._y(vals[i], h)) for i in ok]
+                painter.setPen(QPen(QColor(hex_), 1.5))
+                for a, b, ia, ib in zip(pts, pts[1:], ok, ok[1:]):
+                    if ib == ia + 1:  # a gap in the neutrals breaks the line rather than bridging it
+                        painter.drawLine(a, b)
+                painter.setPen(Qt.PenStyle.NoPen)
+                for p, i in zip(pts, ok):
+                    painter.setBrush(_alpha(hex_, int(90 + 165 * min(1.0, count[i] / peak))))
+                    painter.drawEllipse(p, 2.5, 2.5)
+                # The channel's letter at its last point, so the two lines read without hue.
+                painter.setPen(QColor(hex_))
+                last = pts[-1]
+                painter.drawText(
+                    QRectF(min(last.x() + 4, w - 12), last.y() - 7, 12, 14),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    letter,
+                )
+            painter.setPen(_alpha(THEME.text_hint, 200))
+            painter.drawText(
+                QRectF(0, 2, w - THEME.space_xs, 12),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+                f"Neutrals {curve['neutral_fraction'] * 100:.0f}% of frame",
+            )
+        else:
+            painter.setPen(_alpha(THEME.text_hint, 200))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No neutrals to read")
+
+        if self._marker is not None and curve is not None:
+            t, rg, bg = self._marker
+            x = min(max(t * w, 5.0), w - 5.0)
+            painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(x, 0), QPointF(x, h))
+            for ratio in (rg, bg):
+                _draw_hover_ring(painter, QPointF(x, min(max(self._y(ratio, h), 5.0), h - 5.0)))
+
+        painter.setPen(QPen(QColor(THEME.border_primary), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+
 class VectorscopeWidget(QWidget):
     """The print's CIELAB a*b* plane, +a right and +b up; brightness is the pixel count at a hue
     and chroma. Rim ticks mark the working-space primaries and secondaries. The log chroma scale

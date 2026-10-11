@@ -26,7 +26,14 @@ from negpy.desktop.view.styles.fonts import ui_font_family
 from negpy.desktop.view.styles.templates import CLIPPING_SWEEP, EditedDot, gradient_icon, tool_toggle
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.choice_button import SegmentedChoice
-from negpy.desktop.view.widgets.charts import PhotometricCurveWidget, StepWedgeWidget, VectorscopeWidget, WaveformWidget, ZoneStripWidget
+from negpy.desktop.view.widgets.charts import (
+    CrossoverWidget,
+    PhotometricCurveWidget,
+    StepWedgeWidget,
+    VectorscopeWidget,
+    WaveformWidget,
+    ZoneStripWidget,
+)
 from negpy.desktop.view.widgets.collapsible import CollapsibleSection, make_section
 from negpy.desktop.view.widgets.gear_library_panel import GearLibraryPanel
 from negpy.desktop.view.widgets.granular_settings_dialog import open_apply_dialog
@@ -220,6 +227,7 @@ class RightPanel(QWidget):
         self.waveform_widget = WaveformWidget()
         self.parade_widget = WaveformWidget(parade=True)
         self.vectorscope_widget = VectorscopeWidget()
+        self.crossover_widget = CrossoverWidget()
         self.step_wedge = StepWedgeWidget()
         self.zone_strip = ZoneStripWidget()
         self.probe_row = DensitometerRow()
@@ -252,10 +260,11 @@ class RightPanel(QWidget):
         self.chart_stack.addWidget(self.waveform_widget)
         self.chart_stack.addWidget(self.parade_widget)
         self.chart_stack.addWidget(self.vectorscope_widget)
+        self.chart_stack.addWidget(self.crossover_widget)
         self.view_btn = SegmentedChoice(
-            (("", "Curve"), ("", "Waveform"), ("", "Parade"), ("", "Vectorscope")),
+            (("", "Curve"), ("", "Waveform"), ("", "Parade"), ("", "Vectorscope"), ("", "Crossover")),
             "Analysis chart",
-            data=("curve", "waveform", "parade", "vectorscope"),
+            data=("curve", "waveform", "parade", "vectorscope", "crossover"),
         )
         self.view_btn.set_choice_tooltip(0, "The paper curve over the scan's and the print's histograms")
         self.view_btn.set_choice_tooltip(1, "The print's tones across the frame, column by column, on the zone scale")
@@ -265,6 +274,11 @@ class RightPanel(QWidget):
             "channel that drifts across the frame is uneven light or Flat Field. In Peek Negative, the scan's density per channel",
         )
         self.view_btn.set_choice_tooltip(3, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
+        self.view_btn.set_choice_tooltip(
+            4,
+            "The print's neutrals, R and B against G per tone: a flat line off center is a cast, "
+            "a line that tilts across the tones is crossover",
+        )
         # Restored before the handler connects: it reaches widgets built further down.
         saved_view = self.view_btn.findData(repo.get_global_setting("analysis_view", "curve"))
         self.view_btn.setCurrentIndex(max(0, saved_view))
@@ -282,6 +296,7 @@ class RightPanel(QWidget):
         self._sync_parade_overlay()
         self.controller.session.color_vision_changed.connect(self._sync_parade_overlay)
         self._sync_parade_tools()
+        self.scale_btn.setVisible(self.view_btn.currentData() != "crossover")
 
         chart_row = QHBoxLayout()
         chart_row.setContentsMargins(0, 0, 0, 0)
@@ -600,6 +615,7 @@ class RightPanel(QWidget):
             self.waveform_widget.set_marker(None)
             self.parade_widget.set_marker(None)
             self.vectorscope_widget.set_marker(None)
+            self.crossover_widget.set_marker(None)
             return
         from negpy.features.exposure.analysis import scope_point
 
@@ -611,12 +627,34 @@ class RightPanel(QWidget):
         if not self.controller.state.negative_peek:
             self.parade_widget.set_marker((x, *(min(max(float(c), 0.0), 1.0) for c in rgb[:3])))
         self.vectorscope_widget.set_marker((a, b))
+        if self.view_btn.currentData() == "crossover":
+            from negpy.features.exposure.analysis import crossover_point
+
+            self.crossover_widget.set_marker(crossover_point(rgb))
 
     def _on_analysis_view(self, index: int) -> None:
         self.chart_stack.setCurrentIndex(index)
         self.controller.session.repo.save_global_setting("analysis_view", self.view_btn.currentData())
         self._sync_parade_tools()
+        # The crossover plot plots medians, not counts: there is no scale to set.
+        self.scale_btn.setVisible(self.view_btn.currentData() != "crossover")
         self._sync_scale_btn()
+        if self.view_btn.currentData() == "crossover":
+            self._update_crossover(self.controller.session.state.last_metrics)
+
+    def _update_crossover(self, metrics: Dict[str, Any]) -> None:
+        """Measures the print's neutrals while the Crossover view shows; a peek shows no print."""
+        if self.view_btn.currentData() != "crossover":
+            return
+        state = self.controller.state
+        frame = None if state.negative_peek or state.flat_peek else metrics.get("base_positive")
+        if frame is None:
+            self.crossover_widget.set_data(None)
+            return
+        from negpy.features.exposure.analysis import crossover_curve
+
+        buf = frame.readback() if hasattr(frame, "readback") else frame
+        self.crossover_widget.set_data(crossover_curve(buf, metrics.get("content_rect")))
 
     def _on_parade_overlay(self, on: bool) -> None:
         self.controller.session.repo.save_global_setting("parade_overlay", on)
@@ -941,6 +979,7 @@ class RightPanel(QWidget):
         else:
             self.parade_widget.set_data(None if peeking else metrics.get("waveform_parade"))
         self.vectorscope_widget.set_data(None if peeking else metrics.get("vectorscope"))
+        self._update_crossover(metrics)
 
         # Peek Negative applied no curve, so the print histogram, curve and zone strip
         # would describe a print that was never made. Density is unaffected: it reads

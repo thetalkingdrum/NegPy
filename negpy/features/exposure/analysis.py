@@ -732,3 +732,72 @@ def scan_full_scale_columns(image: Any, roi: Optional[Tuple[int, int, int, int]]
     clipped = img >= float(EXPOSURE_CONSTANTS["scan_clip_level"])
     flat_cols = np.broadcast_to(cols[None, :], clipped.shape[:2]).ravel()
     return np.stack([np.bincount(flat_cols, weights=clipped[..., c].ravel().astype(np.float64), minlength=WAVEFORM_COLS) for c in range(3)])
+
+
+# Crossover: the print's neutrals, R and B against G per tone. The wide chroma gate keeps a frame
+# whose neutrals all carry one cast; the second gate keeps, per tone bin, the pixels near that bin's
+# own center in log-ratio space, which sheds the muted scene colors the first lets through. Chroma
+# shrinks toward black, so only the ratio gate holds in the shadows.
+CROSSOVER_BINS = 24
+CROSSOVER_CHROMA_GATE = 20.0
+CROSSOVER_CLUSTER_RADIUS = 0.03  # log10 ratio
+CROSSOVER_MIN_FRACTION = 0.01  # a bin needs this share of the frame's neutrals to plot
+_CROSSOVER_MAX_EDGE = 512
+_CROSSOVER_MIN_VAL = 2.0 / OUTPUT_HIST_BINS  # below this a ratio is noise; at either end, a clip
+
+
+def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] = None) -> Optional[dict]:
+    """Per print-tone bin of an encoded H×W×3 frame's near-neutral pixels: log10(R/G) and log10(B/G)
+    of the bin's summed linear light, so 0 is neutral. Keys: tone (bin centers, encoded luma), rg, bg (NaN where
+    a bin holds too few neutrals), count, and neutral_fraction (the frame's share of neutrals)."""
+    rgb = np.asarray(rgb)
+    if rgb.ndim != 3 or rgb.shape[-1] < 3:
+        return None
+    if content_rect is not None:
+        ox, oy, cw, ch = content_rect
+        rgb = rgb[oy : oy + ch, ox : ox + cw]
+    small = _mask_preview(rgb, _CROSSOVER_MAX_EDGE)
+    if small is None:
+        return None
+    enc = np.nan_to_num(small.reshape(-1, 3))
+    usable = np.all((enc > _CROSSOVER_MIN_VAL) & (enc < 1.0 - 1.0 / OUTPUT_HIST_BINS), axis=-1)
+    if not usable.any():
+        return None
+    enc = enc[usable]
+    lin = np.asarray(working_oetf_decode(enc), dtype=np.float64)
+    lab = rgb_to_lab_working(lin.astype(np.float32))
+    neutral = np.hypot(lab[:, 1], lab[:, 2]) < CROSSOVER_CHROMA_GATE
+    total = small.shape[0] * small.shape[1]
+    enc, lin = enc[neutral], np.maximum(lin[neutral], 1e-6)
+    tone = enc @ np.array([0.2126, 0.7152, 0.0722])
+    bins = np.clip((tone * CROSSOVER_BINS).astype(int), 0, CROSSOVER_BINS - 1)
+    ratios = np.log10(lin[:, [0, 2]] / lin[:, 1:2])
+    keep = np.zeros(len(tone), dtype=bool)
+    for b in np.unique(bins):
+        sel = np.flatnonzero(bins == b)
+        center = np.median(ratios[sel], axis=0)
+        keep[sel[np.hypot(*(ratios[sel] - center).T) < CROSSOVER_CLUSTER_RADIUS]] = True
+    enc, lin, tone, bins = enc[keep], lin[keep], tone[keep], bins[keep]
+    # Ratio of the bin's summed light, not a median of per-pixel ratios: in the shadows each pixel's
+    # ratio divides two grainy near-zero values, and the sum averages the grain out first.
+    count = np.bincount(bins, minlength=CROSSOVER_BINS)
+    sums = np.stack([np.bincount(bins, weights=lin[:, c], minlength=CROSSOVER_BINS) for c in range(3)])
+    plotted = count >= max(8, int(CROSSOVER_MIN_FRACTION * max(1, len(tone))))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rg = np.where(plotted, np.log10(sums[0] / sums[1]), np.nan)
+        bg = np.where(plotted, np.log10(sums[2] / sums[1]), np.nan)
+    return {
+        "tone": (np.arange(CROSSOVER_BINS) + 0.5) / CROSSOVER_BINS,
+        "rg": rg,
+        "bg": bg,
+        "count": count.astype(float),
+        "neutral_fraction": float(keep.sum()) / float(total),
+    }
+
+
+def crossover_point(rgb: Any) -> Tuple[float, float, float]:
+    """(print tone, log10(R/G), log10(B/G)) of one encoded pixel: where it lands on the crossover plot."""
+    enc = np.clip(np.asarray(rgb, dtype=np.float64)[:3], 0.0, 1.0)
+    lin = np.maximum(np.asarray(working_oetf_decode(enc.astype(np.float32)), dtype=np.float64), 1e-6)
+    tone = float(enc @ np.array([0.2126, 0.7152, 0.0722]))
+    return tone, float(np.log10(lin[0] / lin[1])), float(np.log10(lin[2] / lin[1]))
