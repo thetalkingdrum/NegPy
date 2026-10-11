@@ -256,9 +256,10 @@ class RightPanel(QWidget):
             "channel that drifts across the frame is uneven light or Flat Field. In Peek Negative, the scan's density per channel",
         )
         self.view_btn.set_choice_tooltip(3, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
-        self.view_btn.currentChanged.connect(self._on_analysis_view)
+        # Restored before the handler connects: it reaches widgets built further down.
         saved_view = self.view_btn.findData(repo.get_global_setting("analysis_view", "curve"))
         self.view_btn.setCurrentIndex(max(0, saved_view))
+        self.view_btn.currentChanged.connect(self._on_analysis_view)
         self.chart_stack.setCurrentIndex(self.view_btn.currentIndex())
         self._sync_scale_btn()
 

@@ -626,3 +626,18 @@ def test_an_export_render_skips_the_scan_parade() -> None:
 
     assert preview.get("density_parade") is not None
     assert export.get("density_parade") is None
+
+
+def test_the_panel_builds_with_a_saved_view_past_the_curve(qapp) -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    controller = MagicMock()
+    controller.state = AppState()
+    saved = {"analysis_view": "parade"}
+    controller.session.repo.get_global_setting.side_effect = lambda key, default=None: saved.get(key, default)
+    try:
+        panel = RightPanel(controller)
+    except AttributeError as exc:  # pragma: no cover - the regression
+        raise AssertionError(f"restoring the saved view reached an unbuilt widget: {exc}")
+    assert panel.view_btn.currentData() == "parade"
+    assert panel.chart_stack.currentWidget() is panel.parade_widget
