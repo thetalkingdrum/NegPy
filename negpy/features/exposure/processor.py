@@ -190,7 +190,9 @@ class NormalizationProcessor:
         context.metrics["normalized_log"] = res
         context.metrics["histogram_density"] = density_histogram(res, context.active_roi)
         # The Crop tool shows the whole frame, so the parade's columns span it too (the GPU's full_frame).
-        context.metrics["density_parade"] = density_parade(img_log, None if context.crop_preview_full else context.active_roi)
+        # Only a preview shows it: export and thumbnails render with stage caching off.
+        if context.cache_stages:
+            context.metrics["density_parade"] = density_parade(img_log, None if context.crop_preview_full else context.active_roi)
         return res
 
 

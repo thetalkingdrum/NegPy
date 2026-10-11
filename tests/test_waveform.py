@@ -612,3 +612,17 @@ def test_wgsl_scan_parade_matches_the_cpu_on_a_slide_with_a_camera_matrix() -> N
     assert cpu.sum() == gpu.sum()
     for c in range(3):
         assert float(np.abs(cpu[c] / cpu[c].sum() - gpu[c] / gpu[c].sum()).sum()) < 0.02
+
+
+def test_an_export_render_skips_the_scan_parade() -> None:
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    img = np.ascontiguousarray(np.full((40, 60, 3), 0.4, dtype=np.float32))
+    proc = ImageProcessor()
+
+    _o, preview = proc.run_pipeline(img, WorkspaceConfig(), "skip|pv", render_size_ref=60, prefer_gpu=False)
+    _o, export = proc.run_pipeline(img, WorkspaceConfig(), "skip|ex", render_size_ref=60, prefer_gpu=False, cache_stages=False)
+
+    assert preview.get("density_parade") is not None
+    assert export.get("density_parade") is None
