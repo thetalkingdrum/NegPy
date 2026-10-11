@@ -546,3 +546,40 @@ def test_the_split_parade_names_its_panels(qapp) -> None:
     assert top_right_lit(widget) == [True, True, True]
     widget.set_overlay(True)
     assert not any(top_right_lit(widget)[1:])
+
+
+def _scan_parade_peaks(prefer_gpu: bool, crop_preview_full: bool):
+    from dataclasses import replace
+
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    x = np.linspace(0.0, 1.0, 512, dtype=np.float32)[None, :, None]
+    img = np.ascontiguousarray(np.broadcast_to(0.03 + 0.8 * x, (200, 512, 3)).astype(np.float32))
+    cfg = WorkspaceConfig()
+    cfg = replace(cfg, geometry=replace(cfg.geometry, crop_rect=(0.5, 0.0, 1.0, 1.0)))
+    tag = f"cropfull|{prefer_gpu}|{crop_preview_full}"
+    _out, metrics = ImageProcessor().run_pipeline(
+        img, cfg, tag, render_size_ref=512, prefer_gpu=prefer_gpu, readback_metrics=True, crop_preview_full=crop_preview_full
+    )
+    parade = metrics.get("density_parade")
+    return None if parade is None else parade[1].argmax(axis=0)
+
+
+def test_the_scan_parade_spans_the_whole_frame_while_the_crop_tool_shows_it() -> None:
+    cropped = _scan_parade_peaks(prefer_gpu=False, crop_preview_full=False)
+    full = _scan_parade_peaks(prefer_gpu=False, crop_preview_full=True)
+
+    # Column 0 is the frame's dense left edge only when the parade spans the whole frame.
+    left_d = -np.log10(0.03)
+    assert abs(float(scan_density_axis(left_d)) * WAVEFORM_BINS - full[0]) <= 1
+    assert cropped[0] > full[0] + 20
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+def test_wgsl_scan_parade_spans_the_whole_frame_like_the_cpu() -> None:
+    gpu = _scan_parade_peaks(prefer_gpu=True, crop_preview_full=True)
+    if gpu is None:
+        return
+    cpu = _scan_parade_peaks(prefer_gpu=False, crop_preview_full=True)
+    assert np.abs(gpu.astype(int) - cpu.astype(int)).max() <= 1
