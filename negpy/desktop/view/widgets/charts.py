@@ -700,7 +700,8 @@ class WaveformWidget(QWidget):
     count, each cell in its pixels' mean color. Columns that reach paper black or paper white are
     marked on the bottom and top edges. With parade=True it draws R, G and B side by side, each
     channel's own tone across the frame; in the scan domain, each channel's scan density, dense at the
-    bottom, with solid marks at the density range the stretch maps onto the curve."""
+    bottom, with solid marks at the density range the stretch maps onto the curve. The parade's overlay
+    draws the three on one plot, added: where they coincide the trace is white."""
 
     _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
     _PARADE_GAP = 3
@@ -719,6 +720,17 @@ class WaveformWidget(QWidget):
         self._scan = False
         self._scan_marks: np.ndarray | None = None
         self._scan_caption = ""
+        self._overlay = False
+
+    def set_overlay(self, enabled: bool) -> None:
+        """Draw a parade's R, G and B added on one plot instead of side by side."""
+        if bool(enabled) != self._overlay:
+            self._overlay = bool(enabled)
+            self._images = None
+            self.update()
+
+    def _split(self) -> bool:
+        return self._parade and not self._overlay
 
     def set_scan_domain(self, enabled: bool, marks: Any = None, caption: str = "Scan density") -> None:
         """Read the counts as scan density (Peek Negative) rather than print tone. ``marks`` is the
@@ -786,6 +798,10 @@ class WaveformWidget(QWidget):
                 mean = np.moveaxis(self._color, 0, -1)
                 peak = mean.max(axis=-1, keepdims=True)
                 tints = [np.divide(mean, peak, out=np.ones_like(mean), where=peak > 0)]
+            if self._parade and self._overlay:
+                # Pure primaries, not the channel tokens: only these add up to white where R, G and B coincide.
+                levels = levels.max(axis=0, keepdims=True)
+                tints = [np.moveaxis(np.clip(vals / ref, 0.0, 1.0), 0, -1) / np.maximum(levels[0][..., None], 1e-9)]
             self._images = []
             for level, tint in zip(levels, tints):
                 rgb = np.ascontiguousarray(np.flipud(tint * level[..., None] * 255.0).astype(np.uint8))
@@ -808,17 +824,20 @@ class WaveformWidget(QWidget):
 
         images = self._trace_images()
         counts = self._counts
-        rects = self._panel_rects(3 if self._parade else 1)
+        rects = self._panel_rects(3 if self._split() else 1)
+        # The rect each channel's marks and rings sit in: its own panel, or the one shared plot.
+        channel_rects = rects if self._split() else rects * 3
         if images is not None and counts is not None:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             painter.setPen(QPen(QColor(THEME.clip_warning), 2))
-            for image, rect, panel in zip(images, rects, self._panels()):
+            panels = self._panels() if self._split() or not self._parade else self._panels().sum(axis=0, keepdims=True)
+            for image, rect, panel in zip(images, rects, panels):
                 painter.drawImage(rect, image)
                 cols = panel.shape[1]
                 for row, y in ((0, h - 3), (-1, 2)):
                     for c in np.flatnonzero(panel[row]).tolist():
                         painter.drawLine(rect.x() + int(c * rect.width() / cols), y, rect.x() + int((c + 1) * rect.width() / cols), y)
-            if self._parade:
+            if self._split():
                 painter.setPen(QPen(QColor(THEME.border_primary), 1))
                 for rect in rects[1:]:
                     painter.drawLine(rect.x() - 2, 0, rect.x() - 2, h)
@@ -842,20 +861,21 @@ class WaveformWidget(QWidget):
                 QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, self._scan_caption
             )
             if self._scan_marks is not None and counts is not None:
-                painter.setPen(QPen(_alpha(THEME.text_primary, 170), 1))
-                for rect, ends in zip(rects, self._scan_marks):
+                hexes = (THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)
+                for rect, ends, hex_ in zip(channel_rects, self._scan_marks, hexes):
+                    painter.setPen(QPen(_alpha(THEME.text_primary if self._split() else hex_, 170), 1))
                     for tone in ends:
                         y = int(min(max(h - tone * h, 1.0), h - 2.0))
                         painter.drawLine(rect.x(), y, rect.x() + rect.width() - 1, y)
 
         if self._marker is not None and counts is not None:
             x, *tones = self._marker
-            if len(tones) == 3:
+            if len(tones) == 3 and self._split():
                 # Green's level across all three panels: a neutral rings on it in each.
                 gy = min(max(h - tones[1] * h, 0.0), h - 1.0)
                 painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
                 painter.drawLine(QPointF(0, gy), QPointF(w, gy))
-            for rect, tone in zip(rects, tones):
+            for rect, tone in zip(channel_rects if len(tones) == 3 else rects, tones):
                 # Kept a ring's width inside the panel, so an edge column's mark is not cut in half.
                 mx = min(max(rect.x() + x * rect.width(), rect.x() + 5.0), rect.x() + rect.width() - 5.0)
                 my = min(max(h - tone * h, 5.0), h - 5.0)

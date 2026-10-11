@@ -472,3 +472,40 @@ def test_lin_log_in_peek_negative_saves_only_the_scan_parades_scale() -> None:
     panel.controller.session.repo.save_global_setting.assert_called_once_with("scan_parade_log", False)
     panel.parade_widget.set_log_scale.assert_called_once_with(False)
     panel.curve_widget.set_log_scale.assert_not_called()
+
+
+def test_the_parade_overlay_adds_the_channels_on_one_plot(qapp) -> None:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    widget = WaveformWidget(parade=True)
+    widget.resize(WAVEFORM_COLS, WAVEFORM_BINS)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, 64, :128] = 4.0  # left half: R, G and B agree
+    counts[0, 80, 128:] = 4.0  # right half: red above green and blue
+    counts[1:, 64, 128:] = 4.0
+    widget.set_overlay(True)
+    widget.set_data(counts)
+
+    img = widget.grab().toImage()
+    agree = QColor(img.pixel(60, WAVEFORM_BINS - 1 - 64))
+    red = QColor(img.pixel(200, WAVEFORM_BINS - 1 - 80))
+    cyan = QColor(img.pixel(200, WAVEFORM_BINS - 1 - 64))
+
+    assert min(agree.red(), agree.green(), agree.blue()) > 200
+    assert red.red() > 200 and red.green() < 40 and red.blue() < 40
+    assert cyan.red() < 40 and cyan.green() > 200 and cyan.blue() > 200
+
+
+def test_the_overlay_choice_persists_and_shows_only_with_the_parade() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    RightPanel._on_parade_overlay(panel, True)
+    panel.parade_widget.set_overlay.assert_called_once_with(True)
+    panel.controller.session.repo.save_global_setting.assert_called_once_with("parade_overlay", True)
+
+    panel.view_btn.currentData.return_value = "waveform"
+    RightPanel._on_analysis_view(panel, 1)
+    panel.parade_overlay_btn.setVisible.assert_called_once_with(False)

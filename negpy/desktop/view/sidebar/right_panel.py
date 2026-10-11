@@ -23,7 +23,7 @@ from negpy.desktop.view.sidebar.history import HistoryPanel
 from negpy.desktop.view.sidebar.metadata import MetadataSidebar
 from negpy.desktop.view.styles.color_vision import palette_for
 from negpy.desktop.view.styles.fonts import ui_font_family
-from negpy.desktop.view.styles.templates import EditedDot
+from negpy.desktop.view.styles.templates import EditedDot, tool_toggle
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.choice_button import SegmentedChoice
 from negpy.desktop.view.widgets.charts import PhotometricCurveWidget, StepWedgeWidget, VectorscopeWidget, WaveformWidget, ZoneStripWidget
@@ -262,10 +262,20 @@ class RightPanel(QWidget):
         self.chart_stack.setCurrentIndex(self.view_btn.currentIndex())
         self._sync_scale_btn()
 
+        self.parade_overlay_btn = tool_toggle("fa5s.layer-group", "", "Parade Overlay: R, G and B on one plot, white where they agree")
+        self.parade_overlay_btn.setToolTip(
+            tooltip_with_shortcut("Parade Overlay: R, G and B on one plot, white where they agree", "toggle_parade_overlay")
+        )
+        self.parade_overlay_btn.setChecked(bool(repo.get_global_setting("parade_overlay", False)))
+        self.parade_widget.set_overlay(self.parade_overlay_btn.isChecked())
+        self.parade_overlay_btn.toggled.connect(self._on_parade_overlay)
+        self.parade_overlay_btn.setVisible(self.view_btn.currentData() == "parade")
+
         chart_row = QHBoxLayout()
         chart_row.setContentsMargins(0, 0, 0, 0)
         chart_row.addWidget(self.view_btn)
         chart_row.addStretch(1)
+        chart_row.addWidget(self.parade_overlay_btn)
         chart_row.addWidget(self.scale_btn)
 
         analysis_layout.addWidget(self.chart_stack, 1)
@@ -589,7 +599,12 @@ class RightPanel(QWidget):
     def _on_analysis_view(self, index: int) -> None:
         self.chart_stack.setCurrentIndex(index)
         self.controller.session.repo.save_global_setting("analysis_view", self.view_btn.currentData())
+        self.parade_overlay_btn.setVisible(self.view_btn.currentData() == "parade")
         self._sync_scale_btn()
+
+    def _on_parade_overlay(self, on: bool) -> None:
+        self.parade_widget.set_overlay(on)
+        self.controller.session.repo.save_global_setting("parade_overlay", on)
 
     def _scope_scale_key(self) -> str:
         bw = self.controller.state.config.process.process_mode == ProcessMode.BW
