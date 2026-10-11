@@ -319,7 +319,7 @@ R, G and B triangles in the top corners show crushed shadows (left) or blown hig
 
 #### Clipping Overlay
 
-The half-circle icon in the Analysis header marks on the photo every pixel with a channel at paper black or paper white.
+The half-circle icon in the Analysis header marks on the photo every pixel with a channel at paper black or paper white. Where all three channels clip, the mark is the Color vision pair. Under Standard vision, a pixel where only one or two channels clip takes those channels' color (red, green, blue, or yellow, magenta, cyan for two): a single channel at an end is a cast near the clip, not an exposure problem.
 
 #### Zone shading and zone ticks
 
