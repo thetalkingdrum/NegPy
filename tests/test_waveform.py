@@ -7,7 +7,16 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from negpy.desktop.session import AppState
-from negpy.features.exposure.analysis import WAVEFORM_BINS, WAVEFORM_COLOR_SCALE, WAVEFORM_COLS, waveform, waveform_color, waveform_parade
+from negpy.features.exposure.analysis import (
+    WAVEFORM_BINS,
+    WAVEFORM_COLOR_SCALE,
+    WAVEFORM_COLS,
+    density_axis,
+    density_parade,
+    waveform,
+    waveform_color,
+    waveform_parade,
+)
 from negpy.infrastructure.gpu.device import GPUDevice
 
 
@@ -231,12 +240,143 @@ def test_the_parade_draws_three_panels_in_channel_colors(qapp) -> None:
     assert widget._counts is None
 
 
-def test_a_peek_clears_the_parade() -> None:
+def test_a_flat_peek_clears_the_parade() -> None:
     from negpy.desktop.view.sidebar.right_panel import RightPanel
 
     panel = MagicMock()
     panel.controller.state = AppState(flat_peek=True)
+    parade = np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS))
 
-    RightPanel._update_histograms(panel, {"waveform_parade": np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS))})
+    RightPanel._update_histograms(panel, {"waveform_parade": parade, "density_parade": parade})
 
+    panel.parade_widget.set_scan_domain.assert_called_once_with(False)
     panel.parade_widget.set_data.assert_called_once_with(None)
+
+
+def test_peek_negative_shows_the_scan_on_the_parade() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.controller.state = AppState(negative_peek=True)
+    scan = np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS))
+
+    RightPanel._update_histograms(panel, {"waveform_parade": np.zeros_like(scan), "density_parade": scan})
+
+    panel.parade_widget.set_scan_domain.assert_called_once_with(True)
+    panel.parade_widget.set_data.assert_called_once_with(scan)
+    panel.waveform_widget.set_data.assert_called_once_with(None, None)
+
+
+def test_the_print_parade_returns_after_the_peek() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    printed = np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS))
+
+    RightPanel._update_histograms(panel, {"waveform_parade": printed, "density_parade": np.zeros_like(printed)})
+
+    panel.parade_widget.set_scan_domain.assert_called_once_with(False)
+    panel.parade_widget.set_data.assert_called_once_with(printed)
+
+
+def test_the_scan_parade_bins_each_channel_density_on_the_histogram_axis() -> None:
+    val = np.zeros((10, 512, 3), dtype=np.float32)
+    val[:, :256] = (0.9, 0.5, 0.1)
+    val[:, 256:] = (0.1, 0.5, 0.9)
+
+    parade = density_parade(val)
+
+    assert parade.shape == (3, WAVEFORM_BINS, WAVEFORM_COLS)
+    assert parade[0].sum() == parade[1].sum() == parade[2].sum() == 10 * 512
+    peak = parade.argmax(axis=1)
+    want = [int(np.floor(density_axis(v) * WAVEFORM_BINS)) for v in (0.9, 0.5, 0.1)]
+    assert peak[:, 0].tolist() == want
+    assert peak[:, -1].tolist() == want[::-1]
+    # Denser is higher: val 0.1 (dense) sits above val 0.9 (thin).
+    assert peak[0, -1] > peak[0, 0]
+    assert density_parade(None) is None and density_parade(np.zeros((4, 4))) is None
+
+
+def test_the_scan_parade_reads_the_crop_and_piles_overflow_at_the_axis_ends() -> None:
+    val = np.full((20, 100, 3), 0.5, dtype=np.float32)
+    val[:, :50, 0] = 2.0  # thinner than the axis reaches: bottom edge bin
+    val[:, 50:, 0] = -1.0  # denser than the axis reaches: top edge bin
+
+    parade = density_parade(val, roi=(5, 15, 0, 100))
+
+    assert parade[0].sum() == 10 * 100
+    assert parade[0, 0, : WAVEFORM_COLS // 2].sum() == 10 * 50
+    assert parade[0, -1, WAVEFORM_COLS // 2 :].sum() == 10 * 50
+    assert parade[1, 0].sum() == parade[1, -1].sum() == 0
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+def test_wgsl_scan_parade_matches_the_cpu() -> None:
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    grad = np.linspace(0.05, 0.9, 300, dtype=np.float32)
+    img = np.stack([grad, grad[::-1], np.full_like(grad, 0.4)], axis=-1)
+    img = np.ascontiguousarray(np.repeat(img[None], 200, axis=0))
+    proc = ImageProcessor()
+    cfg = WorkspaceConfig()
+
+    _cpu_out, cpu_metrics = proc.run_pipeline(img, cfg, "dparade|cpu", render_size_ref=300, prefer_gpu=False, readback_metrics=True)
+    _gpu_out, gpu_metrics = proc.run_pipeline(img, cfg, "dparade|gpu", render_size_ref=300, prefer_gpu=True, readback_metrics=True)
+
+    gpu = gpu_metrics.get("density_parade")
+    if gpu is None:
+        return
+    cpu = cpu_metrics["density_parade"]
+    assert cpu.sum() == gpu.sum()
+    for c in range(3):
+        assert float(np.abs(cpu[c] / cpu[c].sum() - gpu[c] / gpu[c].sum()).sum()) < 0.02
+
+
+def _row_lit(img, y: int) -> bool:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.styles.theme import THEME
+
+    bg = QColor(THEME.canvas_bg_black).name()
+    return any(QColor(img.pixel(x, y)).name() != bg for x in range(60, img.width() - 4))
+
+
+def test_the_scan_parade_trades_zone_guides_for_the_density_range(qapp) -> None:
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+    from negpy.features.exposure.analysis import encoded_of_zone
+
+    widget = WaveformWidget(parade=True)
+    widget.resize(300, 200)
+    zone_v = int(200 - encoded_of_zone(5) * 200)
+    base = int(200 - float(density_axis(1.0)) * 200)
+
+    printed = widget.grab().toImage()
+    assert _row_lit(printed, zone_v) and not _row_lit(printed, base)
+
+    widget.set_marker((0.5, 0.5, 0.5, 0.5))
+    widget.set_scan_domain(True)
+    assert widget._marker is None
+    scan = widget.grab().toImage()
+    assert _row_lit(scan, base) and not _row_lit(scan, zone_v)
+
+
+def test_peek_negative_rings_the_scan_density_of_the_hovered_pixel() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+    from negpy.features.exposure.densitometer import DensitometerReading
+
+    panel = MagicMock()
+    panel.controller.state = AppState(negative_peek=True)
+
+    RightPanel._on_pixel_readout(panel, (0.25, 0.5, (0.9, 0.9, 0.9)))
+    panel.parade_widget.set_marker.assert_not_called()
+
+    reading = DensitometerReading((0.1, 0.2, 0.3), 0.5, 1.0, 5.0, (0.9, 0.5, 0.1))
+    RightPanel._on_densitometer(panel, reading)
+    x, *tones = panel.parade_widget.set_marker.call_args[0][0]
+    assert x == 0.25
+    np.testing.assert_allclose(tones, density_axis((0.9, 0.5, 0.1)))
+
+    RightPanel._on_densitometer(panel, None)
+    panel.parade_widget.set_marker.assert_called_with(None)

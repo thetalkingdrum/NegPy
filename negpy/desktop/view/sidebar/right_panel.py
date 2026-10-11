@@ -220,6 +220,7 @@ class RightPanel(QWidget):
         self.zone_placement = ZonePlacementRows()
         self.stats_widget = NegativeStatsWidget()
         self._clip_fracs: tuple = (None, None)
+        self._hover_x: float | None = None
 
         repo = self.controller.session.repo
         self.scale_btn = SegmentedChoice(
@@ -249,7 +250,9 @@ class RightPanel(QWidget):
         self.view_btn.set_choice_tooltip(0, "The paper curve over the scan's and the print's histograms")
         self.view_btn.set_choice_tooltip(1, "The print's tones across the frame, column by column, on the zone scale")
         self.view_btn.set_choice_tooltip(
-            2, "The print's R, G and B side by side across the frame: a channel apart is a cast in that part of the frame"
+            2,
+            "The print's R, G and B side by side across the frame: a channel apart is a cast in that part of the frame. "
+            "In Peek Negative, the scan's density per channel",
         )
         self.view_btn.set_choice_tooltip(3, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
         self.view_btn.currentChanged.connect(self._on_analysis_view)
@@ -563,8 +566,10 @@ class RightPanel(QWidget):
         self.zone_highlight_btn.blockSignals(False)
 
     def _on_pixel_readout(self, readout) -> None:
-        """Marks the hovered pixel on the waveform and parade (its column and tones) and the vectorscope (its a*b*)."""
+        """Marks the hovered pixel on the waveform and parade (its column and tones) and the vectorscope (its a*b*).
+        In Peek Negative the parade marks the scan density instead, from the densitometer reading that follows."""
         if readout is None:
+            self._hover_x = None
             self.waveform_widget.set_marker(None)
             self.parade_widget.set_marker(None)
             self.vectorscope_widget.set_marker(None)
@@ -574,8 +579,10 @@ class RightPanel(QWidget):
         nx, _ny, rgb = readout
         luma, a, b = scope_point(rgb)
         x = min(max(nx, 0.0), 1.0)
+        self._hover_x = x
         self.waveform_widget.set_marker((x, luma))
-        self.parade_widget.set_marker((x, *(min(max(float(c), 0.0), 1.0) for c in rgb[:3])))
+        if not self.controller.state.negative_peek:
+            self.parade_widget.set_marker((x, *(min(max(float(c), 0.0), 1.0) for c in rgb[:3])))
         self.vectorscope_widget.set_marker((a, b))
 
     def _on_analysis_view(self, index: int) -> None:
@@ -793,6 +800,14 @@ class RightPanel(QWidget):
     def _on_densitometer(self, reading: Any) -> None:
         self.probe_row.set_reading(reading)
         self.curve_widget.set_tracking_point(None if reading is None else reading.val_luma)
+        if self.controller.state.negative_peek:
+            from negpy.features.exposure.analysis import density_axis
+
+            val = None if reading is None else reading.val_rgb
+            if val is None or self._hover_x is None:
+                self.parade_widget.set_marker(None)
+            else:
+                self.parade_widget.set_marker((self._hover_x, *(min(max(float(t), 0.0), 1.0) for t in density_axis(val))))
 
     def _update_histograms(self, metrics: Dict[str, Any]) -> None:
         """Feed the merged chart's two distributions, the zone strip and the clip stats."""
@@ -805,9 +820,15 @@ class RightPanel(QWidget):
 
         self.curve_widget.set_density_histogram(metrics.get("histogram_density"))
         # A peek renders without metrics, so the last print's waveform would describe the wrong image.
-        peeking = self.controller.state.negative_peek or self.controller.state.flat_peek
+        # Peek Negative shows the scan the last print was made from, so the parade reads that scan.
+        negative = self.controller.state.negative_peek
+        peeking = negative or self.controller.state.flat_peek
         self.waveform_widget.set_data(None if peeking else metrics.get("waveform"), metrics.get("waveform_color"))
-        self.parade_widget.set_data(None if peeking else metrics.get("waveform_parade"))
+        self.parade_widget.set_scan_domain(negative)
+        if negative:
+            self.parade_widget.set_data(metrics.get("density_parade"))
+        else:
+            self.parade_widget.set_data(None if peeking else metrics.get("waveform_parade"))
         self.vectorscope_widget.set_data(None if peeking else metrics.get("vectorscope"))
 
         # Peek Negative applied no curve, so the print histogram, curve and zone strip

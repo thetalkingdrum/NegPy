@@ -572,3 +572,35 @@ def density_histogram(normalized_log: np.ndarray, roi: Optional[Tuple[int, int, 
     rows = [np.histogram(np.clip(img[..., c], lo, hi), bins=DENSITY_HIST_BINS, range=DENSITY_HIST_RANGE)[0] for c in range(3)]
     rows.append(np.histogram(np.clip(lum, lo, hi), bins=DENSITY_HIST_BINS, range=DENSITY_HIST_RANGE)[0])
     return np.stack(rows).astype(np.float64)
+
+
+def density_axis(val: Any) -> Any:
+    """Normalized val -> 0..1 up the density axis, base at 0: the density histogram's x (plt_x = 1 - val)
+    over DENSITY_HIST_RANGE (unclipped)."""
+    lo, hi = DENSITY_HIST_RANGE
+    return (1.0 - np.asarray(val, dtype=np.float64) - lo) / (hi - lo)
+
+
+def density_parade(normalized_log: Any, roi: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+    """(3, WAVEFORM_BINS, WAVEFORM_COLS) counts of each channel's negative density per image column of
+    the crop, on the density histogram's axis; out-of-range mass lands in the edge bins. CPU
+    counterpart of the parade in density_hist.wgsl."""
+    if normalized_log is None:
+        return None
+    img = np.asarray(normalized_log)
+    if img.ndim != 3 or img.shape[-1] < 3:
+        return None
+    if roi is not None:
+        y1, y2, x1, x2 = roi
+        img = img[y1:y2, x1:x2]
+    if min(img.shape[:2]) < 1:
+        return None
+    full_w = img.shape[1]
+    step = max(1, round(np.sqrt(img.shape[0] * full_w / _MAX_HIST_SAMPLES)))
+    img = img[::step, ::step, :3]
+    cols = np.minimum(np.arange(0, full_w, step) * WAVEFORM_COLS // full_w, WAVEFORM_COLS - 1)
+    pos = density_axis(np.nan_to_num(img.astype(np.float32)))
+    bins = np.clip(np.floor(pos * WAVEFORM_BINS), 0, WAVEFORM_BINS - 1).astype(np.int64)
+    flat_cols = np.broadcast_to(cols[None, :], bins.shape[:2]).ravel()
+    counts = [np.bincount(bins[..., c].ravel() * WAVEFORM_COLS + flat_cols, minlength=WAVEFORM_BINS * WAVEFORM_COLS) for c in range(3)]
+    return np.stack(counts).reshape(3, WAVEFORM_BINS, WAVEFORM_COLS).astype(float)

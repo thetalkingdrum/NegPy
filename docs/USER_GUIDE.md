@@ -307,7 +307,7 @@ In Peek Negative the density histogram splits into R, G, B and luminance: a spik
 
 #### Curve / Waveform / Parade / Vectorscope
 
-The selector under the chart picks the chart. **Curve** is the paper curve and histograms above. **Waveform** plots print tone across the frame's width; a red tick marks a column that reaches paper black or white. **Parade** plots the print's R, G and B side by side, each channel's tone across the frame; a channel that sits apart from the others in one part of the frame is a cast there. **Vectorscope** plots the print's colors on the CIELAB a\*b\* plane, neutral at the center. On a color frame, a cluster off the center is a cast; on a toned B&W print, a toner draws an arm toward its hue.
+The selector under the chart picks the chart. **Curve** is the paper curve and histograms above. **Waveform** plots print tone across the frame's width; a red tick marks a column that reaches paper black or white. **Parade** plots the print's R, G and B side by side, each channel's tone across the frame; a channel that sits apart from the others in one part of the frame is a cast there. In Peek Negative the Parade shows the scan instead: each channel's density on the density histogram's axis, base at the bottom, with the dashed lines at the ends of the curve's range and a red tick on a column past an end of the axis. **Vectorscope** plots the print's colors on the CIELAB a\*b\* plane, neutral at the center. On a color frame, a cluster off the center is a cast; on a toned B&W print, a toner draws an arm toward its hue.
 
 #### Lin / Log
 

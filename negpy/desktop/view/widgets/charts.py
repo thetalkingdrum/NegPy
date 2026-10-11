@@ -699,7 +699,8 @@ class WaveformWidget(QWidget):
     """Print luma across the frame: x is the image column, y the print tone, brightness the pixel
     count, each cell in its pixels' mean color. Columns that reach paper black or paper white are
     marked on the bottom and top edges. With parade=True it draws R, G and B side by side, each
-    channel's own tone across the frame."""
+    channel's own tone across the frame; in the scan domain, each channel's negative density on the
+    density histogram's axis, base at the bottom, its edge ticks marking columns past an axis end."""
 
     _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
     _PARADE_GAP = 3
@@ -714,6 +715,14 @@ class WaveformWidget(QWidget):
         self._log_scale = False
         self._images: list[QImage] | None = None
         self._marker: tuple[float, ...] | None = None
+        self._scan = False
+
+    def set_scan_domain(self, enabled: bool) -> None:
+        """Read the counts as scan density (Peek Negative) rather than print tone; drops the marker."""
+        if bool(enabled) != self._scan:
+            self._scan = bool(enabled)
+            self._marker = None
+            self.update()
 
     def set_log_scale(self, enabled: bool) -> None:
         if bool(enabled) != self._log_scale:
@@ -723,7 +732,7 @@ class WaveformWidget(QWidget):
 
     def set_marker(self, point: tuple[float, ...] | None) -> None:
         """The hovered pixel as (column 0..1 across the frame, print luma 0..1), or (column, R, G, B)
-        on a parade; None hides."""
+        on a parade, each 0..1 up the panel; None hides."""
         if point != self._marker:
             self._marker = point
             self.update()
@@ -783,7 +792,7 @@ class WaveformWidget(QWidget):
         return [QRect(int(i * (pw + gap)), 0, int((i + 1) * pw + i * gap) - int(i * (pw + gap)), h) for i in range(n)]
 
     def paintEvent(self, event) -> None:
-        from negpy.features.exposure.analysis import encoded_of_zone
+        from negpy.features.exposure.analysis import density_axis, encoded_of_zone
 
         painter = QPainter(self)
         w, h = self.width(), self.height()
@@ -809,12 +818,22 @@ class WaveformWidget(QWidget):
         font = QFont(self.font())
         font.setPixelSize(THEME.font_size_micro)
         painter.setFont(font)
-        for zone, label in self._GUIDE_ZONES:
-            y = int(h - encoded_of_zone(zone) * h)
+        if self._scan:
+            # The curve's density range (val 1 at the bottom guide, 0 at the top), not print zones.
+            guides = [(float(density_axis(v)), "") for v in (1.0, 0.0)]
+        else:
+            guides = [(float(encoded_of_zone(zone)), label) for zone, label in self._GUIDE_ZONES]
+        for tone, label in guides:
+            y = int(h - tone * h)
             painter.setPen(QPen(_alpha(THEME.border_hover, 200), 1, Qt.PenStyle.DashLine))
             painter.drawLine(0, y, w, y)
             painter.setPen(_alpha(THEME.text_hint, 200))
             painter.drawText(QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
+        if self._scan:
+            painter.setPen(_alpha(THEME.text_hint, 200))
+            painter.drawText(
+                QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "Scan density"
+            )
 
         if self._marker is not None and counts is not None:
             x, *tones = self._marker
