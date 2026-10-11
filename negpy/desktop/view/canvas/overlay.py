@@ -27,6 +27,7 @@ from negpy.features.exposure.analysis import (
     STRIP_DENSITIES,
     STRIP_GRADES,
     STRIP_GRID,
+    clip_channel_masks,
     clip_masks,
     encoded_of_zone,
     loupe_acutance,
@@ -96,6 +97,21 @@ _LOCAL_TOOLS = (ToolMode.NONE, *_SHAPE_FOR_TOOL)
 
 _IR_CORRECTED_ALPHA = 55  # dim wash over repaired regions
 _CLIP_WASH_ALPHA = 200  # clipped pixels must read as marks over any print
+
+
+def _partial_clip_colors() -> List[Tuple[Tuple[bool, bool, bool], QColor]]:
+    """Each one- and two-channel clip with its color: the clipped channels' text tones, mixed by
+    their brightest component (a sum would wash the pairs out toward white)."""
+    tones = [QColor(c) for c in (THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)]
+    out = []
+    for combo in ((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1)):
+        on = [t for t, bit in zip(tones, combo) if bit]
+        mixed = QColor(*(max(getattr(t, ch)() for t in on) for ch in ("red", "green", "blue")))
+        out.append((tuple(bool(b) for b in combo), mixed))
+    return out
+
+
+_PARTIAL_CLIP_COLORS = _partial_clip_colors()
 
 
 def _tint_qimage(layers: List[Tuple[np.ndarray, QColor]], alpha: int) -> QImage:
@@ -1655,17 +1671,29 @@ class CanvasOverlay(QWidget):
         return self._frame_washes[key]
 
     def _draw_clipping_overlay(self, painter: QPainter) -> None:
-        """Pixels at paper black and paper white, in the Color vision pair."""
+        """Pixels at paper black and paper white, in the Color vision pair. Under Standard vision a
+        pixel where only one or two channels clip takes those channels' color instead."""
         shadow, highlight = palette_for(self.state.color_vision).pair
+        per_channel = self.state.color_vision == "standard"
 
         def build(src: np.ndarray) -> Optional[QImage]:
-            masks = clip_masks(src)
-            if masks is None:
+            if not per_channel:
+                masks = clip_masks(src)
+                if masks is None:
+                    return None
+                low, high = masks
+                return _tint_qimage([(low, QColor(shadow)), (high, QColor(highlight))], _CLIP_WASH_ALPHA)
+            channel_masks = clip_channel_masks(src)
+            if channel_masks is None:
                 return None
-            low, high = masks
-            return _tint_qimage([(low, QColor(shadow)), (high, QColor(highlight))], _CLIP_WASH_ALPHA)
+            layers: List[Tuple[np.ndarray, QColor]] = []
+            for masks, full in zip(channel_masks, (shadow, highlight)):
+                layers.append((masks.all(axis=-1), QColor(full)))
+                for combo, color in _PARTIAL_CLIP_COLORS:
+                    layers.append(((masks == combo).all(axis=-1), color))
+            return _tint_qimage(layers, _CLIP_WASH_ALPHA)
 
-        img = self._frame_wash(("clip", shadow, highlight), build)
+        img = self._frame_wash(("clip", shadow, highlight, per_channel), build)
         if img is not None:
             painter.drawImage(self._content_view_rect(), img)
 

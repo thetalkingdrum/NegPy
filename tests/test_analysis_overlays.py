@@ -67,3 +67,55 @@ def test_tint_layers_paint_their_color_and_leave_the_rest_clear(qapp) -> None:
     assert QColor(img.pixel(0, 0)).getRgb() == (0, 0, 255, 255)
     assert QColor(img.pixel(1, 0)).getRgb() == (255, 0, 0, 255)
     assert QColor.fromRgba(img.pixel(2, 0)).alpha() == 0
+
+
+def test_clip_channel_masks_name_each_clipped_channel() -> None:
+    from negpy.features.exposure.analysis import clip_channel_masks
+
+    rgb = np.full((1, 3, 3), 0.5, dtype=np.float32)
+    rgb[0, 0] = (0.999, 0.5, 0.999)
+    rgb[0, 1] = (0.001, 0.001, 0.001)
+
+    low, high = clip_channel_masks(rgb)
+
+    assert high[0, 0].tolist() == [True, False, True]
+    assert low[0, 1].tolist() == [True, True, True]
+    assert not low[0, 2].any() and not high[0, 2].any()
+
+
+def _clip_wash(vision: str, rgb: np.ndarray):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from negpy.desktop.view.canvas.overlay import CanvasOverlay
+
+    fake = SimpleNamespace(state=SimpleNamespace(color_vision=vision), _content_view_rect=MagicMock())
+    built = {}
+    fake._frame_wash = lambda key, build: built.setdefault("img", build(rgb))
+    CanvasOverlay._draw_clipping_overlay(fake, MagicMock())
+    return built["img"]
+
+
+def test_the_clipping_overlay_colors_a_partial_clip_by_its_channels(qapp) -> None:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.canvas.overlay import _CLIP_WASH_ALPHA, _PARTIAL_CLIP_COLORS
+    from negpy.desktop.view.styles.color_vision import palette_for
+
+    rgb = np.full((1, 3, 3), 0.5, dtype=np.float32)
+    rgb[0, 0] = (0.999, 0.5, 0.5)  # red alone at paper white
+    rgb[0, 1] = (0.999, 0.999, 0.999)  # paper white
+
+    def premultiplied(color: QColor) -> tuple:
+        a = _CLIP_WASH_ALPHA / 255.0
+        return (int(color.red() * a), int(color.green() * a), int(color.blue() * a))
+
+    img = _clip_wash("standard", rgb)
+    red_only = dict(_PARTIAL_CLIP_COLORS)[(True, False, False)]
+    assert QColor.fromRgba(img.pixel(0, 0)).getRgb()[:3] == premultiplied(red_only)
+    assert QColor.fromRgba(img.pixel(1, 0)).getRgb()[:3] == premultiplied(QColor(palette_for("standard").pair[1]))
+
+    # A Color vision palette keeps the two-color wash: hue alone must not carry the channel.
+    other = _clip_wash("protan_deutan", rgb)
+    high = QColor(palette_for("protan_deutan").pair[1])
+    assert QColor.fromRgba(other.pixel(0, 0)).getRgb()[:3] == premultiplied(high)

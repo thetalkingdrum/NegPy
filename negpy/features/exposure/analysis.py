@@ -322,6 +322,16 @@ def clip_masks(rgb: Any, max_edge: int = MASK_MAX_EDGE) -> Optional[Tuple[np.nda
     return np.any(small < edge, axis=-1), np.any(small >= 1.0 - edge, axis=-1)
 
 
+def clip_channel_masks(rgb: Any, max_edge: int = MASK_MAX_EDGE) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """(shadow, highlight) H×W×3 masks: each channel in the output histogram's black or white bin,
+    on the same strided preview as clip_masks."""
+    small = _mask_preview(rgb, max_edge)
+    if small is None:
+        return None
+    edge = 1.0 / OUTPUT_HIST_BINS
+    return small < edge, small >= 1.0 - edge
+
+
 ZONE_GRID_CELLS = 24  # cells along the frame's long edge
 
 
