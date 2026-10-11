@@ -305,13 +305,13 @@ The gray **negative density histogram** shows the scan on the curve's horizontal
 
 In Peek Negative the density histogram splits into R, G, B and luminance: a spike at an edge is that channel clipping, a trace apart from the others a strong cast.
 
-#### Curve / Waveform / Vectorscope
+#### Curve / Waveform / Parade / Vectorscope
 
-The selector under the chart picks the chart. **Curve** is the paper curve and histograms above. **Waveform** plots print tone across the frame's width; a red tick marks a column that reaches paper black or white. **Vectorscope** plots the print's colors on the CIELAB a\*b\* plane, neutral at the center. On a color frame, a cluster off the center is a cast; on a toned B&W print, a toner draws an arm toward its hue.
+The selector under the chart picks the chart. **Curve** is the paper curve and histograms above. **Waveform** plots print tone across the frame's width; a red tick marks a column that reaches paper black or white. **Parade** plots the print's R, G and B side by side, each channel's tone across the frame; a channel that sits apart from the others in one part of the frame is a cast there. **Vectorscope** plots the print's colors on the CIELAB a\*b\* plane, neutral at the center. On a color frame, a cluster off the center is a cast; on a toned B&W print, a toner draws an arm toward its hue.
 
 #### Lin / Log
 
-Sets the count scale of the histograms and the waveform: **Log** shows thin tails (to find clipping), **Lin** the bulk of the frame. On the Vectorscope it sets the chroma scale: **Log** (the B&W default) opens up the near-neutral center where a toner sits, **Lin** (the color default) keeps a color frame's spread in proportion.
+Sets the count scale of the histograms, the waveform and the parade: **Log** shows thin tails (to find clipping), **Lin** the bulk of the frame. On the Vectorscope it sets the chroma scale: **Log** (the B&W default) opens up the near-neutral center where a toner sits, **Lin** (the color default) keeps a color frame's spread in proportion.
 
 #### Clipping triangles
 

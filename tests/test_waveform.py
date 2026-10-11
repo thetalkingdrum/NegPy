@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from negpy.desktop.session import AppState
-from negpy.features.exposure.analysis import WAVEFORM_BINS, WAVEFORM_COLOR_SCALE, WAVEFORM_COLS, waveform, waveform_color
+from negpy.features.exposure.analysis import WAVEFORM_BINS, WAVEFORM_COLOR_SCALE, WAVEFORM_COLS, waveform, waveform_color, waveform_parade
 from negpy.infrastructure.gpu.device import GPUDevice
 
 
@@ -117,7 +117,7 @@ def test_waveform_widget_paints_and_marks_clipped_columns(qapp) -> None:
     assert QColor(img.pixel(200, 61)).name() != QColor(THEME.clip_warning).name()
 
     widget.set_log_scale(True)
-    assert widget._image is None
+    assert widget._images is None
     widget.set_data(None)
     widget.grab()
 
@@ -166,3 +166,77 @@ def test_waveform_widget_draws_each_cell_in_its_color(qapp) -> None:
     gray = QColor(img.pixel(200, y))
     assert red.red() > 200 and red.green() < 60 and red.blue() < 60
     assert gray.red() > 200 and gray.red() == gray.green() == gray.blue()
+
+
+def test_the_parade_bins_each_channel_on_its_own() -> None:
+    img = np.zeros((10, 512, 3), dtype=np.float32)
+    img[:, :256] = (0.8, 0.3, 0.2)
+    img[:, 256:] = (0.2, 0.3, 0.8)
+
+    parade = waveform_parade(img)
+
+    assert parade.shape == (3, WAVEFORM_BINS, WAVEFORM_COLS)
+    assert parade[0].sum() == parade[1].sum() == parade[2].sum() == 10 * 512
+    peak = parade.argmax(axis=1)
+    assert peak[:, 0].tolist() == [int(0.8 * WAVEFORM_BINS), int(0.3 * WAVEFORM_BINS), int(0.2 * WAVEFORM_BINS)]
+    assert peak[:, -1].tolist() == [int(0.2 * WAVEFORM_BINS), int(0.3 * WAVEFORM_BINS), int(0.8 * WAVEFORM_BINS)]
+    assert waveform_parade(np.zeros((4, 4))) is None
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+def test_wgsl_parade_matches_the_cpu() -> None:
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    grad = np.linspace(0.05, 0.9, 300, dtype=np.float32)
+    img = np.stack([grad, grad[::-1], np.full_like(grad, 0.4)], axis=-1)
+    img = np.ascontiguousarray(np.repeat(img[None], 200, axis=0))
+    proc = ImageProcessor()
+    cfg = WorkspaceConfig()
+
+    cpu_out, _ = proc.run_pipeline(img, cfg, "parade|cpu", render_size_ref=300, prefer_gpu=False, readback_metrics=True)
+    _gpu_out, gpu_metrics = proc.run_pipeline(img, cfg, "parade|gpu", render_size_ref=300, prefer_gpu=True, readback_metrics=True)
+
+    gpu = gpu_metrics.get("waveform_parade")
+    if gpu is None:
+        return
+    cpu = waveform_parade(cpu_out)
+    assert cpu.sum() == gpu.sum()
+    for c in range(3):
+        assert float(np.abs(cpu[c] / cpu[c].sum() - gpu[c] / gpu[c].sum()).sum()) < 0.02
+
+
+def test_the_parade_draws_three_panels_in_channel_colors(qapp) -> None:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.styles.theme import THEME
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    widget = WaveformWidget(parade=True)
+    widget.resize(3 * 100, WAVEFORM_BINS)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, 64, :] = 4.0
+    counts[0, -1, :32] = 1.0  # red reaches paper white on the left
+    widget.set_data(counts)
+
+    img = widget.grab().toImage()
+    y = WAVEFORM_BINS - 1 - 64
+
+    for panel, hex_ in enumerate((THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)):
+        got, want = QColor(img.pixel(panel * 101 + 50, y)), QColor(hex_)
+        assert max(abs(got.red() - want.red()), abs(got.green() - want.green()), abs(got.blue() - want.blue())) <= 1
+    assert QColor(img.pixel(5, 2)).name() == QColor(THEME.clip_warning).name()
+    assert QColor(img.pixel(106, 2)).name() != QColor(THEME.clip_warning).name()
+    widget.set_data(np.ones((WAVEFORM_BINS, WAVEFORM_COLS)))  # a luma waveform is not a parade
+    assert widget._counts is None
+
+
+def test_a_peek_clears_the_parade() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.controller.state = AppState(flat_peek=True)
+
+    RightPanel._update_histograms(panel, {"waveform_parade": np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS))})
+
+    panel.parade_widget.set_data.assert_called_once_with(None)

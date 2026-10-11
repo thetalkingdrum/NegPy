@@ -143,6 +143,19 @@ def waveform_color(buffer: Any) -> Optional[np.ndarray]:
     return np.stack(sums).reshape(3, WAVEFORM_BINS, WAVEFORM_COLS)
 
 
+def waveform_parade(buffer: Any) -> Optional[np.ndarray]:
+    """(3, WAVEFORM_BINS, WAVEFORM_COLS) counts of each encoded channel per image column: the
+    RGB parade. CPU counterpart of the parade counts in waveform.wgsl."""
+    cells = _waveform_cells(buffer)
+    if cells is None:
+        return None
+    rgb, flat = cells
+    cols = flat % WAVEFORM_COLS
+    bins = np.clip((np.nan_to_num(rgb.reshape(-1, 3)) * WAVEFORM_BINS).astype(np.int32), 0, WAVEFORM_BINS - 1)
+    counts = [np.bincount(bins[:, c] * WAVEFORM_COLS + cols, minlength=WAVEFORM_BINS * WAVEFORM_COLS) for c in range(3)]
+    return np.stack(counts).reshape(3, WAVEFORM_BINS, WAVEFORM_COLS).astype(float)
+
+
 def scope_radius(chroma: Any, log: bool) -> Any:
     """Chroma -> 0..1 of the scope's radius (unclipped)."""
     c = np.asarray(chroma, dtype=np.float64)

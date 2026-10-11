@@ -698,39 +698,45 @@ class PhotometricCurveWidget(QWidget):
 class WaveformWidget(QWidget):
     """Print luma across the frame: x is the image column, y the print tone, brightness the pixel
     count, each cell in its pixels' mean color. Columns that reach paper black or paper white are
-    marked on the bottom and top edges."""
+    marked on the bottom and top edges. With parade=True it draws R, G and B side by side, each
+    channel's own tone across the frame."""
 
     _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
+    _PARADE_GAP = 3
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, parade: bool = False):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(40)
+        self._parade = parade
         self._counts: np.ndarray | None = None
         self._color: np.ndarray | None = None
         self._log_scale = False
-        self._image: QImage | None = None
-        self._marker: tuple[float, float] | None = None
+        self._images: list[QImage] | None = None
+        self._marker: tuple[float, ...] | None = None
 
     def set_log_scale(self, enabled: bool) -> None:
         if bool(enabled) != self._log_scale:
             self._log_scale = bool(enabled)
-            self._image = None
+            self._images = None
             self.update()
 
-    def set_marker(self, point: tuple[float, float] | None) -> None:
-        """The hovered pixel as (column 0..1 across the frame, print luma 0..1); None hides."""
+    def set_marker(self, point: tuple[float, ...] | None) -> None:
+        """The hovered pixel as (column 0..1 across the frame, print luma 0..1), or (column, R, G, B)
+        on a parade; None hides."""
         if point != self._marker:
             self._marker = point
             self.update()
 
     def set_data(self, counts: Any, color: Any = None) -> None:
         """(bins, cols) counts, bin 0 = black, and optional (3, bins, cols) R, G, B sums of
-        each cell; None counts clears."""
+        each cell; on a parade, (3, bins, cols) channel counts. None counts clears."""
         if counts is not None:
             counts = np.asarray(counts, dtype=float)
-            if counts.ndim != 2 or float(counts.max()) <= 0.0:
+            if counts.ndim != (3 if self._parade else 2) or float(counts.max()) <= 0.0:
                 counts = None
+        if counts is not None and self._parade:
+            color = None
         if color is not None:
             color = np.asarray(color, dtype=float)
             if counts is None or color.shape != (3, *counts.shape):
@@ -739,26 +745,42 @@ class WaveformWidget(QWidget):
             return
         self._counts = counts
         self._color = color
-        self._image = None
+        self._images = None
         self.update()
 
-    def _trace_image(self) -> QImage | None:
-        if self._image is None and self._counts is not None:
-            vals = np.log1p(self._counts) if self._log_scale else self._counts
+    def _panels(self) -> np.ndarray:
+        """(panels, bins, cols) counts: one panel, or R, G, B on a parade."""
+        assert self._counts is not None
+        return self._counts if self._parade else self._counts[None]
+
+    def _trace_images(self) -> list[QImage] | None:
+        if self._images is None and self._counts is not None:
+            vals = np.log1p(self._panels()) if self._log_scale else self._panels()
             # A flat area piles into a few bins; scaling by their peak would leave every other trace black.
             ref = float(np.percentile(vals[vals > 0], 99))
-            level = np.clip(vals / ref, 0.0, 1.0)
-            if self._color is None:
-                tint = np.ones((*level.shape, 3))
+            levels = np.clip(vals / ref, 0.0, 1.0)
+            if self._parade:
+                hexes = (THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)
+                tints = [np.broadcast_to(np.array(QColor(c).getRgbF()[:3]), (*levels.shape[1:], 3)) for c in hexes]
+            elif self._color is None:
+                tints = [np.ones((*levels.shape[1:], 3))]
             else:
                 # Each cell's mean color at full brightness; the count sets how bright it draws.
                 mean = np.moveaxis(self._color, 0, -1)
                 peak = mean.max(axis=-1, keepdims=True)
-                tint = np.divide(mean, peak, out=np.ones_like(mean), where=peak > 0)
-            rgb = np.ascontiguousarray(np.flipud(tint * level[..., None] * 255.0).astype(np.uint8))
-            h, w = level.shape
-            self._image = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
-        return self._image
+                tints = [np.divide(mean, peak, out=np.ones_like(mean), where=peak > 0)]
+            self._images = []
+            for level, tint in zip(levels, tints):
+                rgb = np.ascontiguousarray(np.flipud(tint * level[..., None] * 255.0).astype(np.uint8))
+                h, w = level.shape
+                self._images.append(QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy())
+        return self._images
+
+    def _panel_rects(self, n: int) -> list[QRect]:
+        w, h = self.width(), self.height()
+        gap = self._PARADE_GAP if n > 1 else 0
+        pw = (w - gap * (n - 1)) / n
+        return [QRect(int(i * (pw + gap)), 0, int((i + 1) * pw + i * gap) - int(i * (pw + gap)), h) for i in range(n)]
 
     def paintEvent(self, event) -> None:
         from negpy.features.exposure.analysis import encoded_of_zone
@@ -767,17 +789,22 @@ class WaveformWidget(QWidget):
         w, h = self.width(), self.height()
         painter.fillRect(self.rect(), QColor(THEME.canvas_bg_black))
 
-        image = self._trace_image()
+        images = self._trace_images()
         counts = self._counts
-        if image is not None and counts is not None:
+        rects = self._panel_rects(3 if self._parade else 1)
+        if images is not None and counts is not None:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            painter.drawImage(QRect(0, 0, w, h), image)
-
-            cols = counts.shape[1]
             painter.setPen(QPen(QColor(THEME.clip_warning), 2))
-            for row, y in ((0, h - 3), (-1, 2)):
-                for c in np.flatnonzero(counts[row]).tolist():
-                    painter.drawLine(int(c * w / cols), y, int((c + 1) * w / cols), y)
+            for image, rect, panel in zip(images, rects, self._panels()):
+                painter.drawImage(rect, image)
+                cols = panel.shape[1]
+                for row, y in ((0, h - 3), (-1, 2)):
+                    for c in np.flatnonzero(panel[row]).tolist():
+                        painter.drawLine(rect.x() + int(c * rect.width() / cols), y, rect.x() + int((c + 1) * rect.width() / cols), y)
+            if self._parade:
+                painter.setPen(QPen(QColor(THEME.border_primary), 1))
+                for rect in rects[1:]:
+                    painter.drawLine(rect.x() - 2, 0, rect.x() - 2, h)
 
         font = QFont(self.font())
         font.setPixelSize(THEME.font_size_micro)
@@ -790,12 +817,14 @@ class WaveformWidget(QWidget):
             painter.drawText(QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
 
         if self._marker is not None and counts is not None:
-            # Kept a ring's width inside the frame, so an edge column's mark is not cut in half.
-            mx = min(max(self._marker[0] * w, 5.0), w - 5.0)
-            my = min(max(h - self._marker[1] * h, 5.0), h - 5.0)
-            painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(QPointF(mx, 0), QPointF(mx, h))
-            _draw_hover_ring(painter, QPointF(mx, my))
+            x, *tones = self._marker
+            for rect, tone in zip(rects, tones):
+                # Kept a ring's width inside the panel, so an edge column's mark is not cut in half.
+                mx = min(max(rect.x() + x * rect.width(), rect.x() + 5.0), rect.x() + rect.width() - 5.0)
+                my = min(max(h - tone * h, 5.0), h - 5.0)
+                painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(QPointF(mx, 0), QPointF(mx, h))
+                _draw_hover_ring(painter, QPointF(mx, my))
 
         painter.setPen(QPen(QColor(THEME.border_primary), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)

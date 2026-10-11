@@ -19,6 +19,7 @@ from negpy.features.exposure.analysis import (
     vectorscope_histogram,
     waveform,
     waveform_color,
+    waveform_parade,
 )
 from negpy.features.flatfield.models import FlatFieldConfig
 from negpy.features.lens.models import LensCorrections
@@ -383,6 +384,7 @@ class RenderWorker(QObject):
         metrics.pop("histogram_raw", None)
         metrics.pop("waveform", None)
         metrics.pop("waveform_color", None)
+        metrics.pop("waveform_parade", None)
         metrics.pop("vectorscope", None)
         along = 1 if task.split_axis == "x" else 0
         gap = gap_px(left.shape[along], right.shape[along], task.gutter_thickness)
@@ -420,6 +422,7 @@ class RenderWorker(QObject):
                 metrics["histogram_color"] = color_histogram(result)
                 metrics["waveform"] = waveform(result)
                 metrics["waveform_color"] = waveform_color(result)
+                metrics["waveform_parade"] = waveform_parade(result)
                 metrics["vectorscope"] = vectorscope_histogram(result)
 
             # The soft proof is not baked in: it rides the display LUT, so a GPU texture reaches

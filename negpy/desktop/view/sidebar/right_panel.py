@@ -212,6 +212,7 @@ class RightPanel(QWidget):
 
         self.curve_widget = PhotometricCurveWidget()
         self.waveform_widget = WaveformWidget()
+        self.parade_widget = WaveformWidget(parade=True)
         self.vectorscope_widget = VectorscopeWidget()
         self.step_wedge = StepWedgeWidget()
         self.zone_strip = ZoneStripWidget()
@@ -230,6 +231,7 @@ class RightPanel(QWidget):
         self.scale_btn.setCurrentIndex(1 if repo.get_global_setting("histogram_log_scale") else 0)
         self.curve_widget.set_log_scale(self.scale_btn.currentIndex() == 1)
         self.waveform_widget.set_log_scale(self.scale_btn.currentIndex() == 1)
+        self.parade_widget.set_log_scale(self.scale_btn.currentIndex() == 1)
         self.scale_btn.currentChanged.connect(self._on_histogram_scale)
         self._sync_chart_colors()
         self.controller.session.color_vision_changed.connect(self._sync_chart_colors)
@@ -237,15 +239,19 @@ class RightPanel(QWidget):
         self.chart_stack = QStackedWidget()
         self.chart_stack.addWidget(self.curve_widget)
         self.chart_stack.addWidget(self.waveform_widget)
+        self.chart_stack.addWidget(self.parade_widget)
         self.chart_stack.addWidget(self.vectorscope_widget)
         self.view_btn = SegmentedChoice(
-            (("", "Curve"), ("", "Waveform"), ("", "Vectorscope")),
+            (("", "Curve"), ("", "Waveform"), ("", "Parade"), ("", "Vectorscope")),
             "Analysis chart",
-            data=("curve", "waveform", "vectorscope"),
+            data=("curve", "waveform", "parade", "vectorscope"),
         )
         self.view_btn.set_choice_tooltip(0, "The paper curve over the scan's and the print's histograms")
         self.view_btn.set_choice_tooltip(1, "The print's tones across the frame, column by column, on the zone scale")
-        self.view_btn.set_choice_tooltip(2, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
+        self.view_btn.set_choice_tooltip(
+            2, "The print's R, G and B side by side across the frame: a channel apart is a cast in that part of the frame"
+        )
+        self.view_btn.set_choice_tooltip(3, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
         self.view_btn.currentChanged.connect(self._on_analysis_view)
         saved_view = self.view_btn.findData(repo.get_global_setting("analysis_view", "curve"))
         self.view_btn.setCurrentIndex(max(0, saved_view))
@@ -557,16 +563,19 @@ class RightPanel(QWidget):
         self.zone_highlight_btn.blockSignals(False)
 
     def _on_pixel_readout(self, readout) -> None:
-        """Marks the hovered pixel on the waveform (its column and tone) and the vectorscope (its a*b*)."""
+        """Marks the hovered pixel on the waveform and parade (its column and tones) and the vectorscope (its a*b*)."""
         if readout is None:
             self.waveform_widget.set_marker(None)
+            self.parade_widget.set_marker(None)
             self.vectorscope_widget.set_marker(None)
             return
         from negpy.features.exposure.analysis import scope_point
 
         nx, _ny, rgb = readout
         luma, a, b = scope_point(rgb)
-        self.waveform_widget.set_marker((min(max(nx, 0.0), 1.0), luma))
+        x = min(max(nx, 0.0), 1.0)
+        self.waveform_widget.set_marker((x, luma))
+        self.parade_widget.set_marker((x, *(min(max(float(c), 0.0), 1.0) for c in rgb[:3])))
         self.vectorscope_widget.set_marker((a, b))
 
     def _on_analysis_view(self, index: int) -> None:
@@ -606,6 +615,7 @@ class RightPanel(QWidget):
             return
         self.curve_widget.set_log_scale(log)
         self.waveform_widget.set_log_scale(log)
+        self.parade_widget.set_log_scale(log)
         self.controller.session.repo.save_global_setting("histogram_log_scale", log)
 
     def _sync_chart_colors(self) -> None:
@@ -797,6 +807,7 @@ class RightPanel(QWidget):
         # A peek renders without metrics, so the last print's waveform would describe the wrong image.
         peeking = self.controller.state.negative_peek or self.controller.state.flat_peek
         self.waveform_widget.set_data(None if peeking else metrics.get("waveform"), metrics.get("waveform_color"))
+        self.parade_widget.set_data(None if peeking else metrics.get("waveform_parade"))
         self.vectorscope_widget.set_data(None if peeking else metrics.get("vectorscope"))
 
         # Peek Negative applied no curve, so the print histogram, curve and zone strip
