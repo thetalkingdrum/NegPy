@@ -583,3 +583,32 @@ def test_wgsl_scan_parade_spans_the_whole_frame_like_the_cpu() -> None:
         return
     cpu = _scan_parade_peaks(prefer_gpu=False, crop_preview_full=True)
     assert np.abs(gpu.astype(int) - cpu.astype(int)).max() <= 1
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+def test_wgsl_scan_parade_matches_the_cpu_on_a_slide_with_a_camera_matrix() -> None:
+    from dataclasses import replace
+
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.features.process.models import ProcessMode
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    cam_xyz = [[0.5271, -0.0712, -0.0347], [-0.6153, 1.3653, 0.2763], [-0.1601, 0.2366, 0.7242]]
+    grad = np.linspace(0.02, 0.9, 300, dtype=np.float32)
+    img = np.stack([grad, grad[::-1] * 0.8, np.full_like(grad, 0.3)], axis=-1)
+    img = np.ascontiguousarray(np.repeat(img[None], 200, axis=0))
+    cfg = WorkspaceConfig()
+    cfg = replace(cfg, process=replace(cfg.process, process_mode=ProcessMode.E6, white_point_offset=0.05))
+    proc = ImageProcessor()
+
+    kw = dict(render_size_ref=300, readback_metrics=True, cam_xyz=cam_xyz, camera_wb=[1856.0, 1024.0, 1744.0])
+    _c, cpu_metrics = proc.run_pipeline(img, cfg, "slide|cpu", prefer_gpu=False, **kw)
+    _g, gpu_metrics = proc.run_pipeline(img, cfg, "slide|gpu", prefer_gpu=True, **kw)
+
+    gpu = gpu_metrics.get("density_parade")
+    if gpu is None:
+        return
+    cpu = cpu_metrics["density_parade"]
+    assert cpu.sum() == gpu.sum()
+    for c in range(3):
+        assert float(np.abs(cpu[c] / cpu[c].sum() - gpu[c] / gpu[c].sum()).sum()) < 0.02
