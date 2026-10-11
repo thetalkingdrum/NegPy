@@ -11,8 +11,9 @@ from negpy.features.exposure.analysis import (
     WAVEFORM_BINS,
     WAVEFORM_COLOR_SCALE,
     WAVEFORM_COLS,
-    density_axis,
     density_parade,
+    scan_density_axis,
+    scan_density_of_val,
     waveform,
     waveform_color,
     waveform_parade,
@@ -280,35 +281,44 @@ def test_the_print_parade_returns_after_the_peek() -> None:
     panel.parade_widget.set_data.assert_called_once_with(printed)
 
 
-def test_the_scan_parade_bins_each_channel_density_on_the_histogram_axis() -> None:
-    val = np.zeros((10, 512, 3), dtype=np.float32)
-    val[:, :256] = (0.9, 0.5, 0.1)
-    val[:, 256:] = (0.1, 0.5, 0.9)
+def test_the_scan_parade_bins_each_channel_scan_density_dense_at_the_bottom() -> None:
+    log = np.zeros((10, 512, 3), dtype=np.float32)
+    log[:, :256] = (-0.3, -1.0, -2.5)  # base-like red, dense blue
+    log[:, 256:] = (-2.5, -1.0, -0.3)
 
-    parade = density_parade(val)
+    parade = density_parade(log)
 
     assert parade.shape == (3, WAVEFORM_BINS, WAVEFORM_COLS)
     assert parade[0].sum() == parade[1].sum() == parade[2].sum() == 10 * 512
     peak = parade.argmax(axis=1)
-    want = [int(np.floor(density_axis(v) * WAVEFORM_BINS)) for v in (0.9, 0.5, 0.1)]
+    want = [int(np.floor(scan_density_axis(d) * WAVEFORM_BINS)) for d in (0.3, 1.0, 2.5)]
     assert peak[:, 0].tolist() == want
     assert peak[:, -1].tolist() == want[::-1]
-    # Denser is higher: val 0.1 (dense) sits above val 0.9 (thin).
-    assert peak[0, -1] > peak[0, 0]
+    # Denser is lower: D 2.5 sits below D 0.3.
+    assert peak[0, -1] < peak[0, 0]
     assert density_parade(None) is None and density_parade(np.zeros((4, 4))) is None
 
 
 def test_the_scan_parade_reads_the_crop_and_piles_overflow_at_the_axis_ends() -> None:
-    val = np.full((20, 100, 3), 0.5, dtype=np.float32)
-    val[:, :50, 0] = 2.0  # thinner than the axis reaches: bottom edge bin
-    val[:, 50:, 0] = -1.0  # denser than the axis reaches: top edge bin
+    log = np.full((20, 100, 3), -1.0, dtype=np.float32)
+    log[:, :50, 0] = 0.2  # past sensor full scale: top edge bin
+    log[:, 50:, 0] = -5.0  # denser than the axis reaches: bottom edge bin
 
-    parade = density_parade(val, roi=(5, 15, 0, 100))
+    parade = density_parade(log, roi=(5, 15, 0, 100))
 
     assert parade[0].sum() == 10 * 100
-    assert parade[0, 0, : WAVEFORM_COLS // 2].sum() == 10 * 50
-    assert parade[0, -1, WAVEFORM_COLS // 2 :].sum() == 10 * 50
+    assert parade[0, -1, : WAVEFORM_COLS // 2].sum() == 10 * 50
+    assert parade[0, 0, WAVEFORM_COLS // 2 :].sum() == 10 * 50
     assert parade[1, 0].sum() == parade[1, -1].sum() == 0
+
+
+def test_a_val_reads_back_to_scan_density_through_its_bounds() -> None:
+    from negpy.features.exposure.normalization import LogNegativeBounds
+
+    bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
+
+    np.testing.assert_allclose(scan_density_of_val((0.0, 0.0, 0.0), bounds), (2.0, 2.2, 2.6))
+    np.testing.assert_allclose(scan_density_of_val((1.0, 1.0, 1.0), bounds), (0.4, 0.7, 1.1))
 
 
 @unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
@@ -343,40 +353,122 @@ def _row_lit(img, y: int) -> bool:
     return any(QColor(img.pixel(x, y)).name() != bg for x in range(60, img.width() - 4))
 
 
-def test_the_scan_parade_trades_zone_guides_for_the_density_range(qapp) -> None:
+def _row_across(img, y: int) -> bool:
+    """A drawn line across a third of the row, over the black trace image and its separators."""
+    from PyQt6.QtGui import QColor
+
+    return sum(QColor(img.pixel(x, y)).lightness() > 40 for x in range(img.width())) > img.width() // 3
+
+
+def test_the_scan_parade_trades_zone_guides_for_density_guides_and_marks(qapp) -> None:
     from negpy.desktop.view.widgets.charts import WaveformWidget
     from negpy.features.exposure.analysis import encoded_of_zone
 
     widget = WaveformWidget(parade=True)
     widget.resize(300, 200)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, -1, 0] = 1.0  # one cell at the top edge, clear of every guide row
+    widget.set_data(counts)
     zone_v = int(200 - encoded_of_zone(5) * 200)
-    base = int(200 - float(density_axis(1.0)) * 200)
+    d2 = int(200 - float(scan_density_axis(2.0)) * 200)
 
     printed = widget.grab().toImage()
-    assert _row_lit(printed, zone_v) and not _row_lit(printed, base)
+    assert _row_across(printed, zone_v) and not _row_across(printed, d2)
 
     widget.set_marker((0.5, 0.5, 0.5, 0.5))
-    widget.set_scan_domain(True)
+    widget.set_scan_domain(True, np.array([[0.2, 0.7]] * 3))
     assert widget._marker is None
     scan = widget.grab().toImage()
-    assert _row_lit(scan, base) and not _row_lit(scan, zone_v)
+    assert _row_across(scan, d2) and not _row_across(scan, zone_v)
+    assert _row_across(scan, int(200 - 0.2 * 200)) and _row_across(scan, int(200 - 0.7 * 200))
+
+
+def test_peek_negative_marks_each_channels_stretch_ends() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+    from negpy.features.exposure.normalization import LogNegativeBounds
+
+    panel = MagicMock()
+    panel.controller.state = AppState(negative_peek=True)
+    panel._scan_marks_and_caption = lambda: RightPanel._scan_marks_and_caption(panel)
+    bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
+
+    RightPanel._update_histograms(panel, {"density_parade": np.ones((3, WAVEFORM_BINS, WAVEFORM_COLS)), "final_bounds": bounds})
+
+    enabled, marks, caption = panel.parade_widget.set_scan_domain.call_args[0]
+    assert enabled and caption == "Scan density"
+    np.testing.assert_allclose(marks, scan_density_axis(np.array([[2.0, 0.4], [2.2, 0.7], [2.6, 1.1]])))
 
 
 def test_peek_negative_rings_the_scan_density_of_the_hovered_pixel() -> None:
     from negpy.desktop.view.sidebar.right_panel import RightPanel
     from negpy.features.exposure.densitometer import DensitometerReading
+    from negpy.features.exposure.normalization import LogNegativeBounds
 
     panel = MagicMock()
     panel.controller.state = AppState(negative_peek=True)
+    panel._scan_bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
 
     RightPanel._on_pixel_readout(panel, (0.25, 0.5, (0.9, 0.9, 0.9)))
     panel.parade_widget.set_marker.assert_not_called()
 
-    reading = DensitometerReading((0.1, 0.2, 0.3), 0.5, 1.0, 5.0, (0.9, 0.5, 0.1))
+    reading = DensitometerReading((0.1, 0.2, 0.3), 0.5, 1.0, 5.0, (1.0, 0.5, 0.0))
     RightPanel._on_densitometer(panel, reading)
     x, *tones = panel.parade_widget.set_marker.call_args[0][0]
     assert x == 0.25
-    np.testing.assert_allclose(tones, density_axis((0.9, 0.5, 0.1)))
+    np.testing.assert_allclose(tones, scan_density_axis((0.4, 1.45, 2.6)))
 
     RightPanel._on_densitometer(panel, None)
     panel.parade_widget.set_marker.assert_called_with(None)
+
+
+def test_the_parade_hover_draws_greens_level_across_all_panels(qapp) -> None:
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    widget = WaveformWidget(parade=True)
+    widget.resize(300, 200)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, -1, 0] = 1.0
+    widget.set_data(counts)
+    widget.set_marker((0.5, 0.8, 0.35, 0.1))
+
+    img = widget.grab().toImage()
+
+    assert _row_across(img, int(200 - 0.35 * 200))
+
+
+def _scale_panel(view: str, negative_peek: bool, saved: dict) -> MagicMock:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.view_btn.currentData.return_value = view
+    panel.controller.state = AppState(negative_peek=negative_peek)
+    panel.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: saved.get(key, default)
+    panel._scope_log = lambda: False
+    panel._scan_parade_log = lambda: RightPanel._scan_parade_log(panel)
+    return panel
+
+
+def test_the_scan_parade_keeps_its_own_scale_log_at_first() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    scan = _scale_panel("parade", True, {"histogram_log_scale": False})
+    RightPanel._sync_scale_btn(scan)
+    scan.parade_widget.set_log_scale.assert_called_once_with(True)
+    scan.scale_btn.setCurrentIndex.assert_called_once_with(1)
+
+    printed = _scale_panel("parade", False, {"histogram_log_scale": False, "scan_parade_log": True})
+    RightPanel._sync_scale_btn(printed)
+    printed.parade_widget.set_log_scale.assert_called_once_with(False)
+    printed.scale_btn.setCurrentIndex.assert_called_once_with(0)
+
+
+def test_lin_log_in_peek_negative_saves_only_the_scan_parades_scale() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = _scale_panel("parade", True, {})
+
+    RightPanel._on_histogram_scale(panel, 0)
+
+    panel.controller.session.repo.save_global_setting.assert_called_once_with("scan_parade_log", False)
+    panel.parade_widget.set_log_scale.assert_called_once_with(False)
+    panel.curve_widget.set_log_scale.assert_not_called()

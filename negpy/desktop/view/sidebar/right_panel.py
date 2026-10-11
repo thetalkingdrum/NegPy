@@ -221,13 +221,14 @@ class RightPanel(QWidget):
         self.stats_widget = NegativeStatsWidget()
         self._clip_fracs: tuple = (None, None)
         self._hover_x: float | None = None
+        self._scan_bounds: Any = None
 
         repo = self.controller.session.repo
         self.scale_btn = SegmentedChoice(
             (("", "Lin"), ("", "Log")),
-            "Histogram and waveform count scale: Log lifts small counts so thin tails and clipped ends "
-            "read. On the Vectorscope it is the chroma scale, kept apart for B&W and color frames: Log "
-            "opens up the near-neutral center, where a toner lives.",
+            "Histogram, waveform and parade count scale: Log lifts small counts so thin tails and clipped ends "
+            "read. The scan parade in Peek Negative keeps its own, Log at first. On the Vectorscope it is the "
+            "chroma scale, kept apart for B&W and color frames: Log opens up the near-neutral center, where a toner lives.",
         )
         self.scale_btn.setCurrentIndex(1 if repo.get_global_setting("histogram_log_scale") else 0)
         self.curve_widget.set_log_scale(self.scale_btn.currentIndex() == 1)
@@ -251,8 +252,8 @@ class RightPanel(QWidget):
         self.view_btn.set_choice_tooltip(1, "The print's tones across the frame, column by column, on the zone scale")
         self.view_btn.set_choice_tooltip(
             2,
-            "The print's R, G and B side by side across the frame: a channel apart is a cast in that part of the frame. "
-            "In Peek Negative, the scan's density per channel",
+            "The print's R, G and B side by side across the frame: a neutral sits at one height in all three, and a "
+            "channel that drifts across the frame is uneven light or Flat Field. In Peek Negative, the scan's density per channel",
         )
         self.view_btn.set_choice_tooltip(3, "The print's colors on the a*b* plane: a cast, a toner, a split tone")
         self.view_btn.currentChanged.connect(self._on_analysis_view)
@@ -599,14 +600,26 @@ class RightPanel(QWidget):
         key = self._scope_scale_key()
         return bool(self.controller.session.repo.get_global_setting(key, key == "vectorscope_log_bw"))
 
+    def _scan_parade_log(self) -> bool:
+        # The scan's thin and dense ends are small areas that a linear count scale hides.
+        return bool(self.controller.session.repo.get_global_setting("scan_parade_log", True))
+
     def _sync_scale_btn(self) -> None:
-        """Lin/Log shows the visible chart's own scale: the histograms' one, or the vectorscope's for this film mode."""
+        """Lin/Log shows the visible chart's own scale: the histograms' one, the vectorscope's for
+        this film mode, or the scan parade's in Peek Negative."""
         scope_log = self._scope_log()
         self.vectorscope_widget.set_log_scale(scope_log)
-        if self.view_btn.currentData() == "vectorscope":
+        hist_log = bool(self.controller.session.repo.get_global_setting("histogram_log_scale"))
+        scan = self.controller.state.negative_peek
+        parade_log = self._scan_parade_log() if scan else hist_log
+        self.parade_widget.set_log_scale(parade_log)
+        view = self.view_btn.currentData()
+        if view == "vectorscope":
             log = scope_log
+        elif view == "parade":
+            log = parade_log
         else:
-            log = bool(self.controller.session.repo.get_global_setting("histogram_log_scale"))
+            log = hist_log
         self.scale_btn.blockSignals(True)
         self.scale_btn.setCurrentIndex(1 if log else 0)
         self.scale_btn.blockSignals(False)
@@ -620,9 +633,14 @@ class RightPanel(QWidget):
             self.vectorscope_widget.set_log_scale(log)
             self.controller.session.repo.save_global_setting(self._scope_scale_key(), log)
             return
+        if self.view_btn.currentData() == "parade" and self.controller.state.negative_peek:
+            self.parade_widget.set_log_scale(log)
+            self.controller.session.repo.save_global_setting("scan_parade_log", log)
+            return
         self.curve_widget.set_log_scale(log)
         self.waveform_widget.set_log_scale(log)
-        self.parade_widget.set_log_scale(log)
+        if not self.controller.state.negative_peek:
+            self.parade_widget.set_log_scale(log)
         self.controller.session.repo.save_global_setting("histogram_log_scale", log)
 
     def _sync_chart_colors(self) -> None:
@@ -801,13 +819,29 @@ class RightPanel(QWidget):
         self.probe_row.set_reading(reading)
         self.curve_widget.set_tracking_point(None if reading is None else reading.val_luma)
         if self.controller.state.negative_peek:
-            from negpy.features.exposure.analysis import density_axis
+            from negpy.features.exposure.analysis import scan_density_axis, scan_density_of_val
 
             val = None if reading is None else reading.val_rgb
-            if val is None or self._hover_x is None:
+            if val is None or self._hover_x is None or self._scan_bounds is None:
                 self.parade_widget.set_marker(None)
             else:
-                self.parade_widget.set_marker((self._hover_x, *(min(max(float(t), 0.0), 1.0) for t in density_axis(val))))
+                tones = scan_density_axis(scan_density_of_val(val, self._scan_bounds))
+                self.parade_widget.set_marker((self._hover_x, *(min(max(float(t), 0.0), 1.0) for t in tones)))
+
+    def _scan_marks_and_caption(self) -> tuple:
+        """The scan parade's per-channel stretch ends (0..1 up the panel) and its caption, which
+        names the unmix when the parade reads unmixed density."""
+        from negpy.features.exposure.analysis import scan_density_axis
+        from negpy.features.exposure.normalization import effective_crosstalk_matrix
+
+        config = self.controller.state.config
+        unmixed = effective_crosstalk_matrix(config.process, config.process.process_mode) is not None
+        caption = "Scan density, unmixed" if unmixed else "Scan density"
+        bounds = self._scan_bounds
+        if bounds is None:
+            return None, caption
+        ends = np.stack([-np.asarray(bounds.floors, dtype=float)[:3], -np.asarray(bounds.ceils, dtype=float)[:3]], axis=-1)
+        return scan_density_axis(ends), caption
 
     def _update_histograms(self, metrics: Dict[str, Any]) -> None:
         """Feed the merged chart's two distributions, the zone strip and the clip stats."""
@@ -824,7 +858,8 @@ class RightPanel(QWidget):
         negative = self.controller.state.negative_peek
         peeking = negative or self.controller.state.flat_peek
         self.waveform_widget.set_data(None if peeking else metrics.get("waveform"), metrics.get("waveform_color"))
-        self.parade_widget.set_scan_domain(negative)
+        self._scan_bounds = metrics.get("final_bounds") if negative else None
+        self.parade_widget.set_scan_domain(negative, *self._scan_marks_and_caption())
         if negative:
             self.parade_widget.set_data(metrics.get("density_parade"))
         else:

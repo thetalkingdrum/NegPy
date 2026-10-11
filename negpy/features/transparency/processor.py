@@ -116,7 +116,7 @@ class TransparencyBaseProcessor:
         context.metrics["scan_clip_fractions"] = measure_clip_fractions(image, context.active_roi, self.config.analysis_buffer)
         context.metrics["normalized_log"] = res
         context.metrics["histogram_density"] = density_histogram(res, context.active_roi)
-        context.metrics["density_parade"] = density_parade(res, context.active_roi)
+        context.metrics["density_parade"] = density_parade(img_log, context.active_roi)
         return res
 
 

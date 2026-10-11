@@ -21,6 +21,10 @@ OUTPUT_HIST_BINS = 256
 # which is what the marginal RGBL histogram cannot answer.
 COLOR_HIST_BINS = 32
 
+# Scan parade axis in density (-log10 of the linear scan): 0 = sensor full scale, the top edge
+# bin; past 3.0 (1/1000 of full scale) a scan holds little but noise. Mirrored by SCAN_D_MIN / SCAN_D_SPAN in density_hist.wgsl.
+SCAN_DENSITY_RANGE = (0.0, 3.0)
+
 # Waveform: print luma per image column, (bins, cols) with row 0 = black. waveform.wgsl mirrors this.
 WAVEFORM_COLS = 256
 WAVEFORM_BINS = 128
@@ -574,20 +578,27 @@ def density_histogram(normalized_log: np.ndarray, roi: Optional[Tuple[int, int, 
     return np.stack(rows).astype(np.float64)
 
 
-def density_axis(val: Any) -> Any:
-    """Normalized val -> 0..1 up the density axis, base at 0: the density histogram's x (plt_x = 1 - val)
-    over DENSITY_HIST_RANGE (unclipped)."""
-    lo, hi = DENSITY_HIST_RANGE
-    return (1.0 - np.asarray(val, dtype=np.float64) - lo) / (hi - lo)
+def scan_density_axis(density: Any) -> Any:
+    """Scan density -> 0..1 up the scan parade, SCAN_DENSITY_RANGE's dense end at 0 (unclipped)."""
+    lo, hi = SCAN_DENSITY_RANGE
+    return (hi - np.asarray(density, dtype=np.float64)) / (hi - lo)
 
 
-def density_parade(normalized_log: Any, roi: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
-    """(3, WAVEFORM_BINS, WAVEFORM_COLS) counts of each channel's negative density per image column of
-    the crop, on the density histogram's axis; out-of-range mass lands in the edge bins. CPU
-    counterpart of the parade in density_hist.wgsl."""
-    if normalized_log is None:
+def scan_density_of_val(val: Any, bounds: Any) -> np.ndarray:
+    """Per-channel scan density of a normalized val triplet: the stretch inverted with its bounds."""
+    floors = np.asarray(bounds.floors, dtype=np.float64)[:3]
+    ceils = np.asarray(bounds.ceils, dtype=np.float64)[:3]
+    return -(floors + np.asarray(val, dtype=np.float64)[:3] * (ceils - floors))
+
+
+def density_parade(img_log: Any, roi: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+    """(3, WAVEFORM_BINS, WAVEFORM_COLS) counts of each channel's scan density (-log10 of the
+    linear scan, after any crosstalk unmix: the log the stretch reads) per image column of the
+    crop, on SCAN_DENSITY_RANGE; out-of-range mass lands in the edge bins. CPU counterpart of the
+    parade in density_hist.wgsl."""
+    if img_log is None:
         return None
-    img = np.asarray(normalized_log)
+    img = np.asarray(img_log)
     if img.ndim != 3 or img.shape[-1] < 3:
         return None
     if roi is not None:
@@ -599,7 +610,7 @@ def density_parade(normalized_log: Any, roi: Optional[Tuple[int, int, int, int]]
     step = max(1, round(np.sqrt(img.shape[0] * full_w / _MAX_HIST_SAMPLES)))
     img = img[::step, ::step, :3]
     cols = np.minimum(np.arange(0, full_w, step) * WAVEFORM_COLS // full_w, WAVEFORM_COLS - 1)
-    pos = density_axis(np.nan_to_num(img.astype(np.float32)))
+    pos = scan_density_axis(-np.nan_to_num(img.astype(np.float32)))
     bins = np.clip(np.floor(pos * WAVEFORM_BINS), 0, WAVEFORM_BINS - 1).astype(np.int64)
     flat_cols = np.broadcast_to(cols[None, :], bins.shape[:2]).ravel()
     counts = [np.bincount(bins[..., c].ravel() * WAVEFORM_COLS + flat_cols, minlength=WAVEFORM_BINS * WAVEFORM_COLS) for c in range(3)]

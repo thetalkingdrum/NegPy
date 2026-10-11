@@ -3,13 +3,16 @@
 struct DensityHistUniforms {
     roi_offset: vec2<u32>,
     crop_dims: vec2<u32>,
+    // The final bounds the normalization pass stretched with, to read the scan density back.
+    floors: vec4<f32>,
+    ceils: vec4<f32>,
 };
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>, 480>; // 120 * 4 (R, G, B, Luma)
 @group(0) @binding(2) var<uniform> u: DensityHistUniforms;
-// Scan-side RGB parade: each channel's density (1 - val) per crop column, 128 bins x 256 columns,
-// indexed ch * 32768 + bin * 256 + col, bin 0 = the base end of DENSITY_HIST_RANGE. Mirrors
+// Scan-side RGB parade: each channel's scan density per crop column, 128 bins x 256 columns,
+// indexed ch * 32768 + bin * 256 + col, bin 0 = the dense end of SCAN_DENSITY_RANGE. Mirrors
 // density_parade() and WAVEFORM_BINS / WAVEFORM_COLS in features/exposure/analysis.py.
 @group(0) @binding(3) var<storage, read_write> parade: array<atomic<u32>, 98304>;
 
@@ -21,6 +24,9 @@ const VAL_MIN = -0.1;
 const VAL_SPAN = 1.2;
 const PARADE_COLS = 256u;
 const PARADE_BINS = 128.0;
+// Mirror SCAN_DENSITY_RANGE: (hi, hi - lo).
+const SCAN_D_MAX = 3.0;
+const SCAN_D_SPAN = 3.0;
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -41,7 +47,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     atomicAdd(&bins[240u + bin_b], 1u);
     atomicAdd(&bins[360u + bin_l], 1u);
 
-    let pos = (vec3<f32>(1.0) - color - vec3<f32>(VAL_MIN)) / VAL_SPAN;
+    let log_color = u.floors.xyz + color * (u.ceils.xyz - u.floors.xyz);
+    let pos = (vec3<f32>(SCAN_D_MAX) + log_color) / SCAN_D_SPAN;
     let p_bins = vec3<u32>(clamp(floor(pos * PARADE_BINS), vec3<f32>(0.0), vec3<f32>(PARADE_BINS - 1.0)));
     let col = min(gid.x * PARADE_COLS / u.crop_dims.x, PARADE_COLS - 1u);
     atomicAdd(&parade[p_bins.r * PARADE_COLS + col], 1u);

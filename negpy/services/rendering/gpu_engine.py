@@ -362,7 +362,7 @@ class GPUEngine:
             "toning": 64,
             "finish": 60,
             "layout": 48,
-            "density_hist": 16,
+            "density_hist": 48,
         }
         self._alignment = UNIFORM_ALIGNMENT_DEFAULT
         self._current_source_hash: Optional[str] = None
@@ -2311,8 +2311,13 @@ class GPUEngine:
             struct.pack("ffffii", bg[0], bg[1], bg[2], 1.0, ox, oy) + struct.pack("iiii", cw, ch, crop_w, crop_h) + struct.pack("f", scale)
         )
 
-        # ROI offset + crop dims for the density-histogram pass (tex_norm is uncropped).
-        dh_data = struct.pack("IIII", crop_offset[0], crop_offset[1], crop_w, crop_h)
+        # ROI offset + crop dims for the density-histogram pass (tex_norm is uncropped), and the bounds
+        # the scan parade inverts the stretch with.
+        dh_data = (
+            struct.pack("IIII", crop_offset[0], crop_offset[1], crop_w, crop_h)
+            + struct.pack("ffff", adj_floors[0], adj_floors[1], adj_floors[2], 0.0)
+            + struct.pack("ffff", adj_ceils[0], adj_ceils[1], adj_ceils[2], 0.0)
+        )
 
         full_buffer = bytearray()
         for name, d in zip(

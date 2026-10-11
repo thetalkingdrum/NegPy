@@ -699,11 +699,12 @@ class WaveformWidget(QWidget):
     """Print luma across the frame: x is the image column, y the print tone, brightness the pixel
     count, each cell in its pixels' mean color. Columns that reach paper black or paper white are
     marked on the bottom and top edges. With parade=True it draws R, G and B side by side, each
-    channel's own tone across the frame; in the scan domain, each channel's negative density on the
-    density histogram's axis, base at the bottom, its edge ticks marking columns past an axis end."""
+    channel's own tone across the frame; in the scan domain, each channel's scan density, dense at the
+    bottom, with solid marks at the density range the stretch maps onto the curve."""
 
     _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
     _PARADE_GAP = 3
+    _SCAN_GUIDES = (1.0, 2.0)
 
     def __init__(self, parent=None, parade: bool = False):
         super().__init__(parent)
@@ -716,13 +717,20 @@ class WaveformWidget(QWidget):
         self._images: list[QImage] | None = None
         self._marker: tuple[float, ...] | None = None
         self._scan = False
+        self._scan_marks: np.ndarray | None = None
+        self._scan_caption = ""
 
-    def set_scan_domain(self, enabled: bool) -> None:
-        """Read the counts as scan density (Peek Negative) rather than print tone; drops the marker."""
-        if bool(enabled) != self._scan:
-            self._scan = bool(enabled)
+    def set_scan_domain(self, enabled: bool, marks: Any = None, caption: str = "Scan density") -> None:
+        """Read the counts as scan density (Peek Negative) rather than print tone. ``marks`` is the
+        (3, 2) per-channel stretch ends, 0..1 up the panel; a domain change drops the marker."""
+        enabled = bool(enabled)
+        marks = None if marks is None or not enabled else np.asarray(marks, dtype=float)
+        if enabled != self._scan:
             self._marker = None
-            self.update()
+        self._scan = enabled
+        self._scan_marks = marks
+        self._scan_caption = caption if enabled else ""
+        self.update()
 
     def set_log_scale(self, enabled: bool) -> None:
         if bool(enabled) != self._log_scale:
@@ -792,7 +800,7 @@ class WaveformWidget(QWidget):
         return [QRect(int(i * (pw + gap)), 0, int((i + 1) * pw + i * gap) - int(i * (pw + gap)), h) for i in range(n)]
 
     def paintEvent(self, event) -> None:
-        from negpy.features.exposure.analysis import density_axis, encoded_of_zone
+        from negpy.features.exposure.analysis import encoded_of_zone, scan_density_axis
 
         painter = QPainter(self)
         w, h = self.width(), self.height()
@@ -819,8 +827,7 @@ class WaveformWidget(QWidget):
         font.setPixelSize(THEME.font_size_micro)
         painter.setFont(font)
         if self._scan:
-            # The curve's density range (val 1 at the bottom guide, 0 at the top), not print zones.
-            guides = [(float(density_axis(v)), "") for v in (1.0, 0.0)]
+            guides = [(float(scan_density_axis(d)), f"{d:.1f}") for d in self._SCAN_GUIDES]
         else:
             guides = [(float(encoded_of_zone(zone)), label) for zone, label in self._GUIDE_ZONES]
         for tone, label in guides:
@@ -832,11 +839,22 @@ class WaveformWidget(QWidget):
         if self._scan:
             painter.setPen(_alpha(THEME.text_hint, 200))
             painter.drawText(
-                QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "Scan density"
+                QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, self._scan_caption
             )
+            if self._scan_marks is not None and counts is not None:
+                painter.setPen(QPen(_alpha(THEME.text_primary, 170), 1))
+                for rect, ends in zip(rects, self._scan_marks):
+                    for tone in ends:
+                        y = int(min(max(h - tone * h, 1.0), h - 2.0))
+                        painter.drawLine(rect.x(), y, rect.x() + rect.width() - 1, y)
 
         if self._marker is not None and counts is not None:
             x, *tones = self._marker
+            if len(tones) == 3:
+                # Green's level across all three panels: a neutral rings on it in each.
+                gy = min(max(h - tones[1] * h, 0.0), h - 1.0)
+                painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(QPointF(0, gy), QPointF(w, gy))
             for rect, tone in zip(rects, tones):
                 # Kept a ring's width inside the panel, so an edge column's mark is not cut in half.
                 mx = min(max(rect.x() + x * rect.width(), rect.x() + 5.0), rect.x() + rect.width() - 5.0)
