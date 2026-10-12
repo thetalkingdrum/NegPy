@@ -630,6 +630,9 @@ class RightPanel(QWidget):
         if self.view_btn.currentData() != "crossover":
             return
         state = self.controller.state
+        # A drag frame keeps the last plot: the readout costs far more than the rest of the panel.
+        if self.controller.session.state.canvas_value("interactive"):
+            return
         frame = None if state.negative_peek or state.flat_peek else metrics.get("base_positive")
         if frame is None:
             self.crossover_widget.set_data(None)
