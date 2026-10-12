@@ -641,3 +641,18 @@ def test_the_panel_builds_with_a_saved_view_past_the_curve(qapp) -> None:
         raise AssertionError(f"restoring the saved view reached an unbuilt widget: {exc}")
     assert panel.view_btn.currentData() == "parade"
     assert panel.chart_stack.currentWidget() is panel.parade_widget
+
+
+def test_the_scan_parade_reads_out_each_channels_range() -> None:
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    widget = WaveformWidget(parade=True)
+    counts = np.zeros((3, WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[:, 0, 0] = 1.0
+    widget.set_data(counts)
+    assert widget._scan_ranges() is None
+
+    ends = np.array([[2.35, 0.82], [2.40, 0.48], [2.88, 0.69]])
+    widget.set_scan_domain(True, scan_density_axis(ends))
+
+    np.testing.assert_allclose(widget._scan_ranges(), (1.53, 1.92, 2.19), atol=1e-9)

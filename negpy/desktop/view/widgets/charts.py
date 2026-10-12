@@ -809,6 +809,16 @@ class WaveformWidget(QWidget):
                 self._images.append(QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy())
         return self._images
 
+    def _scan_ranges(self) -> list[float] | None:
+        """Each channel's density range between its stretch marks: the film's own range, which a
+        scan's exposure moves up or down the axis but does not change."""
+        if not self._scan or self._scan_marks is None or self._counts is None:
+            return None
+        from negpy.features.exposure.analysis import SCAN_DENSITY_RANGE
+
+        lo, hi = SCAN_DENSITY_RANGE
+        return [abs(float(top) - float(bottom)) * (hi - lo) for bottom, top in self._scan_marks]
+
     def _panel_rects(self, n: int) -> list[QRect]:
         w, h = self.width(), self.height()
         gap = self._PARADE_GAP if n > 1 else 0
@@ -855,18 +865,21 @@ class WaveformWidget(QWidget):
             painter.drawLine(0, y, w, y)
             painter.setPen(_alpha(THEME.text_hint, 200))
             painter.drawText(QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
+        ranges = self._scan_ranges()
         if self._split():
             # Channel letters, so the panel order reads without telling the traces apart by hue.
             painter.setPen(_alpha(THEME.text_hint, 200))
-            for rect, letter in zip(rects, "RGB"):
+            for i, (rect, letter) in enumerate(zip(rects, "RGB")):
+                text = letter if ranges is None else f"{letter} {ranges[i]:.2f}"
                 painter.drawText(
-                    rect.adjusted(0, THEME.space_xs, -THEME.space_xs, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, letter
+                    rect.adjusted(0, THEME.space_xs, -THEME.space_xs, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, text
                 )
         if self._scan:
+            caption = self._scan_caption
+            if ranges is not None and not self._split():
+                caption += " · range " + "  ".join(f"{letter} {r:.2f}" for letter, r in zip("RGB", ranges))
             painter.setPen(_alpha(THEME.text_hint, 200))
-            painter.drawText(
-                QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, self._scan_caption
-            )
+            painter.drawText(QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, caption)
             if self._scan_marks is not None and counts is not None:
                 hexes = (THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)
                 for rect, ends, hex_ in zip(channel_rects, self._scan_marks, hexes):
