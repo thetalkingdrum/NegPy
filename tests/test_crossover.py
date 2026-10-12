@@ -93,6 +93,7 @@ def test_the_crossover_measures_only_while_it_shows_and_clears_on_a_peek() -> No
     frame = _ramp(0.1)
     panel = MagicMock()
     panel.controller.state = AppState()
+    panel.controller.session.state.canvas_value.return_value = False
 
     panel.view_btn.currentData.return_value = "curve"
     RightPanel._update_crossover(panel, {"base_positive": frame})
@@ -105,3 +106,16 @@ def test_the_crossover_measures_only_while_it_shows_and_clears_on_a_peek() -> No
     panel.controller.state = AppState(negative_peek=True)
     RightPanel._update_crossover(panel, {"base_positive": frame})
     panel.crossover_widget.set_data.assert_called_with(None)
+
+
+def test_a_drag_frame_keeps_the_last_crossover_plot() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    panel.view_btn.currentData.return_value = "crossover"
+    panel.controller.session.state.canvas_value.side_effect = lambda key: key == "interactive"
+
+    RightPanel._update_crossover(panel, {"base_positive": _ramp(0.1)})
+
+    panel.crossover_widget.set_data.assert_not_called()
