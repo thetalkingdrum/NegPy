@@ -12,6 +12,7 @@ from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, field_label, header_row, section_subheader, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.busy import busy_button
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.domain.models import CROP_RATIO_CHOICES, canonical_crop_ratio
 from negpy.features.geometry.logic import has_manual_crop
@@ -160,7 +161,7 @@ class GeometrySidebar(BaseSidebar):
         self.auto_crop_btn.toggled.connect(self._on_auto_crop_toggled)
         self.clear_crop_btn.clicked.connect(self.controller.reset_crop)
 
-        self.auto_skew_btn.clicked.connect(self.controller.auto_skew_frame)
+        self.auto_skew_btn.clicked.connect(self._on_auto_skew)
         self.straighten_btn.toggled.connect(self._on_straighten_toggled)
         self.keystone_lines_btn.toggled.connect(self._on_keystone_lines_toggled)
 
@@ -198,6 +199,11 @@ class GeometrySidebar(BaseSidebar):
 
     def _on_manual_crop_toggled(self, checked: bool) -> None:
         self.controller.set_active_tool(ToolMode.CROP_MANUAL if checked else ToolMode.NONE)
+
+    def _on_auto_skew(self) -> None:
+        # Edge detection runs on the GUI thread; the shortcut clicks this button too.
+        with busy_button(self.auto_skew_btn):
+            self.controller.auto_skew_frame()
 
     def _on_straighten_toggled(self, checked: bool) -> None:
         self.controller.set_active_tool(ToolMode.STRAIGHTEN if checked else ToolMode.NONE)

@@ -1,10 +1,9 @@
 import os
 from dataclasses import replace
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QActionGroup
 from PyQt6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -32,6 +31,7 @@ from negpy.desktop.view.styles.templates import (
 )
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.busy import busy_button
 from negpy.desktop.view.widgets.collapsible import make_section
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup, align_slider_columns
 from negpy.desktop.view.widgets.export_settings_form import ExportSettingsForm, constrain_combo
@@ -122,7 +122,7 @@ class ExportSidebar(BaseSidebar):
         self.controller.linear_output_changed.connect(self._on_linear_output_changed)
         self.controller.flat_peek_changed.connect(self._on_flat_peek_changed)
 
-        self.contact_sheet_btn.clicked.connect(self.controller.request_contact_sheet)
+        self.contact_sheet_btn.clicked.connect(self._on_contact_sheet)
         self.printing_notes_btn.clicked.connect(self.controller.request_printing_notes_export)
         self.printing_notes_preview_btn.toggled.connect(lambda checked: self.controller.toggle_printing_notes(force=checked))
         self.controller.printing_notes_changed.connect(self._on_printing_notes_changed)
@@ -131,13 +131,14 @@ class ExportSidebar(BaseSidebar):
         self.export_sidecars_btn.clicked.connect(self._on_export_sidecars)
 
     def _on_export_sidecars(self) -> None:
-        """One DB read plus one small write per visible frame, on the GUI thread — short,
-        but long enough on a full roll to look frozen without a cursor."""
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
+        """One DB read plus one small write per visible frame, on the GUI thread."""
+        with busy_button(self.export_sidecars_btn, " Exporting…"):
             self.controller.export_edit_sidecars()
-        finally:
-            QApplication.restoreOverrideCursor()
+
+    def _on_contact_sheet(self) -> None:
+        # Building every visible frame's config runs on the GUI thread before the dialog opens.
+        with busy_button(self.contact_sheet_btn, " Preparing…"):
+            self.controller.request_contact_sheet()
 
     # --- Presets -------------------------------------------------------------
 

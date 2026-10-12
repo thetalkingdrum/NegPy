@@ -1,8 +1,6 @@
 import os
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -12,6 +10,7 @@ from PyQt6.QtWidgets import (
 from negpy.desktop.view.confirm import confirm_delete_named
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, field_label, hint_label
+from negpy.desktop.view.widgets.busy import busy_button
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder, pick_start_dir
 
 _NONE_LABEL = "— None —"
@@ -97,13 +96,9 @@ class FlatFieldSidebar(BaseSidebar):
         default_name = os.path.splitext(os.path.basename(path))[0]
         name, ok = QInputDialog.getText(self, "Save Flat Field Profile", "Profile name:", text=default_name)
         if ok and name:
-            # save_flatfield_profile decodes the reference RAW to bake the gain, a brief blocking beat
-            # on the GUI thread, so show a wait cursor.
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
+            # save_flatfield_profile decodes the reference RAW on the GUI thread.
+            with busy_button(self.add_btn):
                 self.controller.save_flatfield_profile(name, path)
-            finally:
-                QApplication.restoreOverrideCursor()
             self._refresh_profiles()
             self.sync_ui()
 

@@ -3657,15 +3657,12 @@ class AppController(QObject):
         geo = config.geometry
         # Every detection path reads the flat-fielded source.
         source = flatfield_source(raw, config, self._preview_gain_slices(self.active_diptych()), orientation=self.state.preview_orientation)
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             fit = squared_geometry(source, geo, config.process.process_mode)
         except Exception:
             logger.exception("Auto Skew failed on %s", self.state.current_file_path)
             self.set_status("Auto Skew failed; see the log", 3000, "warning")
             return
-        finally:
-            QApplication.restoreOverrideCursor()
         if fit is None:
             self.set_status("Auto Skew could not read the frame edges confidently enough to apply", 3000, "warning")
             return
@@ -7792,11 +7789,7 @@ class AppController(QObject):
         out_dir = self._contact_sheet_output_dir(visible_files)
         if not out_dir:
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            configs = [self._with_sibling_crosstalk(self._config_for_batch_asset(f), f) for f in visible_files]
-        finally:
-            QApplication.restoreOverrideCursor()
+        configs = [self._with_sibling_crosstalk(self._config_for_batch_asset(f), f) for f in visible_files]
         generation = self.contact_sheet_preview.prepare(tuple(visible_files))
         self._contact_sheet_pending = {"generation": generation, "assets": visible_files, "configs": configs, "out_dir": out_dir}
         self.set_status("Reading capture dates…", 0)

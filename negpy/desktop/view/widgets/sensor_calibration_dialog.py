@@ -159,8 +159,7 @@ class SensorCalibrationDialog(QDialog):
         name = self.name_edit.text().strip()
         if not name or not all(self._paths.values()):
             return
-        # An override cursor set inside this modal dialog can crash Qt on macOS while it
-        # builds the cursor image, so the button shows the busy state instead.
+        # Never an override wait cursor: it can crash Qt on macOS (see widgets/busy.py).
         self.compute_btn.setEnabled(False)
         self.compute_btn.setText("Computing…")
         self.compute_btn.repaint()
