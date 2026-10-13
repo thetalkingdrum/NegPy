@@ -510,6 +510,7 @@ class ShortcutManager:
             "toggle_zone_hover_highlight": controller.toggle_zone_hover_highlight,
             "toggle_parade_overlay": lambda: _toggle_if_live(right.parade_overlay_btn),
             "toggle_scan_parade_base": lambda: _toggle_if_live(right.scan_base_btn),
+            "toggle_scope_neutrals": lambda: _toggle_if_live(right.scope_neutrals_btn),
             "toggle_test_strip": controller.toggle_test_strip,
             "toggle_paper_strip": controller.toggle_paper_strip,
             "toggle_pick_better": controller.toggle_pick_better,

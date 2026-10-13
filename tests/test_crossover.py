@@ -119,3 +119,55 @@ def test_a_drag_frame_keeps_the_last_crossover_plot() -> None:
     RightPanel._update_crossover(panel, {"base_positive": _ramp(0.1)})
 
     panel.crossover_widget.set_data.assert_not_called()
+
+
+def test_the_neutral_vectorscope_drops_the_scene_colors_and_keeps_the_cast() -> None:
+    from negpy.features.exposure.analysis import SCOPE_HUE_BINS, neutral_vectorscope, vectorscope_histogram
+
+    frame = _ramp(0.0, offset=0.06)  # a warm cast on the grays
+    frame[:, :200] = np.asarray(working_oetf_encode(np.array([0.05, 0.5, 0.08], dtype=np.float32)))  # green foliage
+
+    every = vectorscope_histogram(frame)
+    neutral = neutral_vectorscope(frame)
+
+    hue_of = lambda counts: int(counts.sum(axis=1).argmax())  # noqa: E731
+    green_hue = hue_of(vectorscope_histogram(frame[:, :200]))
+    assert every[green_hue].sum() > 0 and neutral[green_hue].sum() == 0
+    # The neutrals' cluster sits off center toward the cast, toward red-yellow (+a, +b).
+    cast_hue = hue_of(neutral)
+    angle = (cast_hue + 0.5) / SCOPE_HUE_BINS * 2 * np.pi - np.pi
+    assert -0.5 < angle < 2.0
+    assert neutral[:, 0].sum() < neutral.sum()  # not at the very center
+    assert neutral_vectorscope(np.zeros((4, 4))) is None
+
+
+def _scope_panel(neutrals: bool, view: str = "vectorscope", interactive: bool = False) -> MagicMock:
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    panel.scope_neutrals_btn.isChecked.return_value = neutrals
+    panel.view_btn.currentData.return_value = view
+    panel.controller.session.state.canvas_value.side_effect = lambda key: interactive and key == "interactive"
+    return panel
+
+
+def test_neutrals_only_measures_the_print_and_waits_out_a_drag() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    metrics = {"vectorscope": "engine histogram", "base_positive": _ramp(0.0, offset=0.06)}
+
+    panel = _scope_panel(neutrals=False)
+    RightPanel._update_vectorscope(panel, metrics)
+    panel.vectorscope_widget.set_data.assert_called_once_with("engine histogram")
+
+    panel = _scope_panel(neutrals=True)
+    RightPanel._update_vectorscope(panel, metrics)
+    assert panel.vectorscope_widget.set_data.call_args[0][0].sum() > 0
+
+    for idle in (_scope_panel(neutrals=True, interactive=True), _scope_panel(neutrals=True, view="curve")):
+        RightPanel._update_vectorscope(idle, metrics)
+        idle.vectorscope_widget.set_data.assert_not_called()
+
+    peek = _scope_panel(neutrals=True)
+    peek.controller.state = AppState(negative_peek=True)
+    RightPanel._update_vectorscope(peek, metrics)
+    peek.vectorscope_widget.set_data.assert_called_once_with(None)

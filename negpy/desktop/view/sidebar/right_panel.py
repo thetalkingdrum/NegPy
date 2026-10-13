@@ -50,6 +50,10 @@ _SCAN_BASE_TIP = (
     "and the channels compare at one height"
 )
 
+_SCOPE_NEUTRALS_TIP = (
+    "Neutrals Only: the Vectorscope counts only the frame's near-neutral pixels, so a cast reads as one off-center cluster"
+)
+
 # The Roll tab's cards that own settings, for its header's Apply picker.
 _ROLL_TAB_CARDS = (
     "film",
@@ -298,12 +302,18 @@ class RightPanel(QWidget):
         self._sync_parade_tools()
         self.scale_btn.setVisible(self.view_btn.currentData() != "crossover")
 
+        self.scope_neutrals_btn = tool_toggle("fa5s.crosshairs", "", _SCOPE_NEUTRALS_TIP)
+        self.scope_neutrals_btn.setChecked(bool(repo.get_global_setting("vectorscope_neutrals", False)))
+        self.scope_neutrals_btn.toggled.connect(self._on_scope_neutrals)
+        self.scope_neutrals_btn.setVisible(self.view_btn.currentData() == "vectorscope")
+
         chart_row = QHBoxLayout()
         chart_row.setContentsMargins(0, 0, 0, 0)
         chart_row.addWidget(self.view_btn)
         chart_row.addStretch(1)
         chart_row.addWidget(self.scan_base_btn)
         chart_row.addWidget(self.parade_overlay_btn)
+        chart_row.addWidget(self.scope_neutrals_btn)
         chart_row.addWidget(self.scale_btn)
 
         analysis_layout.addWidget(self.chart_stack, 1)
@@ -592,6 +602,7 @@ class RightPanel(QWidget):
         self._refresh_zone_strip_hint()
         self._sync_parade_overlay()
         self.scan_base_btn.setToolTip(tooltip_with_shortcut(_SCAN_BASE_TIP, "toggle_scan_parade_base"))
+        self.scope_neutrals_btn.setToolTip(tooltip_with_shortcut(_SCOPE_NEUTRALS_TIP, "toggle_scope_neutrals"))
         self.metadata_sidebar.apply_shortcut_tooltips()
         self.export_sidebar.apply_shortcut_tooltips()
         self.gear_panel.apply_shortcut_tooltips()
@@ -636,6 +647,9 @@ class RightPanel(QWidget):
         self.chart_stack.setCurrentIndex(index)
         self.controller.session.repo.save_global_setting("analysis_view", self.view_btn.currentData())
         self._sync_parade_tools()
+        self.scope_neutrals_btn.setVisible(self.view_btn.currentData() == "vectorscope")
+        if self.view_btn.currentData() == "vectorscope" and self.scope_neutrals_btn.isChecked():
+            self._update_vectorscope(self.controller.session.state.last_metrics)
         # The crossover plot plots medians, not counts: there is no scale to set.
         self.scale_btn.setVisible(self.view_btn.currentData() != "crossover")
         self._sync_scale_btn()
@@ -658,6 +672,31 @@ class RightPanel(QWidget):
 
         buf = frame.readback() if hasattr(frame, "readback") else frame
         self.crossover_widget.set_data(crossover_curve(buf, metrics.get("content_rect")))
+
+    def _on_scope_neutrals(self, on: bool) -> None:
+        self.controller.session.repo.save_global_setting("vectorscope_neutrals", on)
+        self._update_vectorscope(self.controller.session.state.last_metrics)
+
+    def _update_vectorscope(self, metrics: Dict[str, Any]) -> None:
+        """The engines' a*b* histogram, or with Neutrals Only a measure of the print's neutrals, which
+        runs only while the Vectorscope shows and waits out a drag like the crossover plot."""
+        state = self.controller.state
+        if state.negative_peek or state.flat_peek:
+            self.vectorscope_widget.set_data(None)
+            return
+        if not self.scope_neutrals_btn.isChecked():
+            self.vectorscope_widget.set_data(metrics.get("vectorscope"))
+            return
+        if self.view_btn.currentData() != "vectorscope" or self.controller.session.state.canvas_value("interactive"):
+            return
+        frame = metrics.get("base_positive")
+        if frame is None:
+            self.vectorscope_widget.set_data(None)
+            return
+        from negpy.features.exposure.analysis import neutral_vectorscope
+
+        buf = frame.readback() if hasattr(frame, "readback") else frame
+        self.vectorscope_widget.set_data(neutral_vectorscope(buf, metrics.get("content_rect")))
 
     def _on_parade_overlay(self, on: bool) -> None:
         self.controller.session.repo.save_global_setting("parade_overlay", on)
@@ -981,7 +1020,7 @@ class RightPanel(QWidget):
             self.parade_widget.set_data(metrics.get("density_parade"))
         else:
             self.parade_widget.set_data(None if peeking else metrics.get("waveform_parade"))
-        self.vectorscope_widget.set_data(None if peeking else metrics.get("vectorscope"))
+        self._update_vectorscope(metrics)
         self._update_crossover(metrics)
 
         # Peek Negative applied no curve, so the print histogram, curve and zone strip

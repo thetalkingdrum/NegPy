@@ -317,6 +317,7 @@ The selector under the chart picks the chart. **Curve** is the paper curve and h
 
 *   **Parade Overlay** (layers icon): R, G and B on one plot, white where they agree. Grayed out under any Color vision choice but Standard (§15), and on the scan unless Base Relative is on.
 *   **Base Relative** (ruler icon, Peek Negative): moves each channel so its film base, else its thin line, sits at the top, so the channels and the hover line compare at one height. The caption names the zero.
+*   **Neutrals Only** (crosshair icon, Vectorscope): counts only the frame's near-neutral pixels, the ones the Crossover view reads, so a cast shows as one cluster off center instead of hiding among the scene's colors, and crossover as a streak from the shadows' hue to the highlights'.
 
 #### Lin / Log
 
