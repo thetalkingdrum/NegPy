@@ -701,8 +701,7 @@ class WaveformWidget(QWidget):
     marked on the bottom and top edges. With parade=True it draws R, G and B side by side, each
     channel's own tone across the frame; in the scan domain, each channel's scan density, dense at the
     bottom, with solid marks at the density range the stretch maps onto the curve. The parade's overlay
-    draws the three on one plot, added: where they coincide the trace is white. On a portrait frame the
-    position runs down the image's rows and tone runs left to right, so the plot stands like the frame."""
+    draws the three on one plot, added: where they coincide the trace is white."""
 
     _GUIDE_ZONES = ((3, "III"), (5, "V"), (7, "VII"))
     _PARADE_GAP = 3
@@ -722,14 +721,6 @@ class WaveformWidget(QWidget):
         self._scan_marks: np.ndarray | None = None
         self._scan_caption = ""
         self._overlay = False
-        self._rows = False
-
-    def set_rows(self, enabled: bool) -> None:
-        """Position along the frame's rows (a portrait frame) rather than its columns."""
-        if bool(enabled) != self._rows:
-            self._rows = bool(enabled)
-            self._images = None
-            self.update()
 
     def set_overlay(self, enabled: bool) -> None:
         """Draw a parade's R, G and B added on one plot instead of side by side."""
@@ -813,11 +804,8 @@ class WaveformWidget(QWidget):
                 tints = [np.moveaxis(np.clip(vals / ref, 0.0, 1.0), 0, -1) / np.maximum(levels[0][..., None], 1e-9)]
             self._images = []
             for level, tint in zip(levels, tints):
-                cells = tint * level[..., None] * 255.0
-                # Columns: tone up, black at the bottom. Rows: the image's rows down, black at the left.
-                cells = np.transpose(cells, (1, 0, 2)) if self._rows else np.flipud(cells)
-                rgb = np.ascontiguousarray(cells.astype(np.uint8))
-                h, w = rgb.shape[:2]
+                rgb = np.ascontiguousarray(np.flipud(tint * level[..., None] * 255.0).astype(np.uint8))
+                h, w = level.shape
                 self._images.append(QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy())
         return self._images
 
@@ -837,27 +825,6 @@ class WaveformWidget(QWidget):
         pw = (w - gap * (n - 1)) / n
         return [QRect(int(i * (pw + gap)), 0, int((i + 1) * pw + i * gap) - int(i * (pw + gap)), h) for i in range(n)]
 
-    def _at(self, rect: QRect, pos: float, tone: float) -> QPointF:
-        """A cell's point in *rect*: position along the frame and tone, both 0..1."""
-        if self._rows:
-            return QPointF(rect.x() + tone * rect.width(), pos * rect.height())
-        return QPointF(rect.x() + pos * rect.width(), rect.height() - tone * rect.height())
-
-    def _tone_line(self, painter: QPainter, rect: QRect, tone: float) -> None:
-        if self._rows:
-            x = min(max(rect.x() + tone * rect.width(), rect.x() + 1.0), rect.x() + rect.width() - 2.0)
-            painter.drawLine(QPointF(x, 0), QPointF(x, rect.height()))
-        else:
-            y = min(max(rect.height() - tone * rect.height(), 1.0), rect.height() - 2.0)
-            painter.drawLine(QPointF(rect.x(), y), QPointF(rect.x() + rect.width() - 1, y))
-
-    def _position_line(self, painter: QPainter, rect: QRect, pos: float) -> None:
-        p = self._at(rect, pos, 0.0)
-        if self._rows:
-            painter.drawLine(QPointF(rect.x(), p.y()), QPointF(rect.x() + rect.width(), p.y()))
-        else:
-            painter.drawLine(QPointF(p.x(), 0), QPointF(p.x(), rect.height()))
-
     def paintEvent(self, event) -> None:
         from negpy.features.exposure.analysis import encoded_of_zone, scan_density_axis
 
@@ -876,17 +843,10 @@ class WaveformWidget(QWidget):
             panels = self._panels() if self._split() or not self._parade else self._panels().sum(axis=0, keepdims=True)
             for image, rect, panel in zip(images, rects, panels):
                 painter.drawImage(rect, image)
-                n = panel.shape[1]
-                # A position that reaches either end of the tone axis gets a tick on that edge.
-                for row, tone in ((0, 0.0), (-1, 1.0)):
+                cols = panel.shape[1]
+                for row, y in ((0, h - 3), (-1, 2)):
                     for c in np.flatnonzero(panel[row]).tolist():
-                        a, b = self._at(rect, c / n, tone), self._at(rect, (c + 1) / n, tone)
-                        if self._rows:
-                            x = rect.x() + 2 if tone == 0.0 else rect.x() + rect.width() - 3
-                            painter.drawLine(QPointF(x, a.y()), QPointF(x, b.y()))
-                        else:
-                            y = h - 3 if tone == 0.0 else 2
-                            painter.drawLine(QPointF(a.x(), y), QPointF(b.x(), y))
+                        painter.drawLine(rect.x() + int(c * rect.width() / cols), y, rect.x() + int((c + 1) * rect.width() / cols), y)
             if self._split():
                 painter.setPen(QPen(QColor(THEME.border_primary), 1))
                 for rect in rects[1:]:
@@ -899,20 +859,12 @@ class WaveformWidget(QWidget):
             guides = [(float(scan_density_axis(d)), f"{d:.1f}") for d in self._SCAN_GUIDES]
         else:
             guides = [(float(encoded_of_zone(zone)), label) for zone, label in self._GUIDE_ZONES]
-        # Columns: one guide line across the whole plot. Rows: tone runs across each panel, so each gets its own.
-        guide_rects = rects if self._rows else [QRect(0, 0, w, h)]
         for tone, label in guides:
+            y = int(h - tone * h)
             painter.setPen(QPen(_alpha(THEME.border_hover, 200), 1, Qt.PenStyle.DashLine))
-            for rect in guide_rects:
-                self._tone_line(painter, rect, tone)
+            painter.drawLine(0, y, w, y)
             painter.setPen(_alpha(THEME.text_hint, 200))
-            at = self._at(guide_rects[0], 1.0, tone)
-            if self._rows:
-                painter.drawText(QRectF(at.x() + 2, h - 14, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
-            else:
-                painter.drawText(
-                    QRect(THEME.space_xs, int(at.y()) - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label
-                )
+            painter.drawText(QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label)
         ranges = self._scan_ranges()
         if self._split():
             # Channel letters, so the panel order reads without telling the traces apart by hue.
@@ -933,23 +885,23 @@ class WaveformWidget(QWidget):
                 for rect, ends, hex_ in zip(channel_rects, self._scan_marks, hexes):
                     painter.setPen(QPen(_alpha(THEME.text_primary if self._split() else hex_, 170), 1))
                     for tone in ends:
-                        self._tone_line(painter, rect, float(tone))
+                        y = int(min(max(h - tone * h, 1.0), h - 2.0))
+                        painter.drawLine(rect.x(), y, rect.x() + rect.width() - 1, y)
 
         if self._marker is not None and counts is not None:
-            pos, *tones = self._marker
-            dashed = QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine)
+            x, *tones = self._marker
             if len(tones) == 3 and self._split():
-                # Green's level in all three panels: a neutral rings on it in each.
-                painter.setPen(dashed)
-                for rect in rects if self._rows else [QRect(0, 0, w, h)]:
-                    self._tone_line(painter, rect, tones[1])
+                # Green's level across all three panels: a neutral rings on it in each.
+                gy = min(max(h - tones[1] * h, 0.0), h - 1.0)
+                painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(QPointF(0, gy), QPointF(w, gy))
             for rect, tone in zip(channel_rects if len(tones) == 3 else rects, tones):
-                painter.setPen(dashed)
-                self._position_line(painter, rect, pos)
-                # Kept a ring's width inside the panel, so an edge mark is not cut in half.
-                p = self._at(rect, pos, tone)
-                x = min(max(p.x(), rect.x() + 5.0), rect.x() + rect.width() - 5.0)
-                _draw_hover_ring(painter, QPointF(x, min(max(p.y(), 5.0), h - 5.0)))
+                # Kept a ring's width inside the panel, so an edge column's mark is not cut in half.
+                mx = min(max(rect.x() + x * rect.width(), rect.x() + 5.0), rect.x() + rect.width() - 5.0)
+                my = min(max(h - tone * h, 5.0), h - 5.0)
+                painter.setPen(QPen(_alpha(THEME.text_on_accent, 90), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(QPointF(mx, 0), QPointF(mx, h))
+                _draw_hover_ring(painter, QPointF(mx, my))
 
         painter.setPen(QPen(QColor(THEME.border_primary), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)

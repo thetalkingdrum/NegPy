@@ -30,9 +30,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Same encode and luma as metrics.wgsl, so the waveform and the L histogram describe one image.
     let color = oetf_encode(textureLoad(input_tex, vec2<i32>(i32(gid.x), i32(gid.y)), 0).rgb);
     let luma = dot(color, LUMA_COEFFS);
-    // A portrait frame bins per row, so sky and ground land apart. Mirrors waveform_by_rows() in analysis.py.
-    let by_rows = dims.y > dims.x;
-    let col = min(select(gid.x, gid.y, by_rows) * COLS / select(dims.x, dims.y, by_rows), COLS - 1u);
+    let col = min(gid.x * COLS / dims.x, COLS - 1u);
     let bin = u32(clamp(floor(luma * BINS), 0.0, BINS - 1.0));
 
     let cell = bin * COLS + col;

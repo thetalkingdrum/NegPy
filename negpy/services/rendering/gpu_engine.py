@@ -1616,7 +1616,6 @@ class GPUEngine:
                 .reshape((COLOR_HIST_BINS,) * 3)
                 .astype(np.float64)
             )
-            metrics["waveform_rows"] = crop_h > crop_w
             metrics["waveform"] = (
                 raw_metrics[_METRICS_WAVE_BASE : _METRICS_WAVE_BASE + _METRICS_WAVE_WORDS]
                 .reshape((WAVEFORM_BINS, WAVEFORM_COLS))
