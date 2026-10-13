@@ -406,6 +406,7 @@ def test_peek_negative_rings_the_scan_density_of_the_hovered_pixel() -> None:
 
     panel = MagicMock()
     panel.controller.state = AppState(negative_peek=True)
+    panel._wave_rows = False
     panel._scan_bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
 
     RightPanel._on_pixel_readout(panel, (0.25, 0.5, (0.9, 0.9, 0.9)))
@@ -656,3 +657,76 @@ def test_the_scan_parade_reads_out_each_channels_range() -> None:
     widget.set_scan_domain(True, scan_density_axis(ends))
 
     np.testing.assert_allclose(widget._scan_ranges(), (1.53, 1.92, 2.19), atol=1e-9)
+
+
+def test_a_portrait_frame_bins_by_row() -> None:
+    from negpy.features.exposure.analysis import waveform_by_rows
+
+    # Dark top half, bright bottom half: per row, the two halves land in separate positions.
+    img = np.full((512, 200, 3), 0.9, dtype=np.float32)
+    img[:256] = 0.1
+    assert waveform_by_rows(img.shape) and not waveform_by_rows((200, 512, 3))
+
+    counts = waveform(img)
+    peak = counts.argmax(axis=0)
+    assert peak[0] == int(0.1 * WAVEFORM_BINS) and peak[-1] == int(0.9 * WAVEFORM_BINS)
+    parade = waveform_parade(img)
+    assert parade[1].argmax(axis=0)[0] < parade[1].argmax(axis=0)[-1]
+
+    log = np.full((512, 200, 3), -0.3, dtype=np.float32)
+    log[256:] = -2.0
+    scan = density_parade(log)
+    assert scan[0].argmax(axis=0)[0] > scan[0].argmax(axis=0)[-1]  # top rows thin, bottom rows dense
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+def test_wgsl_portrait_waveform_and_scan_parade_match_the_cpu() -> None:
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    grad = np.linspace(0.05, 0.9, 300, dtype=np.float32)
+    img = np.stack([grad, grad[::-1], np.full_like(grad, 0.4)], axis=-1)
+    img = np.ascontiguousarray(np.repeat(img[:, None], 200, axis=1))  # 300 rows x 200 columns, ramp down the rows
+    proc = ImageProcessor()
+    cfg = WorkspaceConfig()
+
+    cpu_out, cpu_metrics = proc.run_pipeline(img, cfg, "port|cpu", render_size_ref=300, prefer_gpu=False, readback_metrics=True)
+    _gpu_out, gpu_metrics = proc.run_pipeline(img, cfg, "port|gpu", render_size_ref=300, prefer_gpu=True, readback_metrics=True)
+    if gpu_metrics.get("waveform_parade") is None:
+        return
+    assert gpu_metrics["waveform_rows"] is True
+    for key, cpu in (("waveform_parade", waveform_parade(cpu_out)), ("density_parade", cpu_metrics["density_parade"])):
+        gpu = gpu_metrics[key]
+        assert cpu.sum() == gpu.sum(), key
+        for c in range(3):
+            assert float(np.abs(cpu[c] / cpu[c].sum() - gpu[c] / gpu[c].sum()).sum()) < 0.02, (key, c)
+
+
+def test_a_portrait_waveform_stands_like_the_frame(qapp) -> None:
+    from PyQt6.QtGui import QColor
+
+    from negpy.desktop.view.widgets.charts import WaveformWidget
+
+    widget = WaveformWidget()
+    widget.set_rows(True)
+    widget.resize(WAVEFORM_BINS, WAVEFORM_COLS)
+    counts = np.zeros((WAVEFORM_BINS, WAVEFORM_COLS))
+    counts[20, :128] = 4.0  # top rows dark
+    counts[110, 128:] = 4.0  # bottom rows bright
+    widget.set_data(counts)
+
+    img = widget.grab().toImage()
+    lit = lambda x, y: QColor(img.pixel(x, y)).lightness() > 100  # noqa: E731
+    assert lit(20, 60) and not lit(110, 60)
+    assert lit(110, 200) and not lit(20, 200)
+
+
+def test_the_hover_follows_the_row_on_a_portrait_frame() -> None:
+    from negpy.desktop.view.sidebar.right_panel import RightPanel
+
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    panel._wave_rows = True
+    RightPanel._on_pixel_readout(panel, (0.2, 0.8, (0.5, 0.5, 0.5)))
+
+    assert panel.waveform_widget.set_marker.call_args[0][0][0] == 0.8

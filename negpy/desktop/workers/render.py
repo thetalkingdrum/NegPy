@@ -19,6 +19,7 @@ from negpy.features.exposure.analysis import (
     vectorscope_histogram,
     waveform,
     waveform_color,
+    waveform_by_rows,
     waveform_parade,
 )
 from negpy.features.flatfield.models import FlatFieldConfig
@@ -425,6 +426,7 @@ class RenderWorker(QObject):
                 metrics["waveform"] = waveform(result)
                 metrics["waveform_color"] = waveform_color(result)
                 metrics["waveform_parade"] = waveform_parade(result)
+                metrics["waveform_rows"] = waveform_by_rows(result.shape)
                 metrics["vectorscope"] = vectorscope_histogram(result)
 
             # The soft proof is not baked in: it rides the display LUT, so a GPU texture reaches

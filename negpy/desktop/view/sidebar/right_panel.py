@@ -228,7 +228,8 @@ class RightPanel(QWidget):
         self.zone_placement = ZonePlacementRows()
         self.stats_widget = NegativeStatsWidget()
         self._clip_fracs: tuple = (None, None)
-        self._hover_x: float | None = None
+        self._hover_x: float | None = None  # along the waveform's position axis: column, or row on a portrait frame
+        self._wave_rows = False
         self._scan_bounds: Any = None
 
         repo = self.controller.session.repo
@@ -602,9 +603,9 @@ class RightPanel(QWidget):
             return
         from negpy.features.exposure.analysis import scope_point
 
-        nx, _ny, rgb = readout
+        nx, ny, rgb = readout
         luma, a, b = scope_point(rgb)
-        x = min(max(nx, 0.0), 1.0)
+        x = min(max(ny if self._wave_rows else nx, 0.0), 1.0)
         self._hover_x = x
         self.waveform_widget.set_marker((x, luma))
         if not self.controller.state.negative_peek:
@@ -922,6 +923,11 @@ class RightPanel(QWidget):
         # Peek Negative shows the scan the last print was made from, so the parade reads that scan.
         negative = self.controller.state.negative_peek
         peeking = negative or self.controller.state.flat_peek
+        rows = metrics.get("waveform_rows")
+        if rows is not None:
+            self._wave_rows = bool(rows)
+            self.waveform_widget.set_rows(self._wave_rows)
+            self.parade_widget.set_rows(self._wave_rows)
         self.waveform_widget.set_data(None if peeking else metrics.get("waveform"), metrics.get("waveform_color"))
         self._scan_bounds = metrics.get("final_bounds") if negative else None
         self.parade_widget.set_scan_domain(negative, *self._scan_marks_and_caption())

@@ -50,7 +50,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let log_color = u.floors.xyz + color * (u.ceils.xyz - u.floors.xyz);
     let pos = (vec3<f32>(SCAN_D_MAX) + log_color) / SCAN_D_SPAN;
     let p_bins = vec3<u32>(clamp(floor(pos * PARADE_BINS), vec3<f32>(0.0), vec3<f32>(PARADE_BINS - 1.0)));
-    let col = min(gid.x * PARADE_COLS / u.crop_dims.x, PARADE_COLS - 1u);
+    let by_rows = u.crop_dims.y > u.crop_dims.x;  // mirrors waveform_by_rows() in analysis.py
+    let col = min(select(gid.x, gid.y, by_rows) * PARADE_COLS / select(u.crop_dims.x, u.crop_dims.y, by_rows), PARADE_COLS - 1u);
     atomicAdd(&parade[p_bins.r * PARADE_COLS + col], 1u);
     atomicAdd(&parade[32768u + p_bins.g * PARADE_COLS + col], 1u);
     atomicAdd(&parade[65536u + p_bins.b * PARADE_COLS + col], 1u);

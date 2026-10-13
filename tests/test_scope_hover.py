@@ -39,6 +39,7 @@ def test_the_panel_marks_both_scopes_and_clears_them() -> None:
 
     panel = MagicMock()
     panel.controller.state = AppState()
+    panel._wave_rows = False
     RightPanel._on_pixel_readout(panel, (1.3, 0.5, (0.5, 0.5, 0.5)))
 
     column, luma = panel.waveform_widget.set_marker.call_args[0][0]

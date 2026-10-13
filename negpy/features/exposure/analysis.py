@@ -108,22 +108,38 @@ def gamut_fraction(color_hist: Any, out_of_gamut: Any) -> Optional[float]:
     return float(hist[mask].sum() / total) if total > 0 else None
 
 
+def waveform_by_rows(shape: Tuple[int, ...]) -> bool:
+    """A frame taller than wide plots its waveform and parades per row instead of per column, so
+    the long edge carries the position. waveform.wgsl and density_hist.wgsl mirror the rule."""
+    return shape[0] > shape[1]
+
+
+def _position_index(h: int, w: int, step: int = 1) -> np.ndarray:
+    """(h', w') position bin per pixel of a frame strided by *step*: the column, or the row on a
+    portrait frame, scaled to WAVEFORM_COLS over the unstrided extent."""
+    if waveform_by_rows((h, w)):
+        pos = np.minimum(np.arange(0, h, step) * WAVEFORM_COLS // h, WAVEFORM_COLS - 1)
+        return np.broadcast_to(pos[:, None], (len(pos), len(range(0, w, step))))
+    pos = np.minimum(np.arange(0, w, step) * WAVEFORM_COLS // w, WAVEFORM_COLS - 1)
+    return np.broadcast_to(pos[None, :], (len(range(0, h, step)), len(pos)))
+
+
 def _waveform_cells(buffer: Any) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """(sampled H×W×3 float32 buffer, flat bin * WAVEFORM_COLS + col index per pixel)."""
+    """(sampled H×W×3 float32 buffer, flat bin * WAVEFORM_COLS + position index per pixel)."""
     if buffer is None:
         return None
     buffer = np.asarray(buffer)
     if buffer.ndim != 3 or buffer.shape[-1] < 3 or min(buffer.shape[:2]) < 1:
         return None
-    step = max(1, round(np.sqrt(buffer.shape[0] * buffer.shape[1] / _MAX_HIST_SAMPLES)))
+    h, w = buffer.shape[:2]
+    step = max(1, round(np.sqrt(h * w / _MAX_HIST_SAMPLES)))
     if step > 1:
         buffer = buffer[::step, ::step]
     rgb = np.ascontiguousarray(buffer[..., :3], dtype=np.float32)
     lum = get_luminance(rgb)
-    w = lum.shape[1]
-    cols = np.minimum(np.arange(w) * WAVEFORM_COLS // w, WAVEFORM_COLS - 1)
+    pos = _position_index(h, w, step)
     bins = np.clip((np.nan_to_num(lum) * WAVEFORM_BINS).astype(np.int32), 0, WAVEFORM_BINS - 1)
-    return rgb, (bins * WAVEFORM_COLS + cols[None, :]).ravel()
+    return rgb, (bins * WAVEFORM_COLS + pos).ravel()
 
 
 def waveform(buffer: Any) -> Optional[np.ndarray]:
@@ -616,13 +632,12 @@ def density_parade(img_log: Any, roi: Optional[Tuple[int, int, int, int]] = None
         img = img[y1:y2, x1:x2]
     if min(img.shape[:2]) < 1:
         return None
-    full_w = img.shape[1]
-    step = max(1, round(np.sqrt(img.shape[0] * full_w / _MAX_HIST_SAMPLES)))
+    full_h, full_w = img.shape[:2]
+    step = max(1, round(np.sqrt(full_h * full_w / _MAX_HIST_SAMPLES)))
     img = img[::step, ::step, :3]
-    cols = np.minimum(np.arange(0, full_w, step) * WAVEFORM_COLS // full_w, WAVEFORM_COLS - 1)
+    flat_cols = _position_index(full_h, full_w, step).ravel()
     pos = scan_density_axis(-np.nan_to_num(img.astype(np.float32)))
     bins = np.clip(np.floor(pos * WAVEFORM_BINS), 0, WAVEFORM_BINS - 1).astype(np.int64)
-    flat_cols = np.broadcast_to(cols[None, :], bins.shape[:2]).ravel()
     counts = [np.bincount(bins[..., c].ravel() * WAVEFORM_COLS + flat_cols, minlength=WAVEFORM_BINS * WAVEFORM_COLS) for c in range(3)]
     return np.stack(counts).reshape(3, WAVEFORM_BINS, WAVEFORM_COLS).astype(float)
 
