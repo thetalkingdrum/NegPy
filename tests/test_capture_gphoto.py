@@ -146,6 +146,8 @@ class _Camera:
         if self._fake.late_events or self._fake.event_gap:
             # Fujifilm behaviour (issue #658): post-shot events left unread block the preview.
             raise _Err("[-1] Unspecified error")
+        if self._fake.magnifier_stalls and self._fake.props["eoszoom"].value != "1":
+            return _File(b"")  # the D3300 answers busy while enlarged
         self._fake.previews += 1
         return _File(b"\xff\xd8JPEG")
 
@@ -208,6 +210,7 @@ class FakeGP:
         self.operations = operations
         self.abilities_error = False
         self.preview_error = None  # set to a message so capture_preview fails but config reads do not
+        self.magnifier_stalls = False  # no frames while the magnifier is on
         self.late_events = 0  # post-shot events the body only hands over after a pause (Fujifilm, #658)
         self.event_gap = False
         self.event_waits: list[int] = []  # the quiet-window ms passed to each wait_for_event
@@ -278,10 +281,46 @@ def test_safe_value_refuses_to_read_a_choiceless_widget(fake):
     assert _safe_value(fake, fake.props["iso"]) == "100"
 
 
+def test_a_setting_write_republishes_the_settings_file(fake, tmp_path):
+    settings = tmp_path / "lv.json"
+    camera = GphotoCamera(gp_module=fake, jpeg_path=str(tmp_path / "lv.jpg"), settings_path=str(settings))
+    camera.open()
+    camera.set_shutter(2)  # "1/10"
+    assert json.loads(settings.read_text())["shutter"]["cur"] == 2  # the UI reads the body's state from here
+    camera.close()
+
+
 def test_read_settings_omits_a_property_with_no_choices(cam):
     settings = cam.read_settings()
     assert "aperture" not in settings  # the UI greys the stepper out on a missing key
+    assert set(settings) == {"iso", "shutter", "magnifier"}
+
+
+def test_read_settings_reports_the_body_magnifier_state(cam):
+    assert cam.read_settings()["magnifier"] == {"on": False}
+    cam.set_focus_magnifier_at(320, 240)
+    assert cam.read_settings()["magnifier"] == {"on": True}  # read off the body's echo, "6.9,589,438"
+    cam.set_focus_magnifier(False)
+    assert cam.read_settings()["magnifier"] == {"on": False}
+
+
+def test_sonys_reposition_only_step_reads_as_off(fake, cam):
+    fake.props["focusmagnifier"].value = "1,320,240"  # the body's own button, first press
+    assert cam.read_settings()["magnifier"] == {"on": False}
+
+
+def test_an_unreadable_magnifier_omits_the_entry_and_keeps_the_rest(fake, cam):
+    fake.props["focusmagnifier"].value = None
+    settings = cam.read_settings()
+    assert "magnifier" not in settings
     assert set(settings) == {"iso", "shutter"}
+
+
+def test_read_settings_has_no_magnifier_entry_for_a_body_without_one():
+    camera = GphotoCamera(gp_module=FakeGP(magnifier=None))
+    camera.open()
+    assert "magnifier" not in camera.read_settings()
+    camera.close()
 
 
 def test_read_settings_shape_matches_the_ui_contract(cam):
@@ -679,7 +718,7 @@ def test_live_view_publishes_frames_and_settings(fake, tmp_path):
     finally:
         camera.close()
     assert jpeg.read_bytes().startswith(b"\xff\xd8")
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier"}
     assert not camera.is_running()
 
 
@@ -821,7 +860,7 @@ def test_refusing_live_view_still_publishes_the_camera_settings(tmp_path):
     with pytest.raises(LiveViewUnsupported):
         camera.start()
 
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier"}
     camera.close()
 
 
@@ -946,3 +985,55 @@ def test_open_never_retries_a_claim_conflict(fake, monkeypatch):
     with pytest.raises(CameraClaimedError):
         camera.open()
     assert fake.init_attempts == 1  # refused once, reported at once
+
+
+# ---- a magnifier that stops the stream ---------------------------------------
+
+
+def _wait_for(condition, what):
+    import time
+
+    for _ in range(300):
+        if condition():
+            return
+        time.sleep(0.01)
+    raise AssertionError(what)
+
+
+def test_a_magnifier_that_stops_the_stream_is_switched_off_and_retired(tmp_path):
+    fake = FakeGP(magnifier="canon")
+    fake.magnifier_stalls = True
+    reasons: list[str] = []
+    camera = GphotoCamera(
+        gp_module=fake,
+        jpeg_path=str(tmp_path / "lv.jpg"),
+        settings_path=str(tmp_path / "lv.json"),
+        on_magnifier_unusable=reasons.append,
+    )
+    camera.start()
+    _wait_for(lambda: fake.previews > 0, "the preview never started")
+    camera.set_focus_magnifier_at(320, 240)
+    _wait_for(lambda: reasons, "the stalled magnifier was never reported")
+
+    assert fake.props["eoszoom"].value == "1"  # back at full frame
+    before = fake.previews
+    _wait_for(lambda: fake.previews > before, "the preview did not resume")
+    assert camera.is_running()
+
+    writes = len(fake.writes)
+    camera.set_focus_magnifier_at(320, 240)
+    assert len(fake.writes) == writes
+    assert len(reasons) == 2
+    camera.close()
+
+
+def test_a_body_known_to_stall_never_engages_its_magnifier():
+    fake = FakeGP(magnifier="canon", driver_model="Nikon DSC D3300")
+    reasons: list[str] = []
+    camera = GphotoCamera(gp_module=fake, on_magnifier_unusable=reasons.append)
+    camera.open()
+    writes = len(fake.writes)
+    camera.set_focus_magnifier_at(320, 240)
+    assert len(fake.writes) == writes
+    assert len(reasons) == 1
+    camera.close()

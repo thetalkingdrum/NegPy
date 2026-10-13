@@ -37,6 +37,7 @@ def _window():
         central_stack=stack,
         drawer=_Dock(),
         session_dock=_Dock(),
+        _panels_before_light_table=[],
         session_panel=SimpleNamespace(file_browser=SimpleNamespace(light_table_btn=button, light_table_view=grid)),
         controller=MagicMock(),
         state=SimpleNamespace(selected_file_idx=0),
@@ -52,12 +53,38 @@ def test_the_light_table_takes_the_canvas_place_and_gives_it_back(qapp):
     MainWindow.set_light_table(win, True)
     assert win.central_stack.currentIndex() == 1
     assert win.session_panel.file_browser.light_table_btn.isChecked()
-    assert not win.drawer.visible
+    assert not win.drawer.visible and not win.session_dock.visible, "the grid gets the whole window"
 
     MainWindow.set_light_table(win, False)
     assert win.central_stack.currentIndex() == 0
     assert not win.session_panel.file_browser.light_table_btn.isChecked()
-    assert win.drawer.visible
+    assert win.drawer.visible and win.session_dock.visible
+
+
+def test_the_light_table_will_not_open_on_an_empty_grid(qapp):
+    win = _window()
+    win.controller.session.asset_model.rowCount.return_value = 0
+    win.state.uploaded_files = [{"name": "a.tif"}]
+
+    MainWindow.set_light_table(win, True)
+
+    assert win.central_stack.currentIndex() == 0
+    assert not win.session_panel.file_browser.light_table_btn.isChecked()
+    assert win.drawer.visible and win.session_dock.visible
+    win.controller.set_status.assert_called_once_with("No frames match the filter", 3000)
+
+
+def test_the_light_table_closes_when_its_grid_empties(qapp):
+    win = _window()
+    MainWindow.set_light_table(win, True)
+    win.set_light_table = lambda on: MainWindow.set_light_table(win, on)
+    win.controller.session.asset_model.rowCount.return_value = 0
+    win.state.uploaded_files = [{"name": "a.tif"}]
+
+    MainWindow._leave_empty_light_table(win)
+
+    assert win.central_stack.currentIndex() == 0
+    assert win.drawer.visible and win.session_dock.visible
 
 
 def test_leaving_the_light_table_keeps_a_hidden_controls_panel_hidden(qapp):
@@ -68,6 +95,7 @@ def test_leaving_the_light_table_keeps_a_hidden_controls_panel_hidden(qapp):
     MainWindow.set_light_table(win, False)
 
     assert not win.drawer.visible
+    assert win.session_dock.visible
 
 
 def test_escape_closes_the_light_table_before_anything_else(qapp):

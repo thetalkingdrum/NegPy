@@ -1,24 +1,35 @@
+import html
 import os
+import re
 import sys
 
-from PyQt6.QtCore import Qt, qInstallMessageHandler
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, QObject, Qt, qInstallMessageHandler
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle
+from PyQt6.QtWidgets import QAbstractButton, QAbstractSpinBox, QApplication, QComboBox, QProxyStyle, QStyle, QWidget
 
 from negpy.desktop.controller import AppController
 from negpy.desktop.session import DesktopSessionManager
 from negpy.desktop.view.main_window import MainWindow
+from negpy.desktop.view.styles.templates import wrap_tooltip
 from negpy.features.flatfield.logic import set_gain_provider
 from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets.migrations.cast_removal import migrate_legacy_slide_cast_removal
 from negpy.services.assets.crosstalk import CrosstalkProfiles
 from negpy.services.assets.flatfield import FlatFieldProfiles
 from negpy.services.assets.migrations.flatfield import migrate_legacy_flatfield_profiles
+from negpy.services.assets.migrations.flatfield_layout import migrate_flatfield_sensor_layout
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.migrations.gear_presets import migrate_gear_presets
 from negpy.services.assets.migrations.normalization_roll import migrate_legacy_normalization_rolls
 from negpy.services.assets.migrations.positive_auto import migrate_auto_meter_for_positive_frames
-from negpy.services.assets.migrations.roll_fields import migrate_baseline_card_split, migrate_new_roll_field_locks
+from negpy.services.assets.migrations.roll_fields import (
+    migrate_auto_crop_roll_locks,
+    migrate_baseline_card_split,
+    migrate_cast_removal_roll_locks,
+    migrate_new_roll_field_locks,
+    migrate_paper_card_split,
+)
 from negpy.kernel.system.config import APP_CONFIG, BASE_USER_DIR
 from negpy.kernel.system.logging import get_logger, setup_logging
 from negpy.kernel.system.override import apply as apply_override
@@ -53,6 +64,27 @@ def _filter_qt_messages(mode, context, message: str) -> None:
     sys.stderr.write(message + "\n")
 
 
+class AppEventFilter(QObject):
+    """The app-wide event rules, in one filter so each event crosses into Python once. Combo and
+    spin boxes never take the wheel, every tooltip wraps (Qt never wraps plain text), and an
+    icon-only button takes its tooltip's first clause as its accessible name."""
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        kind = event.type()
+        if kind == QEvent.Type.Wheel and isinstance(obj, (QComboBox, QAbstractSpinBox)):
+            event.ignore()
+            return True
+        if kind == QEvent.Type.ToolTipChange and isinstance(obj, QWidget):
+            tip = obj.toolTip()
+            if tip and not tip.startswith("<qt>"):
+                obj.setToolTip(wrap_tooltip(tip))
+            elif tip and isinstance(obj, QAbstractButton) and not obj.text():
+                # The shortcut chips follow the text as a table; the name is the text before them.
+                plain = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", tip.split("<table", 1)[0])).split())
+                obj.setAccessibleName(plain.split(" — ", 1)[0])
+        return False
+
+
 class _AppStyle(QProxyStyle):
     """Fusion with a longer tooltip hover delay — the default 700 ms pops tooltips
     the moment the cursor crosses a toolbar, which reads as noise — and no mnemonic
@@ -84,13 +116,22 @@ def _install_exception_hook() -> None:
     report that hides the Python traceback. This is what surfaces user-side bugs we can't reproduce
     (e.g. the Big Scanlight calibration crash): the traceback lands in negpy.log for them to attach."""
 
+    from PyQt6.QtCore import QObject, pyqtSignal
+
+    class _Notice(QObject):
+        # Built on the GUI thread, so an emit from a worker thread queues the dialog there.
+        show = pyqtSignal(str)
+
+    notice = _Notice()
+    notice.show.connect(_show_error_notice)
+
     def _hook(exc_type, exc_value, exc_tb) -> None:
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
         logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
         try:
-            from PyQt6.QtWidgets import QApplication, QMessageBox
+            from PyQt6.QtWidgets import QApplication
 
             # Startup work runs before QApplication exists, and constructing a widget
             # without one makes Qt call qFatal() — an abort at the C level, with no Python
@@ -100,17 +141,23 @@ def _install_exception_hook() -> None:
                 sys.__excepthook__(exc_type, exc_value, exc_tb)
                 return
 
-            QMessageBox.critical(
-                None,
-                "NegPy Hit an Error",
-                f"Something went wrong and was logged:\n\n{exc_type.__name__}: {exc_value}\n\n"
-                f"The app kept running. If it keeps happening, please attach the log file "
-                f"({os.path.join(BASE_USER_DIR, 'negpy.log')}) to a bug report on GitHub.",
-            )
+            notice.show.emit(f"{exc_type.__name__}: {exc_value}")
         except Exception:
             logger.warning("could not show the error dialog", exc_info=True)
 
     sys.excepthook = _hook
+
+
+def _show_error_notice(error: str) -> None:
+    from PyQt6.QtWidgets import QMessageBox
+
+    QMessageBox.critical(
+        None,
+        "NegPy Hit an Error",
+        f"Something went wrong and was logged:\n\n{error}\n\n"
+        f"The app kept running. If it keeps happening, please attach the log file "
+        f"({os.path.join(BASE_USER_DIR, 'negpy.log')}) to a bug report on GitHub.",
+    )
 
 
 class UserDirectoryError(Exception):
@@ -155,7 +202,6 @@ def _bootstrap_environment() -> None:
         APP_CONFIG.fade_dir,
         APP_CONFIG.sensor_dir,
         APP_CONFIG.gear_dir,
-        APP_CONFIG.contact_sheet_templates_dir,
         APP_CONFIG.default_export_dir,
     ]
     for d in dirs:
@@ -250,12 +296,16 @@ def main() -> None:
         # into that store.
         set_gain_provider(FlatFieldProfiles.load_gain)
         migrate_legacy_flatfield_profiles(repo)
+        migrate_flatfield_sensor_layout()
         migrate_gear_presets(repo)
         migrate_legacy_normalization_rolls(repo)
         migrate_auto_meter_for_positive_frames(repo)
         migrate_legacy_slide_cast_removal(repo)
         migrate_baseline_card_split(repo)
+        migrate_paper_card_split(repo)
         migrate_new_roll_field_locks(repo)
+        migrate_cast_removal_roll_locks(repo)
+        migrate_auto_crop_roll_locks(repo)
 
         scale = float(repo.get_global_setting("ui_scale", 1.0) or 1.0)
         scale = max(0.8, min(1.2, scale))
@@ -271,6 +321,7 @@ def main() -> None:
         app = QApplication(sys.argv)
         app.setApplicationName("NegPy")
         app.setStyle(_AppStyle("Fusion"))
+        app.installEventFilter(AppEventFilter(app))
 
         icon_path = get_resource_path("media/icons/icon.png")
         if os.path.exists(icon_path):
@@ -292,6 +343,10 @@ def main() -> None:
         exit_code = app.exec()
         controller.cleanup()
         repo.save_global_setting("clean_shutdown", True)
+        # PyQt's at-exit cleanup walks sip's wrapper map while it deletes these, and the Python
+        # code their destructors run (event filters, the proxy style) can reallocate the map.
+        for widget in [w for w in app.topLevelWidgets() if w.parent() is None and sip.ispyowned(w)]:
+            sip.delete(widget)
         sys.exit(exit_code)
     except Exception:
         logger.critical("NegPy stopped on an unhandled exception", exc_info=True)

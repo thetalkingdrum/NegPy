@@ -1,13 +1,16 @@
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtWidgets import QButtonGroup, QPushButton, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QPushButton, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QWidget
 import qtawesome as qta
-from negpy.desktop.view.widgets.sliders import CompactSlider
+from negpy.desktop.view.widgets.choice_button import SegmentedChoice
+from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.session import ToolMode
-from negpy.desktop.view.styles.templates import field_label, section_subheader, wrap_tooltip
+from negpy.desktop.view.styles.color_vision import palette_for
+from negpy.desktop.view.styles.templates import hint_label, section_subheader, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
 from negpy.features.local.logic import limited_indices
 from negpy.features.local.models import MAX_KEYED_MASKS, MaskKey, MaskShape
+from negpy.features.process.path import RenderPath, render_path
 from negpy.services.view.printing_notes import tone_limit_label
 
 
@@ -52,8 +55,8 @@ class LocalSidebar(BaseSidebar):
     def _init_ui(self) -> None:
         self.draw_btn = self._tool_toggle(
             "fa5s.draw-polygon",
-            "Draw Mask",
-            "Draw a new mask: click to place vertices; double-click, Enter, or a click near "
+            "Draw",
+            "Draw Mask: draw a new mask: click to place vertices; double-click, Enter, or a click near "
             "the start closes; Esc cancels. Select a mask from the list to edit it (no need to "
             "re-enter this tool): drag a vertex to move it, click an edge '+' dot to add a point, "
             "right-click a vertex to delete it.",
@@ -61,21 +64,28 @@ class LocalSidebar(BaseSidebar):
         self.oval_btn = self._tool_toggle(
             "fa5s.circle",
             "Oval",
-            "Burn through a hole in the card, or dodge with a wand: drag out an oval. Its three "
+            "Oval: burn through a hole in the card, or dodge with a wand: drag out an oval. Its three "
             "handles move it (center) and set each axis, so it can be stretched and tilted.",
         )
         self.gradient_btn = self._tool_toggle(
             "fa5s.grip-lines",
-            "Card Edge",
-            "The graduated burn a printer makes by moving a card across the paper: drag from the "
+            "Card",
+            "Card Edge: the graduated burn a printer makes by moving a card across the paper: drag from the "
             "full-exposure edge (solid line) to where it fades out (dashed). The distance between "
             "the two handles is the softness, so Feather does nothing here.",
         )
+        self.masks_header = section_subheader("MASKS · 0")
+        self.layout.addWidget(self.masks_header)
         tool_row = QHBoxLayout()
-        tool_row.addWidget(self.draw_btn)
-        tool_row.addWidget(self.oval_btn)
-        tool_row.addWidget(self.gradient_btn)
+        for btn in (self.draw_btn, self.oval_btn, self.gradient_btn):
+            tool_row.addWidget(btn, 1)
         self.layout.addLayout(tool_row)
+        self.slide_hint = hint_label("Not applied to slides.")
+        self.slide_hint.setToolTip(
+            wrap_tooltip("A slide prints through its transfer curve, which takes no dodge/burn map. The frame keeps its masks.")
+        )
+        self.slide_hint.setVisible(False)
+        self.layout.addWidget(self.slide_hint)
 
         self.mask_list = QListWidget()
         self.mask_list.setToolTip(
@@ -111,19 +121,18 @@ class LocalSidebar(BaseSidebar):
             "midtone holds, so this changes its contrast without moving its overall density."
         )
 
-        self.tone_group = QButtonGroup(self)
-        self.tone_group.setExclusive(True)
-        self.tone_buttons = {}
-        tone_row = QHBoxLayout()
-        for key, icon, label in (
-            (MaskKey.OFF, "fa5s.adjust", " All"),
-            (MaskKey.HIGHLIGHTS, "fa5s.sun", " Highlights"),
-            (MaskKey.SHADOWS, "fa5s.moon", " Shadows"),
-        ):
-            btn = self._labeled_toggle(icon, label, key == MaskKey.OFF, _TONE_TIPS[key])
-            self.tone_group.addButton(btn)
-            self.tone_buttons[key] = btn
-            tone_row.addWidget(btn)
+        self.flash_slider = CompactSlider("Flash", 0.0, 1.0, 0.0)
+        self.flash_slider.setToolTip(
+            "Pre-expose the paper under the selected mask, as a fraction of the threshold exposure like "
+            "the Tone card's Preflash. It compresses the region's highlights without the density a burn adds. "
+            "Off on a tone-limited mask."
+        )
+
+        self._tone_keys = (MaskKey.OFF, MaskKey.HIGHLIGHTS, MaskKey.SHADOWS)
+        self.tone_btn = SegmentedChoice(
+            (("fa5s.adjust", "All"), ("fa5s.sun", "Highlights"), ("fa5s.moon", "Shadows")),
+            "Which tones inside the selected mask's shape it acts on",
+        )
 
         # Print zones in thirds, the zone strip's and zone placement's own step.
         self.key_zone_slider = CompactSlider("Tone Zone", 0.0, 10.0, 6.0, step=1.0 / 3.0, precision=3)
@@ -135,20 +144,14 @@ class LocalSidebar(BaseSidebar):
             "How many zones the tone limit takes to go from no effect to full effect. Raise it when tones near the zone show a ragged edge."
         )
 
-        slider_row = QVBoxLayout()
-        slider_row.addWidget(self.burn_slider)
-        slider_row.addWidget(self.grade_slider)
-        self.layout.addLayout(slider_row)
+        self.layout.addWidget(section_subheader("SELECTED MASK"))
+        self.layout.addWidget(self.burn_slider)
+        self.layout.addWidget(self.grade_slider)
+        self.layout.addWidget(self.flash_slider)
         self.layout.addWidget(self.feather_slider)
         self.layout.addWidget(section_subheader("Tone Limit"))
-        self.layout.addLayout(tone_row)
-        key_row = QVBoxLayout()
-        key_row.addWidget(self.key_zone_slider)
-        key_row.addWidget(self.key_softness_slider)
-        self.layout.addLayout(key_row)
-
-        self.mask_count_label = field_label("0 masks")
-        self.layout.addWidget(self.mask_count_label)
+        self.layout.addWidget(self.tone_btn)
+        self.layout.addWidget(SliderGroup(self.key_zone_slider, self.key_softness_slider))
 
         self.layout.addStretch()
 
@@ -162,6 +165,7 @@ class LocalSidebar(BaseSidebar):
             (self.burn_slider, "stops"),
             (self.feather_slider, "feather"),
             (self.grade_slider, "grade"),
+            (self.flash_slider, "flash"),
             (self.key_zone_slider, "key_zone"),
             (self.key_softness_slider, "key_softness"),
         ):
@@ -171,8 +175,8 @@ class LocalSidebar(BaseSidebar):
             slider.valueCommitted.connect(lambda v, f=field: self.controller.update_selected_local_mask(**{f: float(v)}))
             slider.dragStarted.connect(lambda: self.controller.local_drag_changed.emit(True))
             slider.dragEnded.connect(lambda: self.controller.local_drag_changed.emit(False))
-        for key, btn in self.tone_buttons.items():
-            btn.clicked.connect(lambda _c, k=key: self.controller.update_selected_local_mask(key=k))
+        self.tone_btn.currentChanged.connect(lambda i: self.controller.update_selected_local_mask(key=self._tone_keys[i]))
+        self.controller.session.color_vision_changed.connect(self.sync_ui)
 
     def _tool_modes(self) -> dict:
         return {
@@ -194,14 +198,17 @@ class LocalSidebar(BaseSidebar):
         return btn
 
     def _build_mask_row(self, i: int, mask) -> _MaskRow:
+        dodge, burn = palette_for(self.state.color_vision).dodge_burn
+        limited = limited_indices(self.state.config.local)
+        flashed = bool(mask.flash) and i not in limited  # a tone-limited mask carries no flash
         if mask.stops > 0:
-            kind, color = "Burn", THEME.burn
+            kind, color = "Burn", burn
         elif mask.stops < 0:
-            kind, color = "Dodge", THEME.dodge
+            kind, color = "Dodge", dodge
         else:
-            # A mask that only changes grade is neither: it re-prints the area at its own contrast
-            # without adding or holding back exposure.
-            kind, color = "Grade", THEME.text_primary
+            # A mask that only changes grade, or only flashes, is neither: it re-prints the area
+            # at its own contrast, or pre-exposes it, without adding or holding back exposure.
+            kind, color = ("Flash" if flashed and not mask.grade else "Grade"), THEME.text_primary
         row = _MaskRow()
         lay = QHBoxLayout(row)
         lay.setContentsMargins(6, 2, 4, 2)
@@ -210,7 +217,9 @@ class LocalSidebar(BaseSidebar):
         values = [f"{mask.stops:+.2f} st"] if mask.stops else []
         if mask.grade:
             values.append(f"{mask.grade:+.0f} R")
-        if i in limited_indices(self.state.config.local):
+        if flashed:
+            values.append(f"flash {mask.flash:.2f}")
+        if i in limited:
             values.append(tone_limit_label(mask))
         # The shape icon enables/disables the mask's effect; the row dims to text_muted while
         # disabled.
@@ -256,13 +265,20 @@ class LocalSidebar(BaseSidebar):
 
     def sync_ui(self) -> None:
         conf = self.state.config.local
+        transfer = render_path(self.state.config.process) is not RenderPath.PRINT
+        # Before the signal block: cancelling re-enters sync_ui through tool_sync_requested.
+        if transfer and self.state.active_tool in self._tool_modes().values():
+            self.controller.cancel_active_tool()
         self.block_signals(True)
         try:
             for btn, mode in self._tool_modes().items():
                 btn.setChecked(self.state.active_tool == mode)
+                btn.setEnabled(not transfer)
+            self.slide_hint.setVisible(transfer)
+            self.mask_list.setEnabled(not transfer)
 
             n = len(conf.masks)
-            self.mask_count_label.setText(f"{n} mask{'s' if n != 1 else ''}")
+            self.masks_header.setText(f"MASKS · {n}")
 
             idx = self.state.local_selected_mask
             has_selection = 0 <= idx < n
@@ -284,24 +300,28 @@ class LocalSidebar(BaseSidebar):
                 self.mask_list.setFixedHeight(_MASK_ROW_H * n + 2 * self.mask_list.frameWidth())
             self.mask_list.blockSignals(False)
             mask = conf.masks[idx] if has_selection else None
-            self.burn_slider.setEnabled(has_selection)
+            editable = has_selection and not transfer
+            self.burn_slider.setEnabled(editable)
             # The distance between the handles sets the card-edge softness, not a blur.
-            self.feather_slider.setEnabled(has_selection and mask.shape != MaskShape.GRADIENT)
-            self.grade_slider.setEnabled(has_selection)
+            self.feather_slider.setEnabled(editable and mask.shape != MaskShape.GRADIENT)
+            self.grade_slider.setEnabled(editable)
             limited = limited_indices(conf)
             full = has_selection and idx not in limited and len(limited) >= MAX_KEYED_MASKS
-            for key, btn in self.tone_buttons.items():
+            self.tone_btn.setEnabled(editable)
+            for i, key in enumerate(self._tone_keys):
                 blocked = full and key != MaskKey.OFF
-                btn.setEnabled(has_selection and not blocked)
-                btn.setToolTip(wrap_tooltip(_TONE_FULL_TIP if blocked else _TONE_TIPS[key]))
-            keyed = mask is not None and mask.key != MaskKey.OFF
+                self.tone_btn.set_choice_enabled(i, not blocked)
+                self.tone_btn.set_choice_tooltip(i, _TONE_FULL_TIP if blocked else _TONE_TIPS[key])
+            keyed = editable and mask.key != MaskKey.OFF
+            self.flash_slider.setEnabled(editable and not keyed)
             self.key_zone_slider.setEnabled(keyed)
             self.key_softness_slider.setEnabled(keyed)
             if mask is not None:
                 self.burn_slider.setValue(mask.stops)
                 self.feather_slider.setValue(mask.feather)
                 self.grade_slider.setValue(mask.grade)
-                self.tone_buttons[mask.key].setChecked(True)
+                self.flash_slider.setValue(mask.flash)
+                self.tone_btn.setCurrentIndex(self._tone_keys.index(mask.key))
                 self.key_zone_slider.setValue(mask.key_zone)
                 self.key_softness_slider.setValue(mask.key_softness)
         finally:
@@ -313,7 +333,8 @@ class LocalSidebar(BaseSidebar):
             self.burn_slider,
             self.feather_slider,
             self.grade_slider,
-            *self.tone_buttons.values(),
+            self.flash_slider,
+            self.tone_btn,
             self.key_zone_slider,
             self.key_softness_slider,
         ]:

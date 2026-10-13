@@ -72,7 +72,7 @@ class TestIrFollowsTheProxy(unittest.TestCase):
 
 
 class TestSettleOnlyWorkIsSkipped(unittest.TestCase):
-    def test_thumbnail_is_not_refreshed_mid_gesture(self):
+    def _render_finished_stub(self):
         from negpy.desktop.controller import AppController
 
         stub = SimpleNamespace(
@@ -88,10 +88,12 @@ class TestSettleOnlyWorkIsSkipped(unittest.TestCase):
                 config=object(),
                 metrics_lock=MagicMock(__enter__=lambda s: None, __exit__=lambda s, *a: None),
                 last_metrics={},
+                auto_meters={},
                 current_file_hash="h1",
                 compare_mode=False,
                 negative_peek=False,
                 embedded_peek=False,
+                flatfield_peek=False,
             ),
             image_updated=MagicMock(),
             _update_thumbnail_from_state=MagicMock(),
@@ -100,6 +102,12 @@ class TestSettleOnlyWorkIsSkipped(unittest.TestCase):
         )
         stub._renders_another_frame = partial(AppController._renders_another_frame, stub)
         stub._dispatch_pending_render = partial(AppController._dispatch_pending_render, stub)
+        return stub
+
+    def test_thumbnail_is_not_refreshed_mid_gesture(self):
+        from negpy.desktop.controller import AppController
+
+        stub = self._render_finished_stub()
         AppController._on_render_finished(stub, None, {"interactive": True, "source_hash": "h1"})
         stub._update_thumbnail_from_state.assert_not_called()
 
@@ -107,13 +115,16 @@ class TestSettleOnlyWorkIsSkipped(unittest.TestCase):
         AppController._on_render_finished(stub, None, {"interactive": False, "source_hash": "h1"})
         stub._update_thumbnail_from_state.assert_called_once()
 
-    def test_analysis_panel_skips_interactive_frames(self):
-        from negpy.desktop.view.sidebar.right_panel import RightPanel
+    def test_thumbnail_is_not_refreshed_from_the_crop_tools_uncropped_preview(self):
+        from negpy.desktop.controller import AppController
 
-        panel = MagicMock()
-        panel.controller.session.state.last_metrics = {"interactive": True}
-        RightPanel._update_analysis(panel)
-        panel._update_histograms.assert_not_called()
+        stub = self._render_finished_stub()
+        AppController._on_render_finished(stub, None, {"crop_preview_full": True, "source_hash": "h1"})
+        stub._update_thumbnail_from_state.assert_not_called()
+        self.assertIsNot(stub._thumb_config, stub.state.config)
+
+        AppController._on_render_finished(stub, None, {"crop_preview_full": False, "source_hash": "h1"})
+        stub._update_thumbnail_from_state.assert_called_once()
 
     def test_bounds_are_not_persisted_mid_gesture(self):
         from negpy.desktop.controller import AppController

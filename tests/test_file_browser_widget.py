@@ -170,10 +170,10 @@ def test_context_menu_offers_cancel_while_a_refresh_is_running(browser, session)
 def test_context_menu_offers_unsplit_only_for_a_diptych(browser, session):
     session.state.selected_indices = [0]
     session.state.selected_file_idx = 0
-    assert "Unsplit Diptych" not in _action_labels(browser._build_context_menu())
+    assert "Unsplit Diptych…" not in _action_labels(browser._build_context_menu())
 
     session.state.uploaded_files[0]["diptych"] = True
-    assert "Unsplit Diptych" in _action_labels(browser._build_context_menu())
+    assert "Unsplit Diptych…" in _action_labels(browser._build_context_menu())
 
 
 def test_context_menu_offers_per_frame_split_only_for_a_half(browser, session):
@@ -388,10 +388,30 @@ def test_open_roll_settings_dialog_routes_rows_and_scope_to_session(browser, ses
     with patch("negpy.desktop.view.sidebar.files.RollSettingsDialog", return_value=mock_dlg) as ctor:
         browser._open_roll_settings_dialog()
 
-    assert ctor.call_args.kwargs["sel_count"] == 1  # 1 other selected
-    assert ctor.call_args.kwargs["roll_count"] == 3  # 3 other on roll
+    assert ctor.call_args.kwargs["sel_count"] == 2  # both selected frames
+    assert ctor.call_args.kwargs["roll_count"] == 4  # every visible frame
     session.apply_preset_fields.assert_called_once_with(mock_dlg.selected_config.return_value, rows, "selection")
     browser.controller.request_render.assert_called_once()
+
+
+def test_roll_settings_scope_counts_include_the_active_frame(browser, session):
+    session.state.selected_indices = [0, 1, 2]
+    session.state.selected_file_idx = 0
+    with patch("negpy.desktop.view.sidebar.files.RollSettingsDialog") as ctor:
+        browser._build_roll_settings_dialog()
+    assert ctor.call_args.kwargs["sel_count"] == 3
+    assert ctor.call_args.kwargs["roll_count"] == 4
+
+
+def test_roll_settings_scope_counts_respect_the_filter(browser, session):
+    browser.search_input.setText("IMG")
+    browser._apply_filter()
+    session.state.selected_indices = [0, 1, 3]
+    session.state.selected_file_idx = 0
+    with patch("negpy.desktop.view.sidebar.files.RollSettingsDialog") as ctor:
+        browser._build_roll_settings_dialog()
+    assert ctor.call_args.kwargs["sel_count"] == 2  # note.txt is filtered out
+    assert ctor.call_args.kwargs["roll_count"] == 2
 
 
 def test_open_roll_settings_dialog_noop_without_active_file(browser, session):
@@ -794,20 +814,31 @@ def test_trackpad_pixel_delta_scrolls_immediately(browser):
     assert view._scroll_anim.state() != QPropertyAnimation.State.Running
 
 
-def test_session_menu_mirrors_the_toolbar_tools(browser):
+def test_session_menu_mirrors_the_toolbar_tools(browser, session):
+    session.state.active_roll_id = None
     labels = [a.text() for a in browser._build_session_menu().actions() if not a.isSeparator()]
-    assert labels == ["Add Files…", "Add Folder…", "Clear All…"]
+    assert labels == ["Add Files…", "Add Folder…", "Unload All…"]
+    session.state.active_roll_id = "r1"
+    assert browser._build_session_menu().actions()[-1].text() == "Close Roll…"
 
 
-def test_session_menu_clear_all_disabled_when_nothing_loaded(browser, session):
+def _close_item(browser):
+    return browser._build_session_menu().actions()[-1]
+
+
+def test_session_menu_close_disabled_when_nothing_loaded(browser, session):
     session.state.uploaded_files = []
-    clear = [a for a in browser._build_session_menu().actions() if a.text() == "Clear All…"][0]
-    assert not clear.isEnabled()
+    assert not _close_item(browser).isEnabled()
 
 
-def test_session_menu_clear_all_enabled_with_files(browser):
-    clear = [a for a in browser._build_session_menu().actions() if a.text() == "Clear All…"][0]
-    assert clear.isEnabled()
+def test_session_menu_close_enabled_with_files(browser):
+    assert _close_item(browser).isEnabled()
+
+
+def test_session_menu_close_runs_close_roll(browser):
+    with patch("negpy.desktop.view.sidebar.files._close_roll") as close:
+        _close_item(browser).trigger()
+    close.assert_called_once_with(browser, browser.controller)
 
 
 def test_right_click_on_empty_space_opens_the_session_menu(browser):
@@ -1158,3 +1189,79 @@ def test_adding_a_folder_without_images_imports_its_roll_folders(browser, tmp_pa
 
     browser.controller.import_subfolders_as_rolls.assert_called_once_with(str(tmp_path))
     browser.controller.request_asset_discovery.assert_not_called()
+
+
+def _shown(browser, qapp):
+    browser.resize(300, 900)
+    browser.show()
+    qapp.processEvents()
+    return browser.sections_splitter
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_a_collapsed_section_reopens_at_its_open_size(browser, qapp, index):
+    splitter = _shown(browser, qapp)
+    button = (browser.library_section, browser.frames_section)[index].toggle_button
+    before = splitter.sizes()
+    button.click()
+    qapp.processEvents()
+    assert splitter.sizes()[index] == button.height()
+    button.click()
+    qapp.processEvents()
+    assert splitter.sizes() == before
+
+
+def test_a_drag_while_collapsed_keeps_the_open_size_for_reopen_and_restart(browser, qapp, session):
+    splitter = _shown(browser, qapp)
+    open_size = splitter.sizes()[1]
+    browser.frames_section.toggle_button.click()
+    qapp.processEvents()
+    browser._on_sections_splitter_moved()
+    saved = session.repo.save_global_setting.call_args_list[-1].args
+    assert saved == ("session_sections_splitter_sizes", [splitter.sizes()[0], open_size])
+    browser.frames_section.toggle_button.click()
+    qapp.processEvents()
+    assert splitter.sizes()[1] == open_size
+
+
+def test_film_strip_menu_offers_close_roll(browser, session):
+    menu = browser.frames_section.actions_btn.menu()
+    session.state.active_roll_id = None
+    browser._sync_close_roll_action()
+    assert browser.close_roll_action.text().startswith("Unload All…")
+    session.state.active_roll_id = "r1"
+    browser._sync_close_roll_action()
+    assert browser.close_roll_action.text().startswith("Close Roll…")
+    assert browser.close_roll_action in menu.actions()
+    with patch("negpy.desktop.view.sidebar.files._close_roll") as close:
+        browser.close_roll_action.trigger()
+    close.assert_called_once_with(browser, browser.controller)
+
+
+def test_context_menu_offers_merge_to_tiff_only_for_an_assembled_frame(browser, session):
+    session.state.selected_indices = [0]
+    session.state.selected_file_idx = 0
+    assert "Merge Frame to TIFF Negative…" not in _action_labels(browser._build_context_menu())
+
+    session.state.uploaded_files[0].update(green_path="/g.ARW", blue_path="/b.ARW")
+    assert "Merge Frame to TIFF Negative…" in _action_labels(browser._build_context_menu())
+
+    session.state.uploaded_files[0].update(green_path="", blue_path="", stitch_paths=("/p.ARW",))
+    assert "Merge Frame to TIFF Negative…" in _action_labels(browser._build_context_menu())
+
+    # A bracket cannot merge, so it gets no item.
+    session.state.uploaded_files[0].update(stitch_paths=(), hdr_paths=("/e.ARW",))
+    assert "Merge Frame to TIFF Negative…" not in _action_labels(browser._build_context_menu())
+
+
+def test_context_menu_scopes_merge_to_tiff_by_selection(browser, session):
+    session.state.uploaded_files[1].update(green_path="/g.ARW", blue_path="/b.ARW")
+    session.state.selected_indices = [0, 1]
+    session.state.selected_file_idx = 0
+    labels = _action_labels(browser._build_context_menu())
+    assert "Merge Selected to TIFF Negative…" in labels
+    assert "Merge Frame to TIFF Negative…" not in labels
+
+    session.state.selected_indices = [0]
+    labels = _action_labels(browser._build_context_menu())
+    assert "Merge Selected to TIFF Negative…" not in labels

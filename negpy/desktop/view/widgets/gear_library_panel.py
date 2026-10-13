@@ -38,7 +38,6 @@ from negpy.desktop.settings_catalog import (
     selected_flat_dict,
 )
 from negpy.desktop.view.confirm import confirm_delete_named
-from negpy.desktop.view.sidebar.base import install_wheel_guards
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.styles.templates import field_label, hint_label, icon_button, section_subheader, tool_toggle, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
@@ -150,8 +149,9 @@ class GearItemsPanel(QWidget):
 
     library_changed = pyqtSignal()
 
-    def __init__(self, library: GearLibrary, parent=None):
+    def __init__(self, library: GearLibrary, parent=None, *, repo=None):
         super().__init__(parent)
+        self._repo = repo
         self._library = library
         self._category = "cameras"
         self._selected_idx = -1
@@ -298,7 +298,6 @@ class GearItemsPanel(QWidget):
         root.addStretch()
 
         self.category_list.currentIndexChanged.connect(self._on_category_changed)
-        install_wheel_guards(self)
 
     def _register_form_row(self, key: str, label_text: str, widget: QWidget) -> None:
         label = field_label(label_text)
@@ -567,6 +566,7 @@ class GearItemsPanel(QWidget):
             catalog,
             lambda item: item.resolved_display_name,
             _CATEGORY_SEARCH_PLACEHOLDER[self._category],
+            repo=self._repo,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -631,8 +631,16 @@ class GearPresetsPanel(QWidget):
     library_changed = pyqtSignal()
     presets_changed = pyqtSignal()
 
-    def __init__(self, library: GearLibrary, current_config_fn: Optional[Callable[[], Optional[WorkspaceConfig]]] = None, parent=None):
+    def __init__(
+        self,
+        library: GearLibrary,
+        current_config_fn: Optional[Callable[[], Optional[WorkspaceConfig]]] = None,
+        parent=None,
+        *,
+        repo=None,
+    ):
         super().__init__(parent)
+        self._repo = repo
         self._library = library
         # A getter, not a snapshot: this panel is built once and stays live for the
         # whole session, so "save preset from the current frame" needs whichever frame
@@ -716,7 +724,6 @@ class GearPresetsPanel(QWidget):
         root.addStretch()
 
         self.add_btn.setEnabled(self._current_config_fn() is not None)
-        install_wheel_guards(self)
 
     def _build_preset_form(self) -> None:
         self.preset_camera_combo = SearchableGearCombo(placeholder="Search cameras…")
@@ -1022,7 +1029,7 @@ class GearPresetsPanel(QWidget):
         category = self._preset_combo_category[id(combo)]
         meta = self._preset_meta()
         previous = self._preset_combo_field[id(combo)](meta) if meta is not None else ""
-        new_item = resolve_other_gear_pick(self, category, self._library)
+        new_item = resolve_other_gear_pick(self, category, self._library, repo=self._repo)
         if new_item is None:
             self._set_own_gear_items(combo, getattr(self._library, category), previous)
             return
@@ -1116,7 +1123,9 @@ class GearPresetsPanel(QWidget):
         current_config = self._current_config_fn()
         if current_config is None:
             return
-        dlg = GranularSettingsDialog(self, current_config, "current metadata", ask_name=True, exclude_sections=NON_METADATA_SECTIONS)
+        dlg = GranularSettingsDialog(
+            self, current_config, "current metadata", ask_name=True, exclude_sections=NON_METADATA_SECTIONS, repo=self._repo
+        )
         dlg.setWindowTitle("New Metadata Preset")
         # As when editing: which fields to store is the choice, so every row is on offer.
         dlg.show_unchanged_settings()
@@ -1135,7 +1144,7 @@ class GearPresetsPanel(QWidget):
         if not data:
             return
         cfg = preset_config(data)
-        dlg = GranularSettingsDialog(self, cfg, name, ask_name=True, exclude_sections=NON_METADATA_SECTIONS)
+        dlg = GranularSettingsDialog(self, cfg, name, ask_name=True, exclude_sections=NON_METADATA_SECTIONS, repo=self._repo)
         dlg.setWindowTitle("Edit Metadata Preset")
         dlg.set_name(name)
         # Editing is about which fields the preset holds, so show every row, default-valued
@@ -1202,8 +1211,8 @@ class GearLibraryPanel(QWidget):
         self._library = library or GearProfiles.load_library()
         self._repo = repo
 
-        self.items = GearItemsPanel(self._library)
-        self.presets = GearPresetsPanel(self._library, current_config_fn)
+        self.items = GearItemsPanel(self._library, repo=self._repo)
+        self.presets = GearPresetsPanel(self._library, current_config_fn, repo=self._repo)
         self.items.library_changed.connect(self.library_changed.emit)
         self.items.library_changed.connect(self.presets.refresh_gear_combos)
         self.presets.library_changed.connect(self.library_changed.emit)

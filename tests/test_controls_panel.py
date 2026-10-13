@@ -12,13 +12,13 @@ from unittest.mock import MagicMock, patch
 from negpy.desktop.session import AppState
 from negpy.desktop.settings_catalog import rows_for_fields
 from negpy.desktop.settings_catalog import TONE_FIELDS
-from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
+from negpy.desktop.view.sidebar.controls_panel import _DEMOSAIC_FIELDS, _SENSOR_FIELDS, ControlsPanel
 from negpy.features.exposure.models import ExposureConfig
-from negpy.features.process.models import ProcessConfig, ProcessMode
+from negpy.features.process.models import DemosaicMode, ProcessConfig, ProcessMode
 from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 
 
-def _panel_stub(*, active_roll_id="roll1", locked_cards=()) -> MagicMock:
+def _panel_stub(*, active_roll_id="roll1", locked_cards=(), hand_drawn=False) -> MagicMock:
     panel = MagicMock()
     panel._ROLL_CARD_LABELS = ControlsPanel._ROLL_CARD_LABELS
     panel.film_section = MagicMock()
@@ -34,11 +34,21 @@ def _panel_stub(*, active_roll_id="roll1", locked_cards=()) -> MagicMock:
     panel.controller.state.active_roll_id = active_roll_id
     panel.controller.locked_roll_cards.side_effect = lambda: set(locked_cards)
     panel.controller.frame_section_scopes.side_effect = lambda keys: {key: "frame" for key in keys}
+    panel.controller.hand_drawn_crop_departs_from_roll.return_value = hand_drawn
     return panel
 
 
 def _scope(section) -> str:
     return section.set_scope_buttons.call_args[0][1]
+
+
+def test_sync_scope_buttons_lists_a_hand_drawn_crop_under_a_rolls_auto_crop():
+    panel = _panel_stub(hand_drawn=True)
+
+    ControlsPanel._sync_scope_buttons(panel)
+
+    panel.roll_override_summary.setText.assert_called_with("This frame overrides: Crop (hand-drawn)")
+    assert _scope(panel.autocrop_section) == "roll"
 
 
 def test_sync_scope_buttons_blank_summary_without_an_active_roll():
@@ -170,10 +180,14 @@ def test_the_optics_pair_drives_both_of_its_cards():
 def test_a_roll_card_routes_both_halves_to_the_controller():
     """Roll-tab cards share one entry point with the Metadata tab's, so the two panels
     cannot drift on what a click means."""
-    panel = _panel_stub(locked_cards={"sensor"})
+    panel = _panel_stub(locked_cards={"demosaic"})
 
+    ControlsPanel._on_scope_selected(panel, "demosaic", "roll")
+    panel.controller.set_card_scope.assert_called_once_with("demosaic", "roll")
+
+    panel.controller.set_card_scope.reset_mock()
     ControlsPanel._on_scope_selected(panel, "sensor", "roll")
-    panel.controller.set_card_scope.assert_called_once_with("sensor", "roll")
+    panel.controller.set_card_scope.assert_called_once_with(("sensor", "cast_removal"), "roll")
 
     panel.controller.set_card_scope.reset_mock()
     ControlsPanel._on_scope_selected(panel, "process", "frame")
@@ -317,18 +331,52 @@ def test_sync_modified_dots_counts_tonal_range_on_normalization():
     panel.process_section.set_modified.assert_called_once_with(2)
 
 
-def test_sync_modified_dots_counts_linear_raw_on_calibration():
+def test_sync_modified_dots_leaves_the_scanning_setup_uncounted():
     panel = MagicMock()
     panel.controller.state = AppState()
     cfg = DEFAULT_WORKSPACE_CONFIG
-    panel.controller.state.config = replace(cfg, process=replace(cfg.process, linear_raw=True))
+    panel.controller.state.config = replace(
+        cfg,
+        process=replace(cfg.process, linear_raw=True, narrowband_scan=True, demosaic_preview=DemosaicMode.DHT),
+    )
     panel.sensor_section = MagicMock()
+    panel.demosaic_section = MagicMock()
     panel.process_section = MagicMock()
 
     ControlsPanel._sync_modified_dots(panel)
 
-    panel.sensor_section.set_modified.assert_called_once_with(1)
+    panel.sensor_section.set_modified.assert_called_once_with(0)
+    panel.demosaic_section.set_modified.assert_called_once_with(0)
     panel.process_section.set_modified.assert_called_once_with(0)
+
+
+def test_a_card_reset_leaves_the_scanning_setup_alone():
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    cfg = DEFAULT_WORKSPACE_CONFIG
+    panel.controller.state.config = replace(
+        cfg,
+        process=replace(
+            cfg.process,
+            linear_raw=True,
+            narrowband_scan=True,
+            demosaic_preview=DemosaicMode.DHT,
+            hue_trim=0.3,
+            highlight_reconstruction=True,
+        ),
+    )
+
+    ControlsPanel._reset_process_fields(panel, _SENSOR_FIELDS)
+    after_calibration = panel.controller.apply_config.call_args[0][0].process
+    ControlsPanel._reset_process_fields(panel, _DEMOSAIC_FIELDS)
+    after_demosaic = panel.controller.apply_config.call_args[0][0].process
+
+    for process in (after_calibration, after_demosaic):
+        assert process.linear_raw is True
+        assert process.narrowband_scan is True
+        assert process.demosaic_preview == DemosaicMode.DHT
+    assert after_calibration.hue_trim == DEFAULT_WORKSPACE_CONFIG.process.hue_trim
+    assert after_demosaic.highlight_reconstruction == DEFAULT_WORKSPACE_CONFIG.process.highlight_reconstruction
 
 
 def test_reset_tone_fields_clears_the_print_controls_alone():
@@ -357,6 +405,45 @@ def test_reset_film_fields_routes_through_the_controls_own_setters():
 
     panel.controller.set_positive_source.assert_called_once_with(False)
     panel.controller.set_process_mode.assert_called_once_with(ProcessConfig().process_mode)
+
+
+def test_the_crop_card_reset_turns_auto_crop_off_and_keeps_a_hand_drawn_crop():
+    panel = MagicMock()
+    panel.controller.refuse_crop_edit.return_value = False
+    panel.controller.state = AppState()
+    cfg = panel.controller.state.config
+    panel.controller.state.config = replace(cfg, geometry=replace(cfg.geometry, crop_from_auto=True))
+
+    ControlsPanel._reset_crop_card(panel)
+
+    panel._reset_card_fields.assert_called_once_with("autocrop")
+    panel.controller.reset_crop.assert_called_once_with()
+
+    panel.reset_mock()
+    panel.controller.state.config = replace(cfg, geometry=replace(cfg.geometry, crop_rect=(0.1, 0.1, 0.9, 0.9)))
+    ControlsPanel._reset_crop_card(panel)
+    panel.controller.reset_crop.assert_not_called()
+
+
+def test_the_geometry_reset_clears_a_hand_drawn_crop_and_keeps_auto_crop():
+    panel = MagicMock()
+    panel.controller.refuse_crop_edit.return_value = False
+    panel.controller.state = AppState()
+    cfg = panel.controller.state.config
+    rotated = replace(cfg.geometry, rotation=1, crop_rect=(0.1, 0.1, 0.9, 0.9))
+
+    panel.controller.state.config = replace(cfg, geometry=replace(rotated, crop_from_auto=True, crop_detect_key="k"))
+    ControlsPanel._reset_geometry_fields(panel)
+    geo = panel.controller.apply_config.call_args.args[0].geometry
+    assert geo.rotation == 0 and geo.crop_from_auto and geo.crop_rect == (0.1, 0.1, 0.9, 0.9)
+    panel.controller.sync_auto_crop_lock.assert_not_called()
+
+    panel.controller.state.config = replace(cfg, geometry=rotated)
+    ControlsPanel._reset_geometry_fields(panel)
+    geo = panel.controller.apply_config.call_args.args[0].geometry
+    assert geo.rotation == 0 and not geo.crop_from_auto and geo.crop_rect is None
+    panel.controller.sync_auto_crop_lock.assert_called_once_with()
+    panel.controller.session.carried_crop_kept.assert_called()
 
 
 def test_reset_film_fields_does_nothing_at_the_defaults():
@@ -389,3 +476,106 @@ def test_the_frame_half_does_not_promise_a_rejoin():
     ControlsPanel._sync_scope_buttons(panel)
 
     assert "rejoin" not in panel.film_section.set_scope_buttons.call_args.kwargs["frame_tooltip"]
+
+
+def test_the_calibration_reset_clears_the_unmix_matrices():
+    """A profile reset alone leaves the matrix it loaded, and the unmix runs on."""
+    panel = MagicMock()
+    panel.controller.state = AppState()
+    cfg = DEFAULT_WORKSPACE_CONFIG
+    panel.controller.state.config = replace(
+        cfg,
+        process=replace(
+            cfg.process,
+            sensor_profile="custom",
+            sensor_matrix=(1.0, -0.1, 0.0, -0.1, 1.0, -0.1, 0.0, -0.1, 1.0),
+            crosstalk_matrix=(1.0, -0.05, 0.0, -0.2, 1.0, -0.05, 0.0, -0.1, 1.0),
+            crosstalk_process=ProcessMode.E6,
+        ),
+    )
+
+    ControlsPanel._reset_process_fields(panel, _SENSOR_FIELDS)
+
+    after = panel.controller.apply_config.call_args[0][0].process
+    for field in ("sensor_profile", "sensor_matrix", "crosstalk_matrix", "crosstalk_process"):
+        assert getattr(after, field) == getattr(DEFAULT_WORKSPACE_CONFIG.process, field), field
+
+
+def test_the_metering_header_follows_the_print_histogram():
+    import numpy as np
+
+    from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
+
+    panel = MagicMock()
+    panel._last_histogram_buf = None
+    bins = np.zeros((4, 256))
+    panel.controller.state.last_metrics = {"histogram_raw": bins}
+
+    ControlsPanel._update_histogram(panel)
+
+    panel.metering_histogram.update_data.assert_called_once_with(bins)
+
+
+def _card_menu(monkeypatch, key: str):
+    from types import SimpleNamespace
+
+    from PyQt6.QtCore import QPoint
+
+    from negpy.desktop.view.sidebar import controls_panel as cp
+
+    actions = []
+
+    class FakeAction:
+        def __init__(self, text):
+            self.text, self.enabled, self.slot = text, True, None
+            self.triggered = SimpleNamespace(connect=lambda fn: setattr(self, "slot", fn))
+
+        def setToolTip(self, _tip):
+            pass
+
+        def setEnabled(self, enabled):
+            self.enabled = enabled
+
+    class FakeMenu:
+        def __init__(self, *_a):
+            pass
+
+        def setToolTipsVisible(self, _on):
+            pass
+
+        def addAction(self, text):
+            actions.append(FakeAction(text))
+            return actions[-1]
+
+        def exec(self, *_a):
+            pass
+
+    monkeypatch.setattr(cp, "QMenu", FakeMenu)
+    panel = SimpleNamespace(_roll_sections=lambda: (("optics", None),), controller=MagicMock())
+    panel.controller.can_undo_roll_push.return_value = False
+    cp.ControlsPanel._show_card_menu(panel, key, SimpleNamespace(toggle_button=MagicMock()), QPoint())
+    return panel, actions
+
+
+def test_a_roll_card_menu_offers_undo_only_for_its_own_cards(monkeypatch):
+    panel, actions = _card_menu(monkeypatch, "optics")
+    assert [a.text for a in actions] == ["Undo Apply to Roll"]
+    panel.controller.can_undo_roll_push.assert_called_once_with(("lens", "flatfield"))
+    assert not actions[0].enabled
+
+
+def test_a_frame_card_menu_copies_that_card(monkeypatch):
+    from negpy.desktop.settings_catalog import frame_card_rows
+
+    panel, actions = _card_menu(monkeypatch, "lab")
+    assert [a.text for a in actions] == ["Copy Card Settings"]
+    actions[0].slot()
+    panel.controller.session.copy_card_settings.assert_called_once_with(frame_card_rows("lab"))
+
+
+def test_the_geometry_card_copies_a_crop_with_its_auto_crop():
+    """A rect copied without its Auto Crop reads as the other kind on the target frame."""
+    from negpy.desktop.settings_catalog import frame_card_rows
+
+    fields = {f for row in frame_card_rows("geometry") for f in row.fields}
+    assert {"crop_rect", "crop_detect_key", "crop_from_auto"} <= fields

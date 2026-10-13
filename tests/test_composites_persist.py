@@ -22,6 +22,7 @@ def _repo() -> MagicMock:
     store: dict = {}
     repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
     repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+    repo.save_global_settings.side_effect = store.update
     repo.settings = store
     return repo
 
@@ -94,6 +95,18 @@ def test_legacy_session_entries_are_promoted():
     repo.settings.pop("session_stitches")
     repo.settings.pop("session_hdr_merges")
     assert list(restore_maps(repo)[0]) == ["/roll_a/a.nef"]
+
+
+def test_a_dissolved_legacy_composite_stays_dissolved():
+    """An emptied store reads like a store never promoted; the legacy keys must not refill it."""
+    repo = _repo()
+    repo.settings["session_stitches"] = {
+        "/roll_a/a.nef": {"paths": ["/roll_a/b.nef"], "transforms": [], "canvas": [1, 1], "sizes": [], "hash": "d#stitch"}
+    }
+    restore_maps(repo)
+    repo.settings[COMPOSITES_KEY] = {}  # the user dissolved it
+
+    assert restore_maps(repo) == ({}, {})
 
 
 def test_discovery_drops_the_parts_of_a_restored_stitch(tmp_path):
@@ -213,6 +226,7 @@ class TestDiscoveryReadsTheStore(unittest.TestCase):
             self.controller.norm_thread,
             self.controller.discovery_thread,
             self.controller.preview_load_thread,
+            self.controller.prefetch_load_thread,
             self.controller.scan_thread,
         ]:
             if thread is not None and thread.isRunning():
@@ -320,3 +334,10 @@ def test_the_reported_scenario(tmp_path):
     assert [a["name"] for a in back] == ["a+b (Stitch)"]
     assert back[0]["hash"] == "digest#stitch"
     assert back[0]["stitch_paths"] == (parts[1]["path"],)
+
+
+def test_a_composite_record_keeps_the_shared_hash_of_a_forked_composite():
+    from negpy.services.assets.composites import composite_entry
+
+    asset = {**_stitch_asset(), "hash": "digest#stitch#roll:r1"}
+    assert composite_entry(asset)["hash"] == "digest#stitch"

@@ -9,16 +9,45 @@ emits its fractional position to aim the hardware focus magnifier.
 
 from typing import Optional
 
+import numpy as np
 from PyQt6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 from negpy.desktop.view.styles.theme import THEME
 
 from negpy.services.capture.calibration import Roi
 
+#: px, drawn just outside the frame.
+_FRAME_BORDER = 1
 _CLICK_SLOP = 5  # px: a release within this of the press counts as a click (scan pop-up magnifier)
 _CROSSHAIR_FRAC = 0.012  # a click samples a patch this wide (fraction of frame) — the rebate is narrow
 _CROSSHAIR_ASPECT = 2.5  # patch height : width in pixels → a vertical strip that fits the rebate bar
+#: Zebra stripe period in frame pixels; highlights and blacks run opposite diagonals.
+_ZEBRA_PERIOD = 6
+_ZEBRA_ALPHA = 190
+
+
+_stripes: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}  # per frame size, one at a time
+
+
+def _stripe_masks(h: int, w: int) -> tuple[np.ndarray, np.ndarray]:
+    if (h, w) not in _stripes:
+        yy, xx = np.mgrid[0:h, 0:w]
+        half = _ZEBRA_PERIOD // 2
+        _stripes.clear()
+        _stripes[(h, w)] = (((xx + yy) // half) % 2 == 0, ((xx - yy) // half) % 2 == 0)
+    return _stripes[(h, w)]
+
+
+def zebra_image(highlights: np.ndarray, blacks: np.ndarray) -> QImage:
+    """Hatched overlay at frame resolution from two boolean `HxW` masks: clipped highlights in
+    the clip-warning color, clipped blacks in the blue channel's fill color."""
+    h, w = highlights.shape
+    buf = np.zeros((h, w, 4), np.uint8)  # BGRA bytes: ARGB32 on a little-endian host
+    for mask, stripe, color in zip((highlights, blacks), _stripe_masks(h, w), (THEME.clip_warning, THEME.channel_blue)):
+        r, g, b, _ = QColor(color).getRgb()
+        buf[mask & stripe] = (b, g, r, _ZEBRA_ALPHA)
+    return QImage(buf.data, w, h, 4 * w, QImage.Format.Format_ARGB32).copy()
 
 
 class RoiImageLabel(QLabel):
@@ -39,6 +68,7 @@ class RoiImageLabel(QLabel):
         self.roi_mode = True
         self._roi_locked = False  # true while a calibration runs → clicks must not move the patch
         self._pixmap: Optional[QPixmap] = None
+        self._zebra: Optional[QImage] = None  # clipping overlay for the current frame, scan pop-up only
         self._roi: Optional[tuple[float, float, float, float]] = None
         self._drag_start: Optional[QPoint] = None
         # Video-player-style buffering spinner drawn on the black frame while a stream spins up.
@@ -59,6 +89,12 @@ class RoiImageLabel(QLabel):
     def clear_frame(self) -> None:
         """Drop the current frame → the widget goes black (e.g. while a new stream starts)."""
         self._pixmap = None
+        self._zebra = None
+        self.update()
+
+    def set_zebra(self, image: Optional[QImage]) -> None:
+        """Hatch the frame's clipped pixels with `image` (see `zebra_image`), or clear with None."""
+        self._zebra = image
         self.update()
 
     def set_loading(self, on: bool) -> None:
@@ -115,8 +151,11 @@ class RoiImageLabel(QLabel):
         pw, ph = self._pixmap.width(), self._pixmap.height()
         if pw <= 0 or ph <= 0:
             return None
-        scale = min(self.width() / pw, self.height() / ph)
+        room_w, room_h = self.width() - 2 * _FRAME_BORDER, self.height() - 2 * _FRAME_BORDER
+        scale = min(room_w / pw, room_h / ph)
         dw, dh = int(pw * scale), int(ph * scale)
+        if dw <= 0 or dh <= 0:
+            return None
         return QRect((self.width() - dw) // 2, (self.height() - dh) // 2, dw, dh)
 
     @staticmethod
@@ -151,6 +190,10 @@ class RoiImageLabel(QLabel):
         draw_rect = self._display()
         if draw_rect is not None and self._pixmap is not None:
             painter.drawPixmap(draw_rect, self._pixmap)
+            if self._zebra is not None:
+                painter.drawImage(draw_rect, self._zebra)
+            painter.setPen(QPen(QColor(THEME.border_indicator), _FRAME_BORDER))
+            painter.drawRect(draw_rect.adjusted(-_FRAME_BORDER, -_FRAME_BORDER, 0, 0))
             if self._roi is not None:  # just the box outline — no centre cross (cleaner)
                 painter.setPen(QPen(QColor(THEME.status_success), 2))
                 painter.drawRect(self._roi_in_widget(self._roi, draw_rect))

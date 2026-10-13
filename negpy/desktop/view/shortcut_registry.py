@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Iterable
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence
 
 from negpy.desktop.view.slider_shortcut_groups import (
@@ -17,14 +18,22 @@ class ShortcutEntry:
     default_key: str
     description: str
     category: str
+    # The window that dispatches the key; keys clash only within one window.
+    window: str = "main"
+
+
+LIVE_VIEW = "live_view"
 
 
 REGISTRY: dict[str, ShortcutEntry] = {
     "prev_file": ShortcutEntry("Left", "Previous file", "Navigation"),
     "next_file": ShortcutEntry("Right", "Next file", "Navigation"),
+    "first_file": ShortcutEntry("Home", "First file", "Navigation"),
+    "last_file": ShortcutEntry("End", "Last file", "Navigation"),
     "toggle_keep": ShortcutEntry("K", "Mark frame as keeper", "Triage"),
     "toggle_scene_overlay": ShortcutEntry("", "Show or hide scene marks on the film strip", "Triage"),
     "toggle_reject": ShortcutEntry("Shift+X", "Reject frame (skipped by batch export)", "Triage"),
+    "toggle_advance_after_mark": ShortcutEntry("", "Advance to the next frame after marking", "Triage"),
     # No default key: nothing obvious is free, and an invented binding that collides makes Qt
     # fire activatedAmbiguously and kills both actions.
     "hdr_merge": ShortcutEntry("", "Merge selected exposures into one HDR frame", "Triage"),
@@ -45,34 +54,43 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "converge_v_inc": ShortcutEntry("", "Easel tilt up", "Geometry"),
     "converge_h_dec": ShortcutEntry("", "Easel swing down", "Geometry"),
     "converge_h_inc": ShortcutEntry("", "Easel swing up", "Geometry"),
+    "auto_skew": ShortcutEntry("", "Auto skew: square the frame to its edges", "Geometry"),
     "straighten": ShortcutEntry("L", "Toggle straighten line tool", "Geometry"),
+    "keystone_lines": ShortcutEntry("", "Toggle tilt/swing reference-lines tool", "Geometry"),
     "pick_wb": ShortcutEntry("Shift+W", "Toggle WB picker", "Tools"),
     "manual_crop": ShortcutEntry("Shift+C", "Toggle manual crop", "Tools"),
     "crop_guide_next": ShortcutEntry("O", "Next crop guide overlay", "Geometry"),
     "crop_guide_orient": ShortcutEntry("Shift+O", "Rotate crop guide orientation", "Geometry"),
     "lens_distortion_from_metadata": ShortcutEntry("", "Embedded Distortion", "Geometry"),
     "lens_ca_from_metadata": ShortcutEntry("", "Embedded CA", "Geometry"),
-    "auto_crop": ShortcutEntry("Shift+A", "Toggle autocrop", "Geometry"),
+    "auto_crop": ShortcutEntry("Shift+A", "Toggle Auto Crop", "Geometry"),
+    "auto_crop_square": ShortcutEntry("", "Toggle Square Before Crop", "Geometry"),
     "crop_to_valid": ShortcutEntry("", "Toggle Crop by Default", "Geometry"),
     "pick_dust": ShortcutEntry("Shift+D", "Toggle heal tool", "Tools"),
     "pick_scratch": ShortcutEntry("Shift+S", "Toggle scratch tool", "Tools"),
     "pick_scratch_line": ShortcutEntry("Shift+K", "Toggle transport-scratch line tool", "Tools"),
+    "clone_tool": ShortcutEntry("Shift+J", "Toggle clone tool", "Tools"),
     "local_draw": ShortcutEntry("Shift+B", "Toggle dodge & burn mask draw", "Tools"),
     "local_oval": ShortcutEntry("", "Toggle dodge & burn oval mask draw", "Tools"),
     "local_gradient": ShortcutEntry("", "Toggle dodge & burn card-edge mask draw", "Tools"),
     "analysis_draw": ShortcutEntry("Ctrl+R", "Toggle analysis region draw", "Tools"),
+    "open_tools_menu": ShortcutEntry("", "Open the Tools menu: every canvas tool", "Tools"),
     "toggle_flat_peek": ShortcutEntry("M", "Peek flat scan (digital intermediate)", "Tools"),
     "toggle_negative_peek": ShortcutEntry("N", "Peek negative (source as loaded)", "Tools"),
     "toggle_embedded_peek": ShortcutEntry("P", "Peek the camera's embedded preview", "Tools"),
     "toggle_zones": ShortcutEntry("Shift+Z", "Adams zone overlay", "Tools"),
+    "toggle_clipping_overlay": ShortcutEntry("", "Clipping Overlay: paper black and paper white on the frame", "Tools"),
+    "toggle_zone_hover_highlight": ShortcutEntry("", "Zone Highlight: light up the zone strip's hovered zone on the frame", "Tools"),
     "toggle_hq": ShortcutEntry("", "Toggle high-quality (full-resolution) preview", "View"),
     "toggle_optical_removal": ShortcutEntry("", "Toggle Optical Removal", "Retouch"),
     "toggle_right_click_excludes": ShortcutEntry("", "Toggle right-click excludes from Optical Removal", "Retouch"),
     "toggle_ir_removal": ShortcutEntry("", "Toggle IR Removal", "Retouch"),
     "toggle_flat_field": ShortcutEntry("", "Toggle Apply Flat Field", "Geometry"),
-    "batch_autocrop": ShortcutEntry("", "Auto crop the whole roll", "Geometry"),
+    "toggle_flatfield_peek": ShortcutEntry("", "Check Flat Field (how well the profile corrects its reference)", "Geometry"),
+    "batch_autocrop": ShortcutEntry("", "Auto-crop all frames", "Geometry"),
     "toggle_auto_density": ShortcutEntry("", "Toggle Auto Density", "Exposure"),
     "toggle_auto_grade": ShortcutEntry("", "Toggle Auto Grade", "Exposure"),
+    "toggle_auto_both": ShortcutEntry("", "Toggle Auto Density and Auto Grade together", "Exposure"),
     "preset_apply": ShortcutEntry("", "Apply the selected preset", "Actions"),
     "preset_save": ShortcutEntry("", "Save a preset from the current settings", "Actions"),
     "toggle_test_strip": ShortcutEntry("Shift+T", "Density × grade test strip", "Tools"),
@@ -121,6 +139,8 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "contrast_mask_inc": ShortcutEntry("", "Contrast Mask up", "Exposure"),
     "mask_spacer_dec": ShortcutEntry("", "Mask Spacer down", "Exposure"),
     "mask_spacer_inc": ShortcutEntry("", "Mask Spacer up", "Exposure"),
+    "diffusion_dec": ShortcutEntry("", "Diffusion down", "Exposure"),
+    "diffusion_inc": ShortcutEntry("", "Diffusion up", "Exposure"),
     "preflash_dec": ShortcutEntry("", "Preflash down", "Exposure"),
     "preflash_inc": ShortcutEntry("", "Preflash up", "Exposure"),
     "lock_bounds_toggle": ShortcutEntry("Alt+Q", "Toggle bounds lock", "Process"),
@@ -133,6 +153,9 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "scan_setup": ShortcutEntry("", "Scanning setup wizard", "Process"),
     "scan_prescan": ShortcutEntry("", "Prescan and set crop (Plustek)", "Process"),
     "scan_meter_frame": ShortcutEntry("", "Meter a frame and lock the scan exposure (Coolscan)", "Process"),
+    "scan_as_roll": ShortcutEntry("", "Toggle Scan as Roll", "Process"),
+    "scan_folder_as_roll": ShortcutEntry("", "Toggle Folder as Roll", "Process"),
+    "scan_new_roll": ShortcutEntry("", "Start the next scan roll", "Process"),
     "mode_color_negative": ShortcutEntry("", "Mode: Color Negative", "Process"),
     "mode_bw_negative": ShortcutEntry("", "Mode: B&W Negative", "Process"),
     "mode_transparency": ShortcutEntry("", "Mode: Transparency", "Process"),
@@ -171,8 +194,10 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "glow_inc": ShortcutEntry("Alt+7", "Glow up", "Lab"),
     "halation_dec": ShortcutEntry("Alt+Shift+8", "Halation down", "Lab"),
     "halation_inc": ShortcutEntry("Alt+8", "Halation up", "Lab"),
-    "threshold_dec": ShortcutEntry("Alt+Shift+9", "Threshold down", "Retouch"),
-    "threshold_inc": ShortcutEntry("Alt+9", "Threshold up", "Retouch"),
+    "threshold_dec": ShortcutEntry("Alt+Shift+9", "Spot threshold down", "Retouch"),
+    "threshold_inc": ShortcutEntry("Alt+9", "Spot threshold up", "Retouch"),
+    "hair_threshold_dec": ShortcutEntry("", "Hair threshold down", "Retouch"),
+    "hair_threshold_inc": ShortcutEntry("", "Hair threshold up", "Retouch"),
     "auto_size_dec": ShortcutEntry("Alt+Shift+0", "Auto size down", "Retouch"),
     "auto_size_inc": ShortcutEntry("Alt+0", "Auto size up", "Retouch"),
     "manual_size_dec": ShortcutEntry("Alt+Shift+M", "Brush size down", "Retouch"),
@@ -193,6 +218,13 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "cyano_bleach_inc": ShortcutEntry("", "Bleach up", "Alt Process"),
     "cyano_tannin_dec": ShortcutEntry("", "Tannin down", "Alt Process"),
     "cyano_tannin_inc": ShortcutEntry("", "Tannin up", "Alt Process"),
+    "toggle_sabattier": ShortcutEntry("", "Sabattier printing on/off", "Alt Process"),
+    "sabattier_strength_dec": ShortcutEntry("", "Sabattier strength down", "Alt Process"),
+    "sabattier_strength_inc": ShortcutEntry("", "Sabattier strength up", "Alt Process"),
+    "sabattier_reexposure_dec": ShortcutEntry("", "Re-exposure lower", "Alt Process"),
+    "sabattier_reexposure_inc": ShortcutEntry("", "Re-exposure higher", "Alt Process"),
+    "sabattier_agitation_dec": ShortcutEntry("", "Agitation down", "Alt Process"),
+    "sabattier_agitation_inc": ShortcutEntry("", "Agitation up", "Alt Process"),
     "selenium_dec": ShortcutEntry("Alt+Shift+J", "Selenium down", "Toning"),
     "selenium_inc": ShortcutEntry("Alt+J", "Selenium up", "Toning"),
     "sepia_dec": ShortcutEntry("Alt+Shift+K", "Sepia down", "Toning"),
@@ -203,8 +235,8 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "shadow_strength_inc": ShortcutEntry("Alt+G", "Shadow strength up", "Toning"),
     "highlight_hue_dec": ShortcutEntry("Alt+Shift+L", "Highlight hue down", "Toning"),
     "highlight_hue_inc": ShortcutEntry("Alt+L", "Highlight hue up", "Toning"),
-    "highlight_strength_dec": ShortcutEntry("Alt+Shift+Semicolon", "Highlight strength down", "Toning"),
-    "highlight_strength_inc": ShortcutEntry("Alt+Semicolon", "Highlight strength up", "Toning"),
+    "highlight_strength_dec": ShortcutEntry("Alt+Shift+;", "Highlight strength down", "Toning"),
+    "highlight_strength_inc": ShortcutEntry("Alt+;", "Highlight strength up", "Toning"),
     "vignette_str_dec": ShortcutEntry("Alt+Shift+V", "Vignette burn down", "Finishing"),
     "vignette_str_inc": ShortcutEntry("Alt+V", "Vignette burn up", "Finishing"),
     "vignette_size_dec": ShortcutEntry("Alt+Shift+S", "Vignette size down", "Finishing"),
@@ -247,14 +279,21 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "zoom_200": ShortcutEntry("2", "Zoom 200%", "View"),
     "export": ShortcutEntry("Ctrl+E", "Export", "Actions"),
     "export_linear_output": ShortcutEntry("", "Export Linear Output", "Actions"),
+    "merge_frame": ShortcutEntry("", "Merge Frame to TIFF Negative…", "Actions"),
+    "merge_selected": ShortcutEntry("", "Merge Selected to TIFF Negative…", "Actions"),
+    "merge_roll": ShortcutEntry("", "Merge Roll to TIFF Negative…", "Actions"),
+    "contact_sheet": ShortcutEntry("", "Contact Sheet…", "Actions"),
     "copy": ShortcutEntry("Ctrl+C", "Copy settings", "Actions"),
     "copy_with_bounds": ShortcutEntry("Ctrl+Shift+C", "Copy settings (with bounds)", "Actions"),
     "paste": ShortcutEntry("Ctrl+V", "Paste settings", "Actions"),
     "sync_bounds": ShortcutEntry("", "Sync bounds to other frames…", "Actions"),
     "reset_roll": ShortcutEntry("", "Reset roll to defaults", "Actions"),
+    "close_roll": ShortcutEntry("", "Close the roll, or unload every frame", "Actions"),
     "reset_tab": ShortcutEntry("", "Reset this tab to defaults", "Actions"),
     "reset_tab_to_roll": ShortcutEntry("", "Reset this tab to the roll's settings", "Actions"),
     "reset_to_roll": ShortcutEntry("", "Reset this frame to the roll's settings", "Actions"),
+    "undo_roll_push": ShortcutEntry("", "Undo Apply to Roll", "Actions"),
+    "load_sidecar": ShortcutEntry("", "Load this frame's edit from a sidecar…", "Actions"),
     "apply_tab": ShortcutEntry("", "Apply this tab to the roll…", "Actions"),
     "toggle_tab_cards": ShortcutEntry("", "Expand or collapse this tab's cards", "Actions"),
     "roll_batch_analysis": ShortcutEntry("", "Roll Analysis (measure the roll's baseline)", "Actions"),
@@ -270,7 +309,13 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "save_work_print": ShortcutEntry("Ctrl+Shift+S", "Save the current edit as a named work print", "Actions"),
     "undo": ShortcutEntry("Ctrl+Z", "Undo", "Actions"),
     "redo": ShortcutEntry("Ctrl+Y", "Redo", "Actions"),
+    "live_view_scan": ShortcutEntry("S", "Scan, or stop the capture", "Camera Live View", LIVE_VIEW),
+    "live_view_retake": ShortcutEntry("R", "Retake the current frame", "Camera Live View", LIVE_VIEW),
+    "live_view_meter": ShortcutEntry("M", "Meter: set the shutter from one RAW probe", "Camera Live View", LIVE_VIEW),
+    "live_view_histogram": ShortcutEntry("H", "Show the live histogram", "Camera Live View", LIVE_VIEW),
+    "live_view_zebra": ShortcutEntry("Z", "Show clipping zebras", "Camera Live View", LIVE_VIEW),
     "show_shortcuts": ShortcutEntry("?", "Show shortcuts", "Help"),
+    "show_tour": ShortcutEntry("", "Take the tour: a guided walk through NegPy, one chapter at a time", "Help"),
     "show_analysis_help": ShortcutEntry("", "Analysis panel guide", "Help"),
     "check_for_updates": ShortcutEntry("", "Check for updates", "Help"),
     "show_about": ShortcutEntry("", "About NegPy: version and project page", "Help"),
@@ -394,6 +439,16 @@ def current_bindings() -> dict[str, str]:
     if not _CURRENT_BINDINGS:
         set_current_bindings(default_bindings())
     return dict(_CURRENT_BINDINGS)
+
+
+def clash_scope(action_id: str, key: str) -> str:
+    """The window whose other bindings a key clashes with. A Ctrl or Cmd chord passes a
+    floating panel's key guard to the main window, so it clashes there too."""
+    seq = QKeySequence(key)
+    command = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+    if not seq.isEmpty() and seq[0].keyboardModifiers() & command:
+        return "main"
+    return REGISTRY[action_id].window
 
 
 def key_for(action_id: str, bindings: dict[str, str] | None = None) -> str:

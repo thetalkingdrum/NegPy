@@ -192,6 +192,8 @@ class ExportConfig:
     export_dpi: int = 300
     export_resolution_mode: ExportResolutionMode = ExportResolutionMode.ORIGINAL
     export_target_long_edge_px: int = 2000
+    # Unsharp mask amount on a resized export, applied at the exported size.
+    output_sharpen: float = 0.0
     filename_pattern: str = "{{ original_name }}"
     # When True, exports overwrite existing files silently. When False, the export prompts
     # (Overwrite / Rename / Cancel) before clobbering anything.
@@ -201,22 +203,7 @@ class ExportConfig:
     icc_input_path: Optional[str] = None
     icc_output_path: Optional[str] = None
 
-    contact_sheet_cell_px: int = 600
-    contact_sheet_gap: int = 16
-    contact_sheet_margin: int = 32
-    contact_sheet_max_tiles: int = 38
-    contact_sheet_show_labels: bool = True
-    contact_sheet_background_color: str = "#000000"
-    contact_sheet_label_color: str = "#ffffff"
     contact_sheet_output_path: str = ""  # empty = follow export destination rules
-    contact_sheet_template: str = ""  # empty = Default template active
-    contact_sheet_default_cell_px: int = 600
-    contact_sheet_default_gap: int = 16
-    contact_sheet_default_margin: int = 32
-    contact_sheet_default_max_tiles: int = 38
-    contact_sheet_default_show_labels: bool = True
-    contact_sheet_default_background_color: str = "#000000"
-    contact_sheet_default_label_color: str = "#ffffff"
 
     export_sidecars_enabled: bool = False
 
@@ -264,6 +251,7 @@ class ExportPreset:
     export_print_size: float = 30.0
     export_dpi: int = 300
     export_target_long_edge_px: int = 2000
+    output_sharpen: float = 0.0
 
     # Output destination
     output_mode: ExportPresetOutputMode = ExportPresetOutputMode.SAME_AS_SOURCE
@@ -306,6 +294,7 @@ class ExportPreset:
             "export_print_size": self.export_print_size,
             "export_dpi": self.export_dpi,
             "export_target_long_edge_px": self.export_target_long_edge_px,
+            "output_sharpen": self.output_sharpen,
             "output_mode": self.output_mode,
             "output_subfolder": self.output_subfolder,
             "output_path": self.output_path,
@@ -352,6 +341,7 @@ def preset_from_export_config(conf: ExportConfig, name: str = "Current settings"
         export_print_size=conf.export_print_size,
         export_dpi=conf.export_dpi,
         export_target_long_edge_px=conf.export_target_long_edge_px,
+        output_sharpen=conf.output_sharpen,
         output_mode=conf.output_mode,
         output_subfolder=conf.output_subfolder,
         output_path=conf.export_path,
@@ -470,27 +460,30 @@ class WorkspaceConfig:
         def _build_local(d: Dict[str, Any]) -> LocalAdjustmentsConfig:
             masks = []
             for m in d.get("masks", []):
-                verts = tuple(tuple(v) for v in m.get("vertices", []))
-                # A mask's exposure was brightness-signed (`strength`, positive = dodge) before it became
-                # exposure-signed stops (positive = burn), the same flip vignette_strength made. Nested
-                # in local_masks, so it cannot live in MIGRATIONS' flat rewrites. Keyed on the legacy
-                # name, which only a pre-flip save carries.
-                stops = -float(m["strength"]) if "strength" in m else float(m.get("stops", 0.0))
-                masks.append(
-                    LocalMask(
-                        vertices=verts,
-                        stops=stops,
-                        feather=float(m.get("feather", 0.04)),
-                        grade=float(m.get("grade", 0.0)),
-                        shape=MaskShape(m.get("shape", MaskShape.POLYGON)),
-                        invert=bool(m.get("invert", False)),
-                        enabled=bool(m.get("enabled", True)),
-                        key=MaskKey(m.get("key", MaskKey.OFF)),
-                        key_zone=float(m.get("key_zone", 6.0)),
-                        key_softness=float(m.get("key_softness", 1.0)),
-                    )
-                )
+                try:
+                    masks.append(_build_mask(m))
+                except Exception as exc:
+                    logger.warning("Dropping invalid local mask %s: %s", m, exc)
             return LocalAdjustmentsConfig(masks=tuple(masks))
+
+        def _build_mask(m: Dict[str, Any]) -> LocalMask:
+            verts = tuple(tuple(v) for v in m.get("vertices", []))
+            # Legacy `strength` is brightness-signed (positive = dodge), `stops` exposure-signed
+            # (positive = burn). Nested in local_masks, so no flat migration can rewrite it.
+            stops = -float(m["strength"]) if "strength" in m else float(m.get("stops", 0.0))
+            return LocalMask(
+                vertices=verts,
+                stops=stops,
+                feather=float(m.get("feather", 0.04)),
+                grade=float(m.get("grade", 0.0)),
+                flash=float(m.get("flash", 0.0)),
+                shape=MaskShape(m.get("shape", MaskShape.POLYGON)),
+                invert=bool(m.get("invert", False)),
+                enabled=bool(m.get("enabled", True)),
+                key=MaskKey(m.get("key", MaskKey.OFF)),
+                key_zone=float(m.get("key_zone", 6.0)),
+                key_softness=float(m.get("key_softness", 1.0)),
+            )
 
         def _build_stitch(d: Dict[str, Any]) -> StitchConfig:
             # JSON round-trips tuples as lists, so coerce back or the frozen config loses hashability
@@ -517,22 +510,40 @@ class WorkspaceConfig:
                 hdr_anchor_ev=float(d.get("hdr_anchor_ev", 1.0)),
             )
 
+        def _build(build: Any, config_cls: Any) -> Any:
+            # One value an older version wrote that this one rejects costs that field, not the whole edit.
+            d = filter_keys(config_cls, data)
+            try:
+                return build(d)
+            except Exception:
+                bad = []
+                for k, v in d.items():
+                    try:
+                        build({k: v})
+                    except Exception:
+                        bad.append(k)
+                logger.warning("Dropping invalid %s values: %s", config_cls.__name__, sorted(bad))
+                return build({k: v for k, v in d.items() if k not in bad})
+
+        def _plain(config_cls: Any) -> Any:
+            return _build(lambda d: config_cls(**d), config_cls)
+
         return cls(
-            process=ProcessConfig(**filter_keys(ProcessConfig, data)),
-            exposure=ExposureConfig(**filter_keys(ExposureConfig, data)),
-            flatfield=FlatFieldConfig(**filter_keys(FlatFieldConfig, data)),
-            rgbscan=RgbScanConfig(**filter_keys(RgbScanConfig, data)),
-            stitch=_build_stitch(filter_keys(StitchConfig, data)),
-            hdr=_build_hdr(filter_keys(HdrConfig, data)),
-            geometry=GeometryConfig(**filter_keys(GeometryConfig, data)),
-            lab=LabConfig(**filter_keys(LabConfig, data)),
+            process=_plain(ProcessConfig),
+            exposure=_plain(ExposureConfig),
+            flatfield=_plain(FlatFieldConfig),
+            rgbscan=_plain(RgbScanConfig),
+            stitch=_build(_build_stitch, StitchConfig),
+            hdr=_build(_build_hdr, HdrConfig),
+            geometry=_plain(GeometryConfig),
+            lab=_plain(LabConfig),
             local=_build_local(local_data),
-            retouch=RetouchConfig(**filter_keys(RetouchConfig, data)),
-            altproc=AltProcessConfig(**filter_keys(AltProcessConfig, data)),
-            toning=ToningConfig(**filter_keys(ToningConfig, data)),
-            finish=FinishConfig(**filter_keys(FinishConfig, data)),
-            metadata=MetadataConfig(**filter_keys(MetadataConfig, data)),
-            export=ExportConfig(**filter_keys(ExportConfig, data)),
+            retouch=_plain(RetouchConfig),
+            altproc=_plain(AltProcessConfig),
+            toning=_plain(ToningConfig),
+            finish=_plain(FinishConfig),
+            metadata=_plain(MetadataConfig),
+            export=_plain(ExportConfig),
         )
 
 

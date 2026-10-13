@@ -1,19 +1,23 @@
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QVBoxLayout
-from negpy.desktop.view.widgets.sliders import CompactSlider
+from PyQt6.QtWidgets import QHBoxLayout
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
+from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.session import ToolMode
-from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, field_label, section_subheader, wrap_tooltip
+from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, header_row, hint_label, section_subheader, wrap_tooltip
 from negpy.features.retouch.models import HEAL_SIZE_MAX, HEAL_SIZE_MIN, IR_METHOD_NEGPY, IR_METHOD_OPENICE
 
 _IR_REMOVAL_TIP = (
     "Use the scanner's infrared channel to remove dust and scratches (invisible to the color dyes): faint "
     "semi-transparent specks are divided back out to recover the image underneath, opaque cores and hairs are "
-    "rebuilt from clean neighbouring film, and only defects too wide to see across are inpainted."
+    "rebuilt from clean neighboring film, and only defects too wide to see across are inpainted."
 )
 _IR_THRESH_TIP = "Lower catches more dust, higher is conservative. Smooth response, no cliff."
 # Order matches _IR_METHOD_KEYS.
 _IR_METHOD_LABELS = ("NegPy", "OpenICE")
 _IR_METHOD_KEYS = (IR_METHOD_NEGPY, IR_METHOD_OPENICE)
+# Order matches _OVERLAY_MODES.
+_OVERLAY_LABELS = ("Off", "Marked", "IR")
+_OVERLAY_MODES = ("off", "marked", "ir")
 _IR_METHOD_TIP = wrap_tooltip(
     "How the film under a defect is rebuilt. NegPy divides semi-transparent dust out, fills "
     "opaque cores with a weighted average of the clean film around them, and transplants grain "
@@ -34,6 +38,12 @@ _RIGHT_CLICK_TIP = (
 )
 
 
+def _clone_hint(picking: bool, has_source: bool) -> str:
+    if picking or not has_source:
+        return "Click the photo to pick the area to copy from."
+    return "Paint over the defect; the dashed circle marks the source."
+
+
 class RetouchSidebar(BaseSidebar):
     """
     Panel for dust removal and healing.
@@ -42,17 +52,15 @@ class RetouchSidebar(BaseSidebar):
     def _init_ui(self) -> None:
         conf = self.state.config.retouch
 
-        # --- Overlay inspector (applies to every detection source) ----------
-        self.overlay_btn = self._labeled_action(
-            "fa5s.eye",
-            " Overlay: Off",
-            "Cycle the dust-detection overlay: Off → Marked → IR. Enable Optical / IR Removal so the overlay has detected spots to show.",
+        # Applies to every detection source.
+        self.overlay_btn = ChoiceButton(
+            tuple(("fa5s.eye", f"Overlay: {label}") for label in _OVERLAY_LABELS),
+            "Show the dust-detection overlay: Marked shows what Optical and IR Removal found, "
+            "IR shows the scan's infrared channel. Turn a removal on so there is something to show.",
         )
         self.layout.addWidget(self.overlay_btn)
 
-        # --- OPTICAL REMOVAL (visible-scan speck detection) -----------------
-        self.layout.addWidget(section_subheader("OPTICAL REMOVAL"))
-        self.auto_dust_btn = self._small_toggle("fa5s.magic", "Optical Removal", conf.dust_remove, _OPTICAL_TIP)
+        self.auto_dust_btn = self._small_toggle("fa5s.magic", "Optical Removal", conf.dust_remove, _OPTICAL_TIP, align_left=True)
         self.right_click_btn = self._tool_toggle("mdi.cursor-default-click", "", _RIGHT_CLICK_TIP)
         self.right_click_btn.setFixedWidth(ICON_BUTTON_WIDTH)
         self.right_click_btn.setChecked(self.state.right_click_excludes)
@@ -60,67 +68,52 @@ class RetouchSidebar(BaseSidebar):
         optical_row.addWidget(self.auto_dust_btn, 1)
         optical_row.addWidget(self.right_click_btn)
         self.layout.addLayout(optical_row)
-        auto_row = QVBoxLayout()
-        self.threshold_slider = CompactSlider("Threshold", 0.01, 1.0, conf.dust_threshold)
-        self.auto_size_slider = CompactSlider("Size", 3.0, 8.0, float(conf.dust_size), step=1.0, precision=1, unit=" px")
-        auto_row.addWidget(self.threshold_slider)
-        auto_row.addWidget(self.auto_size_slider)
-        self.layout.addLayout(auto_row)
+        self.threshold_slider = CompactSlider("Spot Threshold", 0.01, 1.0, conf.dust_threshold)
+        self.hair_threshold_slider = CompactSlider("Hair Threshold", 0.01, 1.0, conf.dust_hair_threshold)
+        self.auto_size_slider = CompactSlider("Size", 2.0, 8.0, float(conf.dust_size), step=1.0, precision=1, unit=" px")
+        self.layout.addWidget(SliderGroup(self.threshold_slider, self.hair_threshold_slider, self.auto_size_slider))
 
-        # --- IR REMOVAL ------------------------------------------------------
-        self.ir_subheader = section_subheader("IR REMOVAL")
-        self.layout.addWidget(self.ir_subheader)
-        method_row = QHBoxLayout()
-        self.ir_method_label = field_label("Method")
-        self.ir_method_combo = QComboBox()
-        self.ir_method_combo.addItems(_IR_METHOD_LABELS)
-        self.ir_method_combo.setToolTip(_IR_METHOD_TIP)
-        method_row.addWidget(self.ir_method_label)
-        method_row.addWidget(self.ir_method_combo, 1)
-        self.layout.addLayout(method_row)
-
-        self.ir_dust_btn = self._small_toggle("fa5s.broom", "IR Removal", conf.ir_dust_remove, _IR_REMOVAL_TIP)
-        self.ir_threshold_slider = CompactSlider("IR Threshold", 0.05, 0.95, float(conf.ir_threshold))
-        self.ir_threshold_slider.setToolTip(_IR_THRESH_TIP)
-        ir_row = QVBoxLayout()
-        ir_row.addWidget(self.ir_dust_btn)
-        ir_row.addWidget(self.ir_threshold_slider)
+        self.ir_dust_btn = self._small_toggle("fa5s.broom", "IR Removal", conf.ir_dust_remove, _IR_REMOVAL_TIP, align_left=True)
+        self.ir_method_btn = ChoiceButton(tuple(("", label) for label in _IR_METHOD_LABELS), "")
+        ir_row = QHBoxLayout()
+        ir_row.addWidget(self.ir_dust_btn, 1)
+        ir_row.addWidget(self.ir_method_btn)
         self.layout.addLayout(ir_row)
+        self.ir_threshold_slider = CompactSlider("IR Threshold", 0.05, 0.95, float(conf.ir_threshold))
+        self.layout.addWidget(SliderGroup(self.ir_threshold_slider))
 
         # Restored whenever the scan has IR (never let a stale "No IR channel" tip linger).
         self._ir_tooltips = {
-            self.ir_subheader: "Detect and remove dust/scratches using the scanner's infrared channel",
             self.ir_dust_btn: _IR_REMOVAL_TIP,
             self.ir_threshold_slider: _IR_THRESH_TIP,
-            self.ir_method_label: _IR_METHOD_TIP,
-            self.ir_method_combo: _IR_METHOD_TIP,
+            self.ir_method_btn: _IR_METHOD_TIP,
         }
 
-        # --- MANUAL HEAL (bottom) -------------------------------------------
         self.heals_subheader = section_subheader("MANUAL HEAL · 0")
-        self.layout.addWidget(self.heals_subheader)
-        tools_row = QHBoxLayout()
         self.pick_dust_btn = self._tool_toggle(
             "fa5s.eye-dropper",
-            "Heal Tool",
-            "Paint over dust to heal it. Only the marks inside the brush are repaired, clean grain is left alone",
+            "Heal",
+            "Heal Tool: paint over dust to heal it. Only the marks inside the brush are repaired, clean grain is left alone",
         )
         self.pick_scratch_btn = self._tool_toggle(
             "fa5s.pen-nib",
-            "Scratch Tool",
-            "Heal a scratch or hair: click points along it, double-click or Enter to finish, Esc cancels. "
+            "Scratch",
+            "Scratch Tool: heal a scratch or hair. Click points along it, double-click or Enter to finish, Esc cancels. "
             "Backspace deletes the last entered point; right-click an existing scratch overlay to delete it",
         )
         self.pick_line_btn = self._tool_toggle(
             "fa5s.grip-lines",
-            "Transport Line",
-            "Remove a transport scratch: click once on it and the whole line is traced and repaired. "
+            "Line",
+            "Transport Line: remove a transport scratch. Click once on it and the whole line is traced and repaired. "
             "For the long straight marks the film picks up running through a camera or lab — too faint "
             "along any single pixel for the brush to find",
         )
-        tools_row.addWidget(self.pick_dust_btn)
-        tools_row.addWidget(self.pick_scratch_btn)
-        tools_row.addWidget(self.pick_line_btn)
+        self.undo_btn = self._icon_action("fa5s.undo", "Undo Last: remove the most recent manual heal")
+        self.clear_btn = self._icon_action("fa5s.trash-alt", "Clear All: remove all manual heals (auto-detected dust is unaffected)")
+        self.layout.addLayout(header_row(self.heals_subheader, self.undo_btn, self.clear_btn))
+        tools_row = QHBoxLayout()
+        for btn in (self.pick_dust_btn, self.pick_scratch_btn, self.pick_line_btn):
+            tools_row.addWidget(btn, 1)
         self.layout.addLayout(tools_row)
 
         self.manual_size_slider = CompactSlider(
@@ -130,22 +123,46 @@ class RetouchSidebar(BaseSidebar):
             "Diameter of the heal, scratch and exclusion brushes, matching the on-screen cursor. "
             "Alt+wheel over the canvas sizes it too, or pinch while a brush is live"
         )
-        self.layout.addWidget(self.manual_size_slider)
-
         self.line_threshold_slider = CompactSlider("Line Sensitivity", 0.05, 0.95, float(conf.scratch_threshold))
         self.line_threshold_slider.setToolTip(
             "How readily a scratch is followed. Lower catches fainter lines and repairs a wider band; "
             "raise it if the line is picking up film either side"
         )
-        self.layout.addWidget(self.line_threshold_slider)
+        self.layout.addWidget(SliderGroup(self.manual_size_slider, self.line_threshold_slider))
 
-        actions_row = QHBoxLayout()
-        self.undo_btn = self._labeled_action("fa5s.undo", " Undo Last", "Remove the most recent manual heal")
-        self.clear_btn = self._labeled_action("fa5s.trash-alt", " Clear All", "Remove all manual heals (auto-detected dust is unaffected)")
-
-        actions_row.addWidget(self.undo_btn, 1)
-        actions_row.addWidget(self.clear_btn, 1)
-        self.layout.addLayout(actions_row)
+        self.clone_subheader = section_subheader("CLONE · 0")
+        self.clone_btn = self._tool_toggle(
+            "fa5s.clone",
+            "Clone",
+            "Clone Tool: copy film from another area over a defect. Alt-click the source, then paint. Uses Brush Size",
+        )
+        self.clone_match_btn = self._small_toggle(
+            "fa5s.adjust",
+            "Match Tone",
+            conf.clone_match_tone,
+            "Keep the copied grain and detail, but match the brightness and color around the destination",
+        )
+        self.clone_undo_btn = self._icon_action("fa5s.undo", "Undo Last: remove the most recent clone stroke")
+        self.clone_clear_btn = self._icon_action("fa5s.trash-alt", "Clear All: remove all clone strokes")
+        self.layout.addLayout(header_row(self.clone_subheader, self.clone_undo_btn, self.clone_clear_btn))
+        self.clone_source_btn = self._tool_toggle(
+            "fa5s.crosshairs",
+            "Set Source",
+            "Pick a new source with the next click on the photo",
+        )
+        clone_row = QHBoxLayout()
+        for btn in (self.clone_btn, self.clone_source_btn, self.clone_match_btn):
+            clone_row.addWidget(btn, 1)
+        self.layout.addLayout(clone_row)
+        self.clone_hint = hint_label()
+        self.layout.addWidget(self.clone_hint)
+        self.clone_strength_slider = CompactSlider("Strength", 0.0, 100.0, conf.clone_strength * 100.0, step=1.0, precision=0, unit="%")
+        self.clone_strength_slider.setToolTip(
+            wrap_tooltip("How much of the source covers the destination. Lower lets the original show through")
+        )
+        self.clone_feather_slider = CompactSlider("Feather", 0.0, 100.0, conf.clone_feather * 100.0, step=1.0, precision=0, unit="%")
+        self.clone_feather_slider.setToolTip(wrap_tooltip("Fade width at the brush edge, as a share of the radius. 0 is a hard edge"))
+        self.layout.addWidget(SliderGroup(self.clone_strength_slider, self.clone_feather_slider))
 
         self.layout.addStretch()
 
@@ -158,63 +175,84 @@ class RetouchSidebar(BaseSidebar):
             lambda c: self.update_config_section("retouch", persist=True, render=True, dust_remove=c, dust_exclusion_strokes=[])
         )
         self.right_click_btn.toggled.connect(self.controller.session.set_right_click_excludes)
-        self.threshold_slider.valueChanged.connect(
-            lambda v: self.update_config_section("retouch", readback_metrics=False, dust_threshold=v)
-        )
-        self.auto_size_slider.valueChanged.connect(
-            lambda v: self.update_config_section("retouch", readback_metrics=False, dust_size=int(v))  # TODO: precision loss from int cast
-        )
+        for slider, field, cast in (
+            (self.threshold_slider, "dust_threshold", float),
+            (self.hair_threshold_slider, "dust_hair_threshold", float),
+            (self.auto_size_slider, "dust_size", int),
+            (self.line_threshold_slider, "scratch_threshold", float),
+            (self.ir_threshold_slider, "ir_threshold", float),
+        ):
+            slider.valueChanged.connect(
+                lambda v, f=field, c=cast: self.update_config_section("retouch", readback_metrics=False, **{f: c(v)})
+            )
+            slider.valueCommitted.connect(lambda v, f=field, c=cast: self.update_config_section("retouch", persist=True, **{f: c(v)}))
         self.pick_dust_btn.toggled.connect(self._on_pick_toggled)
         self.pick_scratch_btn.toggled.connect(self._on_scratch_toggled)
         self.pick_line_btn.toggled.connect(self._on_line_toggled)
-        self.manual_size_slider.valueChanged.connect(
+        self.manual_size_slider.valueChanged.connect(lambda v: self.update_config_section("retouch", render=False, manual_dust_size=int(v)))
+        self.manual_size_slider.valueCommitted.connect(
             lambda v: self.update_config_section("retouch", render=False, persist=True, manual_dust_size=int(v))
         )
-        self.line_threshold_slider.valueChanged.connect(
-            lambda v: self.update_config_section("retouch", readback_metrics=False, scratch_threshold=float(v))
+        self.clone_btn.toggled.connect(self._on_clone_toggled)
+        self.clone_source_btn.toggled.connect(self.controller.arm_clone_source)
+        self.clone_match_btn.toggled.connect(
+            lambda c: self.update_config_section("retouch", render=False, persist=True, clone_match_tone=c)
         )
+        self.clone_strength_slider.valueChanged.connect(
+            lambda v: self.update_config_section("retouch", render=False, clone_strength=float(v) / 100.0)
+        )
+        self.clone_strength_slider.valueCommitted.connect(
+            lambda v: self.update_config_section("retouch", render=False, persist=True, clone_strength=float(v) / 100.0)
+        )
+        self.clone_feather_slider.valueChanged.connect(
+            lambda v: self.update_config_section("retouch", render=False, clone_feather=float(v) / 100.0)
+        )
+        self.clone_feather_slider.valueCommitted.connect(
+            lambda v: self.update_config_section("retouch", render=False, persist=True, clone_feather=float(v) / 100.0)
+        )
+        self.clone_undo_btn.clicked.connect(self.controller.undo_last_clone)
+        self.clone_clear_btn.clicked.connect(self.controller.clear_clones)
         self.undo_btn.clicked.connect(self.controller.undo_last_retouch)
         self.clear_btn.clicked.connect(self.controller.clear_retouch)
-        self.overlay_btn.clicked.connect(self._on_overlay_clicked)
+        self.overlay_btn.currentChanged.connect(lambda i: self.controller.set_dust_overlay(_OVERLAY_MODES[i]))
 
         self.ir_dust_btn.toggled.connect(
             lambda c: self.update_config_section("retouch", persist=True, render=True, ir_dust_remove=c, ir_attenuation=c)
         )
-        self.ir_threshold_slider.valueChanged.connect(
-            lambda v: self.update_config_section("retouch", readback_metrics=False, ir_threshold=float(v))
-        )
-        self.ir_method_combo.currentIndexChanged.connect(
+        self.ir_method_btn.currentChanged.connect(
             lambda i: self.update_config_section("retouch", persist=True, render=True, ir_method=_IR_METHOD_KEYS[i])
         )
 
-    def _on_overlay_clicked(self) -> None:
-        # cycle_dust_overlay emits dust_overlay_changed, which repaints the canvas, but not
-        # config_updated, so the sidebar never re-syncs. Update the label here.
-        self.controller.cycle_dust_overlay()
-        self._sync_overlay_label()
+    def _sync_overlay(self) -> None:
+        mode = self.state.dust_overlay_mode
+        # An IR overlay on a frame with no IR plane draws nothing, so it reads as Off.
+        if mode not in _OVERLAY_MODES or (mode == "ir" and not self.state.has_ir):
+            mode = "off"
+        self.overlay_btn.setCurrentIndex(_OVERLAY_MODES.index(mode))
+        self.overlay_btn.choice_menu.actions()[2].setEnabled(self.state.has_ir)
 
-    def _sync_overlay_label(self) -> None:
-        label = {"off": "Off", "marked": "Marked", "ir": "IR"}.get(self.state.dust_overlay_mode, "Off")
-        self.overlay_btn.setText(f" Overlay: {label}")
-
-    def _brush_size_visible(self, heal: bool, scratch: bool) -> bool:
+    def _brush_size_enabled(self, heal: bool, scratch: bool) -> bool:
         """The brush is sized from the canvas while an exclusion is painted, which happens
-        with no tool active, so Optical Removal shows the value too."""
-        return heal or scratch or self.state.config.retouch.dust_remove
+        with no tool active, so Optical Removal enables the value too."""
+        return heal or scratch or self.state.active_tool == ToolMode.CLONE or self.state.config.retouch.dust_remove
 
     def _on_pick_toggled(self, checked: bool) -> None:
         self.controller.set_active_tool(ToolMode.DUST_PICK if checked else ToolMode.NONE)
-        self.manual_size_slider.setVisible(self._brush_size_visible(checked, self.pick_scratch_btn.isChecked()))
+        self.manual_size_slider.setEnabled(self._brush_size_enabled(checked, self.pick_scratch_btn.isChecked()))
 
     def _on_scratch_toggled(self, checked: bool) -> None:
         self.controller.set_active_tool(ToolMode.SCRATCH_PICK if checked else ToolMode.NONE)
-        self.manual_size_slider.setVisible(self._brush_size_visible(self.pick_dust_btn.isChecked(), checked))
+        self.manual_size_slider.setEnabled(self._brush_size_enabled(self.pick_dust_btn.isChecked(), checked))
+
+    def _on_clone_toggled(self, checked: bool) -> None:
+        self.controller.set_active_tool(ToolMode.CLONE if checked else ToolMode.NONE)
+        self.manual_size_slider.setEnabled(self._brush_size_enabled(self.pick_dust_btn.isChecked(), self.pick_scratch_btn.isChecked()))
 
     def _on_line_toggled(self, checked: bool) -> None:
         # Sensitivity stands in for brush size here: the band is grown from the scratch, so what
         # the user tunes is how readily it is followed, not how wide to paint.
         self.controller.set_active_tool(ToolMode.SCRATCH_LINE if checked else ToolMode.NONE)
-        self.line_threshold_slider.setVisible(checked)
+        self.line_threshold_slider.setEnabled(checked)
 
     def _set_ir_controls_enabled(self, enabled: bool) -> None:
         for w, tip in self._ir_tooltips.items():
@@ -228,16 +266,29 @@ class RetouchSidebar(BaseSidebar):
             self.auto_dust_btn.setChecked(conf.dust_remove)
             self.right_click_btn.setChecked(self.state.right_click_excludes)
             self.threshold_slider.setValue(conf.dust_threshold)
+            self.hair_threshold_slider.setValue(conf.dust_hair_threshold)
             self.auto_size_slider.setValue(float(conf.dust_size))
             self.manual_size_slider.setValue(float(conf.manual_dust_size))
             self.pick_dust_btn.setChecked(self.state.active_tool == ToolMode.DUST_PICK)
             self.pick_scratch_btn.setChecked(self.state.active_tool == ToolMode.SCRATCH_PICK)
             self.pick_line_btn.setChecked(self.state.active_tool == ToolMode.SCRATCH_LINE)
-            self.manual_size_slider.setVisible(
-                self._brush_size_visible(self.state.active_tool == ToolMode.DUST_PICK, self.state.active_tool == ToolMode.SCRATCH_PICK)
+            cloning = self.state.active_tool == ToolMode.CLONE
+            self.clone_btn.setChecked(cloning)
+            self.clone_source_btn.setChecked(cloning and self.state.clone_picking)
+            self.clone_hint.setText(_clone_hint(self.state.clone_picking, self.state.clone_source is not None))
+            self.clone_hint.setVisible(cloning)
+            self.clone_match_btn.setChecked(conf.clone_match_tone)
+            self.clone_strength_slider.setValue(conf.clone_strength * 100.0)
+            self.clone_feather_slider.setValue(conf.clone_feather * 100.0)
+            num_clones = len(conf.clone_strokes)
+            self.clone_subheader.setText(f"CLONE · {num_clones}")
+            self.clone_undo_btn.setEnabled(num_clones > 0)
+            self.clone_clear_btn.setEnabled(num_clones > 0)
+            self.manual_size_slider.setEnabled(
+                self._brush_size_enabled(self.state.active_tool == ToolMode.DUST_PICK, self.state.active_tool == ToolMode.SCRATCH_PICK)
             )
             self.line_threshold_slider.setValue(float(conf.scratch_threshold))
-            self.line_threshold_slider.setVisible(self.state.active_tool == ToolMode.SCRATCH_LINE)
+            self.line_threshold_slider.setEnabled(self.state.active_tool == ToolMode.SCRATCH_LINE)
 
             num_heals = len(conf.manual_dust_spots) + len(conf.manual_heal_strokes) + len(conf.scratch_lines)
             self.heals_subheader.setText(f"MANUAL HEAL · {num_heals}")
@@ -251,12 +302,12 @@ class RetouchSidebar(BaseSidebar):
             self.ir_dust_btn.setChecked(conf.ir_dust_remove and self.state.has_ir)
             self.ir_threshold_slider.setValue(float(conf.ir_threshold))
             method = conf.ir_method if conf.ir_method in _IR_METHOD_KEYS else IR_METHOD_NEGPY
-            self.ir_method_combo.setCurrentIndex(_IR_METHOD_KEYS.index(method))
+            self.ir_method_btn.setCurrentIndex(_IR_METHOD_KEYS.index(method))
             self._set_ir_controls_enabled(self.state.has_ir)
             if self.state.has_ir and self.state.ir_degenerate:
                 self.ir_dust_btn.setToolTip("IR channel carries image content (B&W / Kodachrome) — IR correction disabled for this frame")
 
-            self._sync_overlay_label()
+            self._sync_overlay()
         finally:
             self.block_signals(False)
 
@@ -271,9 +322,15 @@ class RetouchSidebar(BaseSidebar):
             self.pick_scratch_btn,
             self.pick_line_btn,
             self.line_threshold_slider,
+            self.clone_btn,
+            self.clone_source_btn,
+            self.clone_match_btn,
+            self.clone_strength_slider,
+            self.clone_feather_slider,
             self.ir_dust_btn,
             self.ir_threshold_slider,
-            self.ir_method_combo,
+            self.ir_method_btn,
+            self.overlay_btn,
         ]
         for w in widgets:
             w.blockSignals(blocked)

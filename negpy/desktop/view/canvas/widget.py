@@ -12,6 +12,8 @@ from negpy.desktop.view.canvas.overlay import CanvasOverlay
 from negpy.desktop.view.widgets.granular_settings_dialog import open_paste_dialog, open_sync_bounds_dialog
 from negpy.infrastructure.gpu.device import GPUDevice
 from negpy.infrastructure.gpu.resources import GPUTexture
+from negpy.desktop.view.frame_merge_action import ACTION_IDS, LABELS, SCOPE_FRAME, merge_to_tiff, mergeable_in
+from negpy.desktop.view.sidecar_action import LABEL as SIDECAR_LABEL, load_edit_from_sidecar
 from negpy.desktop.view.shortcut_registry import label_with_shortcut
 from negpy.desktop.view.styles.theme import THEME
 from negpy.kernel.system.config import APP_CONFIG
@@ -44,11 +46,13 @@ _TOOL_CURSORS: dict[ToolMode, Qt.CursorShape] = {
     ToolMode.WB_PICK: Qt.CursorShape.PointingHandCursor,
     ToolMode.CROP_MANUAL: Qt.CursorShape.CrossCursor,
     ToolMode.DUST_PICK: Qt.CursorShape.BlankCursor,
+    ToolMode.CLONE: Qt.CursorShape.BlankCursor,
     ToolMode.LOCAL_DRAW: Qt.CursorShape.CrossCursor,
     ToolMode.LOCAL_OVAL: Qt.CursorShape.CrossCursor,
     ToolMode.LOCAL_GRADIENT: Qt.CursorShape.CrossCursor,
     ToolMode.ANALYSIS_DRAW: Qt.CursorShape.CrossCursor,
     ToolMode.STRAIGHTEN: Qt.CursorShape.CrossCursor,
+    ToolMode.KEYSTONE_LINES: Qt.CursorShape.CrossCursor,
     ToolMode.ZONE_PLACE: Qt.CursorShape.CrossCursor,
 }
 
@@ -120,8 +124,11 @@ class ImageCanvas(QWidget):
     cursor_left_canvas = pyqtSignal()
     local_mask_created = pyqtSignal(str, list)
     scratch_completed = pyqtSignal(list)
+    clone_stroke_completed = pyqtSignal(list)
+    clone_source_picked = pyqtSignal(float, float)
     dust_exclusion_painted = pyqtSignal(list)
     straighten_completed = pyqtSignal(float)
+    keystone_line_marked = pyqtSignal(str, float, float, float, float)
     test_strip_picked = pyqtSignal(int, int)
     zone_pin_moved = pyqtSignal(int, float, float, bool)
     zone_placement_confirmed = pyqtSignal()
@@ -148,6 +155,7 @@ class ImageCanvas(QWidget):
         self.pan_offset = QPointF(0, 0)
         self._last_mouse_pos = QPointF(0, 0)
         self._is_panning = False
+        self._space_pan_held = False
         self._bg_color = QColor(THEME.canvas_bg_black)
         self._last_buffer: Any = None
 
@@ -171,6 +179,7 @@ class ImageCanvas(QWidget):
         self.root_layout.addWidget(self.overlay)
 
         self.overlay.clicked.connect(self.clicked.emit)
+        self.overlay.pan_requested.connect(self.pan_by_viewport_delta)
         self.overlay.crop_rect_changed.connect(self.crop_rect_changed.emit)
         self.overlay.crop_rotation_changed.connect(self.crop_rotation_changed.emit)
         self.overlay.crop_confirmed.connect(self.crop_confirmed.emit)
@@ -180,8 +189,11 @@ class ImageCanvas(QWidget):
         self.overlay.cursor_left.connect(self.cursor_left_canvas.emit)
         self.overlay.local_mask_created.connect(self.local_mask_created.emit)
         self.overlay.scratch_completed.connect(self.scratch_completed.emit)
+        self.overlay.clone_stroke_completed.connect(self.clone_stroke_completed.emit)
+        self.overlay.clone_source_picked.connect(self.clone_source_picked.emit)
         self.overlay.dust_exclusion_painted.connect(self.dust_exclusion_painted.emit)
         self.overlay.straighten_completed.connect(self.straighten_completed.emit)
+        self.overlay.keystone_line_marked.connect(self.keystone_line_marked.emit)
         self.overlay.test_strip_picked.connect(self.test_strip_picked.emit)
         self.overlay.zone_pin_moved.connect(self.zone_pin_moved.emit)
         self.overlay.zone_placement_confirmed.connect(self.zone_placement_confirmed.emit)
@@ -227,6 +239,7 @@ class ImageCanvas(QWidget):
             x = max(inset, min(x, self.width() - tw - inset))
             y = max(inset, self.height() - th - inset)
             tb.setGeometry(x, y, tw, th)
+            self.hud.set_bottom_clearance(th + inset)
         self._raise_floating_widgets()
 
     def _raise_floating_widgets(self) -> None:
@@ -237,6 +250,9 @@ class ImageCanvas(QWidget):
     def set_tool_mode(self, mode: ToolMode) -> None:
         self.setCursor(_cursor_for_tool(mode))
         self.overlay.set_tool_mode(mode)
+
+    def clear_keystone_lines(self) -> None:
+        self.overlay.clear_keystone_lines()
 
     def reset_tool_cursor(self) -> None:
         self.setCursor(_cursor_for_tool(self.state.active_tool))
@@ -253,7 +269,7 @@ class ImageCanvas(QWidget):
 
     def _image_dims(self) -> Optional[Tuple[int, int]]:
         """Current rendered image size as (width, height), or None if nothing is shown."""
-        buf = self.state.last_metrics.get("base_positive")
+        buf = self.state.canvas_value("base_positive")
         if buf is None:
             return None
         import numpy as np
@@ -291,7 +307,7 @@ class ImageCanvas(QWidget):
         """Rendered-buffer pixels per source pixel. Below 1 when the frame rendered
         against a downscaled preview, so zoom stays quoted in scan pixels whatever
         resolution the pipeline was handed."""
-        long_edge = float(self.state.last_metrics.get("render_long_edge") or 0.0)
+        long_edge = float(self.state.canvas_value("render_long_edge") or 0.0)
         source_edge = float(max(self.state.original_res or (0, 0)))
         if long_edge <= 0.0 or source_edge <= 0.0:
             return 1.0
@@ -486,7 +502,7 @@ class ImageCanvas(QWidget):
     def _pinch_sizes_brush(self) -> bool:
         """A live brush takes the pinch. The wheel still zooms in that state, so no context
         is left without a zoom route."""
-        if self.state.active_tool in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK):
+        if self.state.active_tool in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.CLONE):
             return True
         return bool(self.state.config.retouch.dust_remove and self.state.right_click_excludes)
 
@@ -527,10 +543,8 @@ class ImageCanvas(QWidget):
             self._pinch_brush_step(k)
             ev.setAccepted(g, True)
             return True
-        anchor = g.centerPoint()
-        w = ev.widget()
-        if w is not None and w is not self:
-            anchor = w.mapTo(self, anchor)
+        # A pinch reports its center in screen coordinates.
+        anchor = self.mapFromGlobal(g.centerPoint())
         if self._apply_scale_at(k, anchor):
             ev.setAccepted(g, True)
             return True
@@ -591,7 +605,9 @@ class ImageCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton or (
-            event.button() == Qt.MouseButton.LeftButton and self.zoom_level > 1.0 and self.state.active_tool == ToolMode.NONE
+            event.button() == Qt.MouseButton.LeftButton
+            and self.zoom_level > 1.0
+            and (self.state.active_tool == ToolMode.NONE or self._space_pan_held)
         ):
             self._is_panning = True
             self._last_mouse_pos = event.position()
@@ -604,11 +620,16 @@ class ImageCanvas(QWidget):
         if self._is_panning:
             delta = event.position() - self._last_mouse_pos
             self._last_mouse_pos = event.position()
-            self.pan_offset += QPointF(delta.x() / self.width(), delta.y() / self.height())
-            self._sync_transform()
+            self.pan_by_viewport_delta(delta.x(), delta.y())
             event.accept()
         else:
             super().mouseMoveEvent(event)
+
+    def pan_by_viewport_delta(self, dx: float, dy: float) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        self.pan_offset += QPointF(dx / self.width(), dy / self.height())
+        self._sync_transform()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._is_panning:
@@ -617,6 +638,15 @@ class ImageCanvas(QWidget):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    def set_space_pan_held(self, held: bool) -> None:
+        if self._space_pan_held == held:
+            return
+        self._space_pan_held = held
+        if held and self.underMouse():
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif not held:
+            self.reset_tool_cursor()
 
     def _sync_transform(self) -> None:
         """Propagates zoom/pan to sub-widgets."""
@@ -648,7 +678,13 @@ class ImageCanvas(QWidget):
             self.gpu_widget.set_display_transform(color_space, monitor_icc_bytes, proof)
             self.gpu_widget.update_texture(buffer)
             self.overlay.update_buffer(
-                None, color_space, content_rect, gpu_size=(buffer.width, buffer.height), proof=proof, gpu_texture=buffer
+                None,
+                color_space,
+                content_rect,
+                gpu_size=(buffer.width, buffer.height),
+                monitor_icc_bytes=monitor_icc_bytes,
+                proof=proof,
+                gpu_texture=buffer,
             )
             self.overlay.show()
             self.overlay.raise_()
@@ -692,6 +728,9 @@ class ImageCanvas(QWidget):
         if self.state.active_tool in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK):
             self._exec_retouch_menu(pos, global_pos)
             return
+        if self.state.active_tool == ToolMode.CLONE:
+            self._exec_clone_menu(pos, global_pos)
+            return
 
         # Right-click on a selected mask's vertex deletes that point (no menu).
         if self.state.active_tool in (ToolMode.NONE, ToolMode.LOCAL_DRAW) and self.overlay.try_delete_local_vertex(pos):
@@ -714,6 +753,8 @@ class ImageCanvas(QWidget):
         act_sync_bounds = menu.addAction(label_with_shortcut("Sync Bounds…", "sync_bounds"))
         act_sync_bounds.triggered.connect(lambda: open_sync_bounds_dialog(self, self._controller.session))  # type: ignore[union-attr]
         menu.addSeparator()
+        self._add_reset_actions(menu)
+        menu.addSeparator()
         act_reset = menu.addAction("Reset View")
         act_reset.triggered.connect(self.fit_to_window)
         act_sticky_zoom = menu.addAction("Sticky Zoom")
@@ -721,9 +762,30 @@ class ImageCanvas(QWidget):
         act_sticky_zoom.setChecked(self.state.sticky_zoom)
         act_sticky_zoom.toggled.connect(self._controller.session.set_sticky_zoom)  # type: ignore[union-attr]
         menu.addSeparator()
+        self._add_merge_to_tiff_action(menu)
         act_unload = menu.addAction("Unload…")
         act_unload.triggered.connect(self._unload_current_file)
         menu.exec(global_pos)
+
+    def _add_merge_to_tiff_action(self, menu: QMenu) -> None:
+        """Frame scope only: a selection-scoped item here would act on frames the user cannot see."""
+        if self._controller is None or not mergeable_in(self.state, SCOPE_FRAME):
+            return
+        menu.addAction(label_with_shortcut(LABELS[SCOPE_FRAME], ACTION_IDS[SCOPE_FRAME])).triggered.connect(
+            lambda: merge_to_tiff(self, self._controller, SCOPE_FRAME)
+        )
+
+    def _add_reset_actions(self, menu: QMenu) -> None:
+        """The Film Strip's frame resets, for the frame on the canvas."""
+        controller = self._controller
+        assert controller is not None
+        menu.addAction("Reset Settings").triggered.connect(controller.session.reset_settings)
+        act_roll = menu.addAction(label_with_shortcut("Reset to Roll Settings", "reset_to_roll"))
+        act_roll.triggered.connect(controller.revert_frame_to_roll)
+        act_roll.setEnabled(controller.can_revert_frame_to_roll())
+        menu.addAction(label_with_shortcut(SIDECAR_LABEL, "load_sidecar")).triggered.connect(
+            lambda: load_edit_from_sidecar(self, controller)
+        )
 
     def _add_exclude_action(self, menu: QMenu, pos: QPointF) -> None:
         """Adds the exclude item for the patch under the cursor, on the menus a right-click
@@ -733,7 +795,7 @@ class ImageCanvas(QWidget):
         coords = self.overlay.image_coords_at(pos)
         if coords is None:
             return
-        act = menu.addAction("Exclude From Optical Removal")
+        act = menu.addAction("Exclude from Optical Removal")
         act.triggered.connect(lambda _=False, c=coords: self._controller.handle_dust_exclusion_painted([c]))  # type: ignore[union-attr]
 
     def _unload_current_file(self) -> None:
@@ -744,6 +806,27 @@ class ImageCanvas(QWidget):
             return
         if confirm_unload(self):
             self._controller.session.remove_current_file()
+
+    def _exec_clone_menu(self, pos: QPointF, global_pos) -> None:
+        controller = self._controller
+        assert controller is not None
+        count = len(self.state.config.retouch.clone_strokes)
+        menu = QMenu(self)
+        act_source = menu.addAction("Pick New Source")
+        act_source.triggered.connect(lambda: controller.arm_clone_source(True))
+        menu.addSeparator()
+        hit = self.overlay.heal_hit_test(pos)
+        if hit is not None and hit[0] == "clone":
+            act_delete = menu.addAction("Delete This Clone")
+            act_delete.triggered.connect(lambda _=False, i=hit[1]: controller.delete_clone(i))
+            menu.addSeparator()
+        act_undo = menu.addAction(label_with_shortcut("Undo Last Clone", "undo"))
+        act_undo.triggered.connect(controller.undo_last_clone)
+        act_undo.setEnabled(count > 0)
+        act_clear = menu.addAction("Clear All Clones…")
+        act_clear.triggered.connect(controller.clear_clones)
+        act_clear.setEnabled(count > 0)
+        menu.exec(global_pos)
 
     def _exec_retouch_menu(self, pos: QPointF, global_pos) -> None:
         """Context menu while the heal or scratch tool is active."""
@@ -766,8 +849,10 @@ class ImageCanvas(QWidget):
         hit = self.overlay.heal_hit_test(pos)
         if hit is not None:
             kind, index = hit
-            act_delete = menu.addAction("Delete This Heal")
-            act_delete.triggered.connect(lambda _=False, k=kind, i=index: controller.delete_heal(k, i))
+            act_delete = menu.addAction("Delete This Clone" if kind == "clone" else "Delete This Heal")
+            act_delete.triggered.connect(
+                lambda _=False, k=kind, i=index: controller.delete_clone(i) if k == "clone" else controller.delete_heal(k, i)
+            )
             menu.addSeparator()
 
         self._add_exclude_action(menu, pos)

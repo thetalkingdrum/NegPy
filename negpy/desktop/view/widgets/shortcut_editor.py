@@ -38,11 +38,13 @@ from negpy.desktop.view.shortcut_registry import (
     ShortcutEntry,
     categories_in_order,
     category_editor_rows,
+    clash_scope,
     display_key,
     default_bindings,
     default_slider_steps,
 )
 from negpy.desktop.view.widgets.collapsible import CollapsibleSection
+from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.key_sequence_edit import KeypadAwareKeySequenceEdit
 from negpy.desktop.view.widgets.shortcut_search_line_edit import ShortcutSearchLineEdit
 from negpy.desktop.view.styles.fonts import mono_font_family
@@ -57,7 +59,7 @@ def _format_default_pair(inc_key: str, dec_key: str) -> str:
 
 
 class ShortcutEditorDialog(QDialog):
-    def __init__(self, bindings: dict[str, str], slider_steps: dict[str, float] | None = None, parent=None):
+    def __init__(self, bindings: dict[str, str], slider_steps: dict[str, float] | None = None, parent=None, *, repo=None):
         super().__init__(parent)
         self._initial_bindings = dict(bindings)
         self._initial_slider_steps = dict(slider_steps or default_slider_steps())
@@ -74,6 +76,7 @@ class ShortcutEditorDialog(QDialog):
         self.setWindowTitle("Customize Shortcuts")
         self.resize(820, 720)
         self._init_ui()
+        remember_dialog_geometry(self, repo, "shortcut_editor")
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -369,12 +372,12 @@ class ShortcutEditorDialog(QDialog):
         return {group_id: float(spin.value()) for group_id, spin in self._step_edits.items()}
 
     def _save(self) -> None:
-        seen: dict[str, str] = {}
+        seen: dict[tuple[str, str], str] = {}
         for action_id, edit in self._edits.items():
             key = self._portable(edit)
             if not key:
                 continue
-            other = seen.get(key)
+            other = seen.get((clash_scope(action_id, key), key))
             if other is not None:
                 QMessageBox.warning(
                     self,
@@ -382,11 +385,11 @@ class ShortcutEditorDialog(QDialog):
                     f'"{display_key(key)}" is assigned to both "{REGISTRY[other].description}" and "{REGISTRY[action_id].description}".',
                 )
                 return
-            seen[key] = action_id
+            seen[(clash_scope(action_id, key), key)] = action_id
 
         for group_id, spin in self._step_edits.items():
             if spin.value() <= 0:
-                QMessageBox.warning(self, "Invalid Step", f"Step size for {group_id} must be greater than zero.")
+                QMessageBox.warning(self, "Customize Shortcuts", f"Step size for {group_id} must be greater than zero.")
                 return
 
         self.accept()

@@ -114,6 +114,15 @@ class MetadataSidebar(BaseSidebar):
         # roll_override_summary gives on the Roll tab.
         self.metadata_scope_hint = hint_label("", "muted")
         self.layout.addWidget(self.metadata_scope_hint)
+        # An export decision, not a roll fact, so it stays per frame and outside the cards it disables.
+        self.protect_btn = self._small_toggle(
+            "fa5s.shield-alt",
+            "Protect Original Metadata",
+            conf.protect_original_metadata,
+            "Copy EXIF and XMP from the source file onto exports without adding or changing metadata. "
+            "The cards below are ignored while this is on.",
+        )
+        self.layout.addWidget(self.protect_btn)
 
         self._metadata_controls = QWidget()
         controls = QVBoxLayout(self._metadata_controls)
@@ -132,7 +141,7 @@ class MetadataSidebar(BaseSidebar):
         presets.addLayout(load_row)
 
         self._refresh_metadata_presets()
-        controls.addWidget(self._card("Metadata Presets", "presets", preset_body, "fa5s.magic", collapsible=False))
+        controls.addWidget(self._card("Metadata Presets", "presets", preset_body, "fa5s.magic"))
 
         # ── ANALOG GEAR ──────────────────────────────────────────────────
         gear_body, gear = self._card_body()
@@ -353,7 +362,7 @@ class MetadataSidebar(BaseSidebar):
 
         # Preview pinned above the per-frame cards, which scroll in their own area below it --
         # same pattern as Edit's Analysis section pinned above its tabs.
-        self.preview_section = self._card("Metadata Preview", "preview", self.preview_content, "fa5s.eye", collapsible=False)
+        self.preview_section = self._card("Metadata Preview", "preview", self.preview_content, "fa5s.eye")
         self.layout.addWidget(self.preview_section)
         self._metadata_scroll_area = QScrollArea()
         self._metadata_scroll_area.setWidgetResizable(True)
@@ -446,7 +455,7 @@ class MetadataSidebar(BaseSidebar):
         layout.setSpacing(THEME.space_md)
         return body, layout
 
-    def _card(self, title: str, key: str, content: QWidget, icon_name: str, *, collapsible: bool = True) -> CollapsibleSection:
+    def _card(self, title: str, key: str, content: QWidget, icon_name: str) -> CollapsibleSection:
         return make_section(
             self.controller.session.repo,
             title,
@@ -454,7 +463,6 @@ class MetadataSidebar(BaseSidebar):
             content,
             icon_name,
             default_expanded=True,
-            collapsible=collapsible,
         )
 
     def _make_exif_field(self, key: str, layout: QVBoxLayout) -> QLineEdit:
@@ -506,7 +514,13 @@ class MetadataSidebar(BaseSidebar):
             self._update_exif_display()
         self._mark_dirty()
 
+    def _on_protect_toggled(self, checked: bool) -> None:
+        self._set_metadata_controls_enabled(not checked)
+        self.update_config_section("metadata", persist=True, render=False, readback_metrics=False, protect_original_metadata=checked)
+        self.preview_timer.start()
+
     def _connect_signals(self) -> None:
+        self.protect_btn.toggled.connect(self._on_protect_toggled)
         self.description_fields_btn.clicked.connect(self._open_description_fields)
         self.gear_clear_btn.clicked.connect(self._on_gear_clear)
         self.gear_infer_btn.clicked.connect(self._on_gear_infer_from_folder)
@@ -541,7 +555,7 @@ class MetadataSidebar(BaseSidebar):
         self.controller.session.file_selected.connect(self._on_file_selected)
 
     def _open_description_fields(self) -> None:
-        dlg = DescriptionFieldsDialog(self._description_fields, self)
+        dlg = DescriptionFieldsDialog(self._description_fields, self, repo=self.controller.session.repo)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
         self._description_fields = dlg.selected_fields()
@@ -630,7 +644,7 @@ class MetadataSidebar(BaseSidebar):
         previous = self._gear_selected_id(combo, self.state.config.metadata)
         category = self._gear_combo_category[id(combo)]
         library = self._gear_library
-        new_item = resolve_other_gear_pick(self, category, library)
+        new_item = resolve_other_gear_pick(self, category, library, repo=self.controller.session.repo)
         if new_item is None:
             combo.set_selected_id(previous)
             return
@@ -886,6 +900,7 @@ class MetadataSidebar(BaseSidebar):
             conf.location_country,
             center=center,
             parent=self,
+            repo=self.controller.session.repo,
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
@@ -954,6 +969,7 @@ class MetadataSidebar(BaseSidebar):
         self.block_signals(True)
         try:
             self._set_metadata_controls_enabled(not conf.protect_original_metadata)
+            self.protect_btn.setChecked(conf.protect_original_metadata)
             self._refresh_gear_combos()
 
             self.format_combo.setCurrentText(format_label(conf.format))

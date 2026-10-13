@@ -1,27 +1,9 @@
-import types
 from typing import Any
 from dataclasses import replace
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QComboBox, QPushButton, QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QPushButton, QWidget, QVBoxLayout
 from negpy.desktop.controller import AppController
 from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, icon_button, labeled_action, labeled_toggle, tool_toggle
 from negpy.desktop.view.styles.theme import THEME
-
-
-def install_wheel_guards(widget: QWidget) -> None:
-    """Scroll must not change a combo's value unless it has focus — otherwise scrolling
-    a panel silently edits every combo the pointer crosses. Module-level so panels that
-    are not BaseSidebar subclasses (ScanSidebar) can share it."""
-    for combo in widget.findChildren(QComboBox):
-        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        def _wheel(c, event) -> None:
-            if c.hasFocus():
-                QComboBox.wheelEvent(c, event)
-            else:
-                event.ignore()
-
-        combo.wheelEvent = types.MethodType(_wheel, combo)
 
 
 class BaseSidebar(QWidget):
@@ -41,10 +23,6 @@ class BaseSidebar(QWidget):
         self._init_layout()
         self._init_ui()
         self._connect_signals()
-        self._install_wheel_guards()
-
-    def _install_wheel_guards(self) -> None:
-        install_wheel_guards(self)
 
     def _init_layout(self) -> None:
         """Sets up the default QVBoxLayout."""
@@ -64,12 +42,12 @@ class BaseSidebar(QWidget):
         """Override to update widgets from current AppState."""
         pass
 
-    def _tool_toggle(self, icon_name: str, label: str, tooltip: str) -> QPushButton:
-        return tool_toggle(icon_name, label, tooltip)
+    def _tool_toggle(self, icon_name: str, label: str, tooltip: str, align_left: bool = False) -> QPushButton:
+        return tool_toggle(icon_name, label, tooltip, align_left)
 
-    def _small_toggle(self, icon_name: str, label: str, checked: bool, tooltip: str) -> QPushButton:
+    def _small_toggle(self, icon_name: str, label: str, checked: bool, tooltip: str, align_left: bool = False) -> QPushButton:
         """_tool_toggle with an initial checked state; the name marks the role."""
-        btn = tool_toggle(icon_name, label, tooltip)
+        btn = tool_toggle(icon_name, label, tooltip, align_left)
         btn.setChecked(checked)
         return btn
 

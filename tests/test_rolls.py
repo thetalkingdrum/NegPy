@@ -5,6 +5,8 @@ handful of film, rig and scanning facts (see TestRollDefaults below)."""
 from dataclasses import replace
 from unittest.mock import MagicMock
 
+import pytest
+
 from negpy.domain.models import ProcessConfig, WorkspaceConfig
 from negpy.features.process.models import DemosaicMode, ProcessMode
 from negpy.infrastructure.storage.repository import StorageRepository
@@ -36,6 +38,8 @@ from negpy.services.assets.rolls import (
     import_subfolders_as_rolls,
     is_forked,
     recognize_folder,
+    next_roll_name,
+    roll_folder_name,
     rename_folder_roll_disk,
     rename_roll,
     resolve_roll_baseline,
@@ -77,6 +81,30 @@ def test_recognize_folder_names_it_from_the_path():
     assert entry["extra_paths"] == []
 
 
+def test_recognize_folder_under_an_import_source_nests_like_an_import(tmp_path):
+    repo = _repo()
+    (tmp_path / "scans" / "old").mkdir(parents=True)
+    (tmp_path / "scans" / "old" / "a.tif").write_bytes(b"")
+    import_subfolders_as_rolls(repo, str(tmp_path / "scans"))
+    roll_id = recognize_folder(repo, str(tmp_path / "scans" / "2026" / "new"))
+    assert roll_for_id(repo, roll_id)["name"] == "scans/2026/new"
+    assert roll_for_id(repo, recognize_folder(repo, "/elsewhere/roll"))["name"] == "roll"
+
+
+def test_recognize_folder_nests_under_an_import_source_on_windows(monkeypatch):
+    import ntpath
+    from types import SimpleNamespace
+
+    from negpy.services.assets import rolls
+
+    monkeypatch.setattr(rolls, "os", SimpleNamespace(path=ntpath, sep="\\"))
+    repo = _repo()
+    repo.save_global_setting(rolls.IMPORT_SOURCES_KEY, ["D:\\Photos\\Scans"])
+    roll_id = recognize_folder(repo, "d:/photos/scans/2026\\New")
+    assert roll_for_id(repo, roll_id)["name"] == "Scans/2026/New"
+    assert roll_for_id(repo, recognize_folder(repo, "E:\\Photos\\Scans\\x"))["name"] == "x"
+
+
 def test_recognize_folder_is_idempotent():
     repo = _repo()
     first = recognize_folder(repo, "/scans/roll_a")
@@ -106,6 +134,20 @@ def test_add_extra_member_extends_a_folder_rolls_extra_paths():
     roll_id = recognize_folder(repo, "/scans/roll_a")
     add_extra_members(repo, roll_id, ["/elsewhere/c.nef"])
     assert roll_for_id(repo, roll_id)["extra_paths"] == ["/elsewhere/c.nef"]
+
+
+def test_add_extra_member_skips_files_the_folder_walk_finds():
+    repo = _repo()
+    roll_id = recognize_folder(repo, "/scans/roll_a")
+    add_extra_members(repo, roll_id, ["/scans/roll_a/1.tif", "/scans/roll_a/sub/2.tif", "/elsewhere/c.nef"])
+    assert roll_for_id(repo, roll_id)["extra_paths"] == ["/scans/roll_a/sub/2.tif", "/elsewhere/c.nef"]
+
+
+@pytest.mark.parametrize(
+    ("text", "name"), [("", "Roll001"), ("  Summer 2026  ", "Summer 2026"), ("..", None), ("a/b", None), ("a\\b", None), ("a\0b", None)]
+)
+def test_roll_folder_name(text, name):
+    assert roll_folder_name(text) == name
 
 
 def test_add_extra_member_extends_a_virtual_rolls_member_paths():
@@ -441,6 +483,66 @@ class TestRollDefaults:
         assert resolved.process.positive_source is True
         assert resolved.exposure.cast_removal_strength == cast_removal_for_mode(ProcessMode.E6, frame.exposure.cast_removal_strength)
         assert resolved.exposure.auto_exposure is False
+
+    def test_a_roll_auto_crop_arms_an_uncropped_frame(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Portra", [])
+        set_roll_defaults(repo, roll_id, crop_from_auto=True)
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", WorkspaceConfig())
+
+        assert resolved.geometry.crop_from_auto is True
+        assert resolved.geometry.crop_rect is None
+
+    def test_a_roll_auto_crop_off_clears_a_frames_auto_rect(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Portra", [])
+        set_roll_defaults(repo, roll_id, crop_from_auto=False)
+        base = WorkspaceConfig()
+        frame = replace(base, geometry=replace(base.geometry, crop_rect=(0.1, 0.1, 0.9, 0.9), crop_from_auto=True, crop_detect_key="k"))
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", frame)
+
+        assert resolved.geometry.crop_from_auto is False
+        assert resolved.geometry.crop_rect is None
+
+    def test_a_roll_auto_crop_never_reaches_an_unlocked_hand_drawn_crop(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Portra", [])
+        set_roll_defaults(repo, roll_id, crop_from_auto=True, autocrop_ratio="4:3")
+        base = WorkspaceConfig()
+        frame = replace(base, geometry=replace(base.geometry, crop_rect=(0.1, 0.1, 0.9, 0.9), crop_from_auto=False))
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", frame)
+
+        assert resolved.geometry.crop_rect == (0.1, 0.1, 0.9, 0.9)
+        assert resolved.geometry.crop_from_auto is False
+        assert resolved.geometry.autocrop_ratio == "4:3"
+
+    def test_a_roll_auto_crop_keeps_a_frames_resolved_auto_rect(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Portra", [])
+        set_roll_defaults(repo, roll_id, crop_from_auto=True)
+        base = WorkspaceConfig()
+        frame = replace(base, geometry=replace(base.geometry, crop_rect=(0.1, 0.1, 0.9, 0.9), crop_from_auto=True, crop_detect_key="k"))
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", frame)
+
+        assert resolved.geometry == frame.geometry
+
+    def test_a_frame_locked_on_auto_crop_keeps_its_hand_drawn_crop(self):
+        repo = _repo()
+        roll_id = create_virtual_roll(repo, "Portra", [])
+        set_roll_defaults(repo, roll_id, crop_from_auto=True, autocrop_ratio="4:3")
+        set_frame_override(repo, roll_id, "h1", "auto_crop", locked=True)
+        base = WorkspaceConfig()
+        frame = replace(base, geometry=replace(base.geometry, crop_rect=(0.1, 0.1, 0.9, 0.9), crop_from_auto=False))
+
+        resolved = resolve_roll_config(repo, roll_id, "h1", frame)
+
+        assert resolved.geometry.crop_rect == (0.1, 0.1, 0.9, 0.9)
+        assert resolved.geometry.crop_from_auto is False
+        assert resolved.geometry.autocrop_ratio == "4:3"
 
     def test_no_roll_id_leaves_the_frame_alone(self):
         repo = _repo()
@@ -967,3 +1069,26 @@ def test_delete_folder_rolls_forgets_rolls_and_the_source_under_it(tmp_path):
 
     assert list(saved_rolls(repo)) == [other]
     assert import_sources(repo) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "following"),
+    [
+        ("Roll001", "Roll002"),
+        ("Roll099", "Roll100"),
+        ("portra400_1", "portra400_2"),
+        ("hp5-9", "hp5-10"),
+        ("Roll 7", "Roll 8"),
+        ("12", "13"),
+        ("portra400", "portra400_2"),
+        ("hp5", "hp5_2"),
+        ("Summer", "Summer_2"),
+    ],
+)
+def test_next_roll_name_steps_a_counter_and_suffixes_any_other_name(name, following):
+    assert next_roll_name(name, lambda _: False) == following
+
+
+def test_next_roll_name_skips_taken_names():
+    assert next_roll_name("Roll001", {"Roll002", "Roll003"}.__contains__) == "Roll004"
+    assert next_roll_name("portra", {"portra_2"}.__contains__) == "portra_3"

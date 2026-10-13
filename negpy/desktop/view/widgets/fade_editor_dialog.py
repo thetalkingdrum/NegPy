@@ -24,6 +24,7 @@ from negpy.desktop.view.sidebar.tone import _CH_COLORS
 from negpy.desktop.view.styles.templates import dialog_pane_qss, hint_label, pane_header_qss, pin_dialog_default, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.crosstalk_editor_dialog import _MatrixGridWidget, unique_copy_name
+from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.floating_panel import float_over_app
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.services.assets.crosstalk import CrosstalkType
@@ -65,7 +66,7 @@ class FadeEditorDialog(QDialog):
     delta_previewed = pyqtSignal(object, float)  # (delta 6-list, strength)
     profiles_changed = pyqtSignal()
 
-    def __init__(self, current_profile: str, current_strength: float, parent=None):
+    def __init__(self, current_profile: str, current_strength: float, parent=None, *, repo=None):
         super().__init__(parent)
         self._selected_name: Optional[str] = None
         self._updating = False
@@ -78,6 +79,7 @@ class FadeEditorDialog(QDialog):
 
         self._reload_list(select=current_profile if current_profile in FadeProfiles.list_profiles() else FadeProfiles.NONE_NAME)
         self.preview_strength_slider.setValue(current_strength if current_strength > 0 else 1.0)
+        remember_dialog_geometry(self, repo, "fade_editor")
 
     # ------------------------------------------------------------------ UI
 

@@ -1,5 +1,73 @@
 # Change Log
 
+## 0.64.0
+
+- New: **Expanded Analysis** — Waveform and Vectorscope views beside the Curve chart, a Clipping Overlay, zone strip hover that highlights the zone's pixels, a double-click on the zone strip toggles the Zone Overlay, and the step wedge prints through alt process and toning.
+- New: **Darkroom printing** — Sabattier as a third Alternative Process (Strength, Re-exposure, Agitation for the Mackie lines), Local Flash on a Dodge & Burn mask, and a Diffusion slider on the Tone card. @jondestoppeleire
+- New: **Auto Grade Shadow Hold** — lifts shadows on contrasty frames, and Auto Density and Auto Grade show their values on the sliders.
+- New: **Camera scanning** — live view histogram and clipping zebras, Meter sets the shutter from one RAW probe, single-capture narrowband scanning that saves a sensor profile, a profile captured straight from the tethered camera, a Method choice for the sensor calibration against blown blues, and a New Roll button. @jondestoppeleire @seanharding @thetalkingdrum
+- New: **Check Flat Field** — shows how even a flat field is from any frame, and saving warns when the reference is clipped or uneven. @thetalkingdrum
+- New: **Export** — a Sharpening slider that runs at the final size after a resize, and White Paper and Film Base options that print the contact sheet with less ink. @seanharding @jondestoppeleire
+- New: **Workflow** — Paste to every selected frame, Copy Card Settings, Undo Apply to Roll, Unmarked Only and Advance After Marking for triage, Load Edit from Sidecar…, a 1:1.4142 (ISO A) ratio, and a Color vision setting in Preferences → Accessibility.
+- New: **Catalogs** — every current film stock under Kodak's 2026 names, Hasselblad V, Nikonos and Nikon AF gear, five more crosstalk matrices, and Panasonic RW2 embedded lens correction. @jondestoppeleire @red-prs
+- Change: **Auto Crop** — a roll setting on the Crop card with Frame/Roll scope, mirrored on Geometry; Roll asks before a push changes it for other frames, hand-drawn crops stay out of it, and Square Before Crop runs the Auto Skew fit first. @kurtwindisch @jondestoppeleire
+- Change: **Interface pass** — a canvas toolbar with zoom, Print and Overlays menus and a tool row while a tool is armed; segmented choices, Paper Response as its own card, panels that compact instead of clipping, and tooltips on every control.
+- Fix: **Export safety** — an export never overwrites its source or another frame, unedited and border-crushed frames are flagged, and one failed file no longer stops a batch. @jondestoppeleire
+- Fix: **Sidecars** — edits restore reliably from .negpy sidecars in the Film Strip and batch export, and a fork's or composite's edit stays out of the shared sidecar.
+- Fix: **Flat Field and peeks** — the gain follows each frame's orientation, half frames take their own half, Auto Crop and Roll Analysis read the flat-fielded source, and an edit, frame change or rotation closes every peek. @thetalkingdrum
+- Fix: **GPU and CPU match** — border color, tiled paper white, warped-crop metering, Hue Trim on slides, split-toning masks, Chroma Denoise tiles and slide Shadow Reach on export; Dodge & Burn grays out on slides.
+- Fix: **Scanning** — Coolscan single-frame adapters, Output folder and file-pattern checks, a busy scanner on Meter Frame, typed Resolution without Enter, and film re-measured after a format change.
+- Fix: **File loading** — palette, MinIsWhite, CMYK, planar and two-sample gray TIFFs, LogLuv, CR3/RAF orientation, oversized TIFF and Nikon Scan thumbnails, and NegPy's own ICC profiles on reload.
+- Fix: **Editing** — brush and mask sizes against the whole frame, off-frame mask points kept, crop resets as undo steps, Crop Offset clamped, and forked frames and renamed roll folders keep their edits.
+- Fix: **Library and canvas** — brush size kept from frame to frame, a sharp canvas after a screen change, roll counts show photos, dot-prefixed files are skipped, and Cast Removal holds on a mixed neutral set. @s6stkurz @jondestoppeleire @seanharding @perryd01
+- Fix: **Stability and speed** — quitting cancels running batches and exits cleanly, and library search, roll switching and GPU renders are faster.
+- Fix: **Nix flake builds with current nixpkgs.** @activexray
+
+## 0.63.0
+
+- New: **Retouch Clone tool** — Alt-click sets a source, and painting copies it with an aligned offset; the heal tool stays fast as strokes add up. @PabloRuizCuevas
+- New: **Darkroom contact sheet** — the roll printed as film strips 1:1 on Ilford paper, with rebate, edge print and an optional Straight Proof; replaces the pixel-grid templates. @s6stkurz
+- New: **Merge to TIFF Negative** — a trichrome triplet or stitch becomes one 16-bit linear TIFF that keeps its edit. @kurtwindisch
+- New: **Geometry tools** — Auto Skew squares the frame to its film edges, and the Tilt and Swing tool solves keystone from four marked edges. @jondestoppeleire @matthoosier
+- New: **Canvas panning** — Space + left-drag pans, and drags auto-pan at the edge of a zoomed image. @matthoosier
+- New: **Scan as Roll** — scans open as a Library roll and frames load as they land; Folder as Roll scans straight into a roll folder.
+- New: **Interactive tour** — chaptered, with steps that wait for you to act and a demo negative.
+- New: **Scanning additions** — live view focus meter and frame border @seanharding; Eject When Done, nkscan debug log and strip offset markers @thetalkingdrum.
+- New: **Menu additions** — Close Roll in the Library and Film Strip menus, and frame resets in the canvas menu. @thetalkingdrum
+- Change: **Optical Removal hair detection** — Hair Threshold is a separate slider from Spot Threshold and rises along tonal edges, so bright rims are no longer taken for hairs; Size goes down to 2 px.
+- Change: **Update Thumbnails renders only stale frames**, with progress and time left. @thetalkingdrum
+- Change: **Linear Output can apply lens correction.** @thetalkingdrum
+- Change: **UI polish** — right-aligned slider labels, toggles in place of Export's checkboxes, the wheel never edits a box, and dialogs remember their size and position. @s6stkurz
+- Change: **Trichrome Mode is remembered per roll.** @thetalkingdrum
+- Change/Fix: **ISO-R Grade defaults to 115 R everywhere**, and Crosstalk Strength to 0. @kurtwindisch
+- Fix: **Geometry** — Half Frame splits along the detected axis, Tilt and Swing follow a turn or flip, embedded lens correction fills the frame, and the crop view leaves out the border and keeps negative peek. @jondestoppeleire @thetalkingdrum @matthoosier
+- Fix: **Responsiveness and display** — a click never waits behind a prefetch, one click closes a dropdown, the canvas overlay is color-managed on GPU, and X-Trans camera-WB previews decode at full size. @jondestoppeleire @thetalkingdrum
+- Fix: **Camera Scanning** — Live View keys work on macOS and in floating windows, and lossy raws are not read as clipped. @kurtwindisch @seanharding
+- Fix: **Library and resets** — Roll Settings scopes and filters, crop defaults on a fresh frame, card resets that cleared the scanning setup, and settings lost on an empty Film Strip. @kurtwindisch
+
+## 0.62.0
+
+- Change: **UX pass**
+  - **Find** — Ctrl+K or the Controls panel's title box reaches every slider, card and action by name or by a common synonym ("contrast" finds ISO-R Grade); a slider hit is a live control.
+  - **Light Table** — Shift+G shows the roll as a grid across the whole window.
+  - **Reference view** — Shift+R pins a frame beside the canvas to match the roll to it; Draw Region moves to Ctrl+R.
+  - **Compact panels** — sliders are one row (label, track, value) with values always shown, and a slider's modifiers sit under it behind a rail; a row of either-or buttons becomes one dropdown, and small tools sit on the section headers. Cast Removal moves to the Roll tab's Calibration card, Protect Original Metadata to the Metadata tab, and Tone's auto helpers into one Auto menu; Sync Metadata to Batch, Filtration's Roll Lock and the Show slider values preference are retired.
+  - **Labeled tabs** — tabs carry text labels, and the Color tab is now Look.
+  - **More room for the canvas** — the logo header is gone (About and updates are in the ⋯ menu), and Shift+H hides both side panels.
+  - **Edit Toolbar** can place the actions that were only in the ⋯ menu.
+- New: **Preflash** — a uniform paper pre-exposure in the print curve that lifts highlights near the paper's threshold and leaves the rest; print only.
+- New: **Single-edge crop handles** — drag one side of the crop at a time. @matthoosier
+- New: **Plustek Multi-Pass scanning** — a Scan mode combo (Single-Pass, Multi-Pass, Adaptive Multi-Exposure, Adaptive Multi-Pass) with a Passes slider stacks repeated exposures for less noise; not with IR. @TobbyTravel
+- New: **Hide the GPU memory warning** — a Preferences → Performance option; the warning no longer shows on CPU renders. @kurtwindisch
+- Change: **Filed carrier rebate** — the rebate prints through the frame's curves and filtration, the edge is filed in straight strokes with nicks near the corners, the film sits off center in the aperture, and flare takes the paper's toe color.
+- Change: **More Pakon and Noritsu scan sizes** — Pakon TLX dimensions are read from the file header; four more 5028-high Noritsu sizes are recognized. @thetalkingdrum
+- Change: **Crash reports go to negpy.log** — `~/negpy_boot.log` is gone. @seanharding
+- Fix: **Stitch cuts a seam through the overlap** — detail the alignment cannot match is no longer doubled. @kurtwindisch
+- Fix: **Slide fixes** — a Flat export of a raw slide gets no second white balance, Zone placement is off on an as-captured slide, the Half Frame dialog shows a slide as a positive, and Before resets to the shipped defaults.
+- Fix: **Dye Separation on saturated slide colors** — a clipped channel no longer speckles a blue sky. @thetalkingdrum
+- Fix: **Half Frame scans with a detected rebate** — Auto-detect All Splits no longer breaks thumbnails, export and the Half Frame dialog; affected scans are repaired. @thetalkingdrum
+- Fix: **Editing a Roll-tab card on an empty roll no longer crashes.** @kurtwindisch
+
 ## 0.61.0
 
 - New: **Nested roll discovery** — Import Subfolders as Rolls finds roll folders at any depth and shows them in a tree under their parent folders; Refresh finds new folders and marks rolls whose folder is gone; Discovery Filters (default `export`) skip folders by name; a folder with no images of its own imports its subfolders.

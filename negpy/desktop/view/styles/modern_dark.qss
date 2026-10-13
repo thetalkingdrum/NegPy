@@ -434,6 +434,12 @@ QLabel[hint="error"] {
     border: none;
 }
 
+QLabel[hint="success"] {
+    color: @status_success;
+    font-size: @font_size_smallpx;
+    border: none;
+}
+
 QPushButton#collapsible_reset_btn {
     background: transparent;
     border: none;
@@ -442,7 +448,8 @@ QPushButton#collapsible_reset_btn:hover {
     background: @bg_selected;
     border-radius: 3px;
 }
-QPushButton#collapsible_reset_btn::menu-indicator {
+QPushButton#collapsible_reset_btn::menu-indicator,
+QPushButton#icon_menu_btn::menu-indicator {
     /* An actions-menu button in this row (set_actions_menu) reads as one more plain icon,
     like its info/reset siblings, not a split button. */
     width: 0px;
@@ -458,6 +465,11 @@ QFrame#toolbar_container {
 QFrame#toolbar_separator {
     color: @border_color;
     background-color: @border_color;
+}
+
+QToolButton#toolbar_overflow::menu-indicator {
+    image: none;
+    width: 0px;
 }
 
 /* Shortcut overview/Customize dialog rows. Transparent by default so the row

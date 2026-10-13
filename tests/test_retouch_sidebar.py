@@ -89,19 +89,20 @@ def test_manual_heal_count_label(qapp):
     assert sb.heals_subheader.text() == "MANUAL HEAL · 1"
 
 
-def test_brush_size_shows_while_optical_removal_is_on(qapp):
+def test_brush_size_is_live_while_optical_removal_is_on(qapp):
     """The exclusion band is painted with no tool active, so the slider it reads has to be
-    on screen there. Its keyboard steps are gated on the same visibility."""
+    live there. Its keyboard steps are gated on the same enabled state."""
     controller, sb = _sidebar()
     cfg = controller.state.config
 
     controller.state.config = replace(cfg, retouch=replace(cfg.retouch, dust_remove=False))
     sb.sync_ui()
-    assert not sb.manual_size_slider.isVisibleTo(sb), "no tool and no detector, so nothing sizes a brush"
+    assert not sb.manual_size_slider.isEnabled(), "no tool and no detector, so nothing sizes a brush"
 
     controller.state.config = replace(cfg, retouch=replace(cfg.retouch, dust_remove=True))
     sb.sync_ui()
-    assert sb.manual_size_slider.isVisibleTo(sb)
+    assert sb.manual_size_slider.isEnabled()
+    assert sb.manual_size_slider.isVisibleTo(sb) and sb.line_threshold_slider.isVisibleTo(sb), "disabled, never hidden"
 
 
 def test_brush_size_spans_the_shared_range(qapp):
@@ -114,3 +115,61 @@ def test_brush_size_spans_the_shared_range(qapp):
     assert sb.manual_size_slider.value() == HEAL_SIZE_MAX
     sb.manual_size_slider.setValue(HEAL_SIZE_MIN - 40.0)
     assert sb.manual_size_slider.value() == HEAL_SIZE_MIN
+
+
+def test_overlay_choice_sets_the_mode_and_ir_needs_an_ir_plane(qapp):
+    controller, sb = _sidebar()
+    controller.state.has_ir = False
+    sb.sync_ui()
+    assert not sb.overlay_btn.choice_menu.actions()[2].isEnabled()
+
+    sb.overlay_btn.choice_menu.actions()[1].trigger()
+    controller.set_dust_overlay.assert_called_once_with("marked")
+
+    controller.state.dust_overlay_mode = "ir"
+    sb.sync_ui()
+    assert sb.overlay_btn.currentIndex() == 0, "an IR overlay with no IR plane draws nothing"
+
+
+def test_undo_and_clear_sit_on_the_manual_heal_header(qapp):
+    _, sb = _sidebar()
+    row = next(
+        lay
+        for i in range(sb.layout.count())
+        if (lay := sb.layout.itemAt(i).layout()) is not None
+        and any(lay.itemAt(j).widget() is sb.heals_subheader for j in range(lay.count()))
+    )
+    assert [row.itemAt(j).widget() for j in range(row.count())] == [sb.heals_subheader, sb.undo_btn, sb.clear_btn]
+
+
+def test_removal_toggles_share_a_left_aligned_label_column(qapp):
+    _, sb = _sidebar()
+    for btn in (sb.auto_dust_btn, sb.ir_dust_btn):
+        assert "text-align: left" in btn.styleSheet()
+
+
+def test_detection_sliders_persist_on_commit(qapp):
+    controller, sb = _sidebar()
+    for slider, field in (
+        (sb.threshold_slider, "dust_threshold"),
+        (sb.hair_threshold_slider, "dust_hair_threshold"),
+        (sb.auto_size_slider, "dust_size"),
+        (sb.line_threshold_slider, "scratch_threshold"),
+        (sb.ir_threshold_slider, "ir_threshold"),
+    ):
+        controller.apply_config.reset_mock()
+        slider.valueCommitted.emit(3.0)
+        config = controller.apply_config.call_args.args[0]
+        assert getattr(config.retouch, field) == 3
+        assert controller.apply_config.call_args.kwargs["persist"] is True, field
+
+
+def test_brush_and_clone_sliders_persist_once_per_drag(qapp):
+    controller, sb = _sidebar()
+    update = controller.session.update_config
+    for slider in (sb.manual_size_slider, sb.clone_strength_slider, sb.clone_feather_slider):
+        update.reset_mock()
+        slider.valueChanged.emit(30.0)
+        assert update.call_args.kwargs["persist"] is False
+        slider.valueCommitted.emit(30.0)
+        assert update.call_args.kwargs["persist"] is True

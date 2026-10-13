@@ -1,22 +1,33 @@
-"""Large pop-out window for the Scanlight live view.
+"""Pop-out window for the Scanlight live view: frame, focus, meter and scan a whole roll here.
 
-Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Retake), a capture progress bar and a status line,
-so a whole roll can be framed, focused, and scanned without switching back to the
-side panel. The live image carries a magnifier cursor: a click aims the camera
-focus magnifier at that spot, a double-click returns to full frame. The buttons
-emit signals; `ScanlightSidebar` wires them and mirrors scanning state + status.
+A click aims the camera focus magnifier at that spot, a double-click returns to full frame.
+The buttons emit signals; `ScanlightSidebar` wires them and mirrors scanning state and status.
 """
 
 import time
+from typing import Optional
 
+import numpy as np
 import qtawesome as qta
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor, QKeySequence, QShortcut
+from PyQt6.QtGui import QCursor, QKeySequence
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QToolButton, QVBoxLayout, QWidget
 
+from negpy.desktop.view.shortcut_registry import key_for, tooltip_with_shortcut
 from negpy.desktop.view.sidebar.roi_image import RoiImageLabel
-from negpy.desktop.view.styles.templates import hint_label, labeled_action, pin_dialog_default, SCAN_BUTTON_HEIGHT
+from negpy.desktop.view.styles.templates import (
+    SCAN_BUTTON_HEIGHT,
+    default_button_height,
+    hint_label,
+    labeled_action,
+    pin_dialog_default,
+    set_hint_kind,
+    tool_toggle,
+    wrap_tooltip,
+)
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.charts import MiniRGBHistogramWidget
+from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.floating_panel import float_over_app
 
 #: Progress-bar chunk color per triplet channel. The live view freezes during a triplet,
@@ -25,6 +36,7 @@ from negpy.desktop.view.widgets.floating_panel import float_over_app
 _CHANNEL_COLORS = {"R": THEME.channel_red_text, "G": THEME.channel_green_text, "B": THEME.channel_blue_text}
 _DONE_COLOR = THEME.status_success
 _FLASH_MS = 1500
+_FOCUS_AT_PEAK = 0.99
 
 
 class SettingStepper(QWidget):
@@ -129,8 +141,9 @@ class LiveViewWindow(QDialog):
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
+    meterRequested = pyqtSignal()
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, repo=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Scanlight — Live View")
         self.setModal(False)
@@ -140,11 +153,23 @@ class LiveViewWindow(QDialog):
 
         # ── capture toolbar (mirrors the panel so you needn't switch tabs) ──
         bar = QHBoxLayout()
-        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame")
+        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame, or stop the capture")
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         self.retake_btn = labeled_action("fa5s.redo", " Retake", "Re-capture the current frame without advancing the counter")
         bar.addWidget(self.scan_btn, 2)
         bar.addWidget(self.retake_btn, 1)
+        # One RAW probe sets the shutter for the light as lit. Hidden with the exposure steppers.
+        self.meter_btn = labeled_action(
+            "fa5s.tachometer-alt",
+            " Meter",
+            "Set the shutter from one RAW probe: a negative's base or a slide's highlights, just under clipping",
+        )
+        bar.addWidget(self.meter_btn, 1)
+        # Exposure readouts of the preview frame.
+        self.histogram_btn = tool_toggle("fa5s.chart-area", "", "Show the frame's R, G and B histogram under the image")
+        self.zebra_btn = tool_toggle("fa5s.grip-lines", "", "Hatch clipped pixels: red at the top of the preview range, blue at the bottom")
+        bar.addWidget(self.histogram_btn)
+        bar.addWidget(self.zebra_btn)
         layout.addLayout(bar)
 
         self.image = RoiImageLabel()
@@ -153,6 +178,28 @@ class LiveViewWindow(QDialog):
         _loupe = qta.icon("fa5s.search-plus", color=THEME.text_primary).pixmap(22, 22)
         self.image.setCursor(QCursor(_loupe, 9, 9))  # hotspot ≈ the lens centre
         layout.addWidget(self.image, 1)
+
+        self.histogram = MiniRGBHistogramWidget()
+        self.histogram.setFixedHeight(2 * default_button_height())
+        layout.addWidget(self.histogram)
+        self._repo = repo
+        for btn, key in ((self.histogram_btn, "live_view_histogram"), (self.zebra_btn, "live_view_zebra")):
+            btn.setChecked(bool(repo.get_global_setting(key, False)) if repo is not None else False)
+            btn.toggled.connect(lambda on, key=key: self._remember(key, on))
+        self.histogram.setVisible(self.histogram_btn.isChecked())
+        self.histogram_btn.toggled.connect(self.histogram.setVisible)
+        self.zebra_btn.toggled.connect(self._on_zebra_toggled)
+
+        self.focus_label = hint_label("")
+        self.focus_label.setToolTip(
+            wrap_tooltip(
+                "Sharpness as a share of the best seen. Turn the focus ring past the peak and back to it; "
+                "click the image to reset the peak."
+            )
+        )
+        self._focus_kind = "muted"
+        layout.addWidget(self.focus_label)
+        self.set_focus(None)
 
         # Shown in the image's place on bodies that advertise no live view (issue #621). The
         # window still scans: only the preview pane is replaced, so the toolbar, the settings row
@@ -209,18 +256,56 @@ class LiveViewWindow(QDialog):
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
+        self.meter_btn.clicked.connect(lambda: self.meterRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
         # status to whichever autoDefault button was clicked most recently, so pressing Retake
         # once made Enter keep retaking until Scan was clicked again to reclaim it (issue #997).
-        pin_dialog_default(self.scan_btn, self.retake_btn)
+        pin_dialog_default(self.scan_btn, scope=self)
 
-        # Keyboard shortcuts while the pop-up is focused. There are no text fields here, so
-        # letter keys are safe. The buttons respect their gated state.
-        for key, btn in (("S", self.scan_btn), ("R", self.retake_btn)):
-            QShortcut(QKeySequence(key), self, btn.click)
-        self.scan_btn.setToolTip("Scan / Stop  (shortcut: S)")
-        self.retake_btn.setToolTip("Re-capture the current frame without advancing the counter  (shortcut: R)")
+        # Plain letter keys are safe: the pop-up has no text fields.
+        self._key_buttons = {
+            "live_view_scan": self.scan_btn,
+            "live_view_retake": self.retake_btn,
+            "live_view_meter": self.meter_btn,
+            "live_view_histogram": self.histogram_btn,
+            "live_view_zebra": self.zebra_btn,
+        }
+        remember_dialog_geometry(self, repo, "live_view")
+
+    def _remember(self, key: str, on: bool) -> None:
+        if self._repo is not None:
+            self._repo.save_global_setting(key, on)
+
+    def _on_zebra_toggled(self, on: bool) -> None:
+        if not on:
+            self.image.set_zebra(None)
+
+    def set_histogram(self, bins: Optional[np.ndarray]) -> None:
+        """Show one frame's `(4, 256)` R, G, B, luma counts, or clear the row with None."""
+        self.histogram.update_data(bins)
+
+    def apply_shortcut_tooltips(self) -> None:
+        for action_id, btn in self._key_buttons.items():
+            btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
+
+    def _key_button(self, ev):
+        modifiers = ev.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        # "?" arrives as Key_Question with Shift held: drop Shift only when the exact chord has no match.
+        for mods in (modifiers, modifiers & ~Qt.KeyboardModifier.ShiftModifier):
+            pressed = QKeySequence(ev.key() | mods.value)
+            for action_id, btn in self._key_buttons.items():
+                key = key_for(action_id)
+                if key and QKeySequence(key) == pressed:
+                    return btn
+        return None
+
+    def keyPressEvent(self, ev) -> None:
+        btn = self._key_button(ev)
+        if btn is None:
+            super().keyPressEvent(ev)
+        elif not ev.isAutoRepeat():
+            btn.click()
 
     def set_preview_available(self, available: bool, reason: str = "") -> None:
         """Swap the preview pane for an explanation on bodies that cannot stream.
@@ -229,10 +314,27 @@ class LiveViewWindow(QDialog):
         strip the only Scan button in the app and lock these cameras out (issue #621).
         """
         self.image.setVisible(available)
+        self.focus_label.setVisible(available)
+        self.histogram.setVisible(available and self.histogram_btn.isChecked())
+        self.histogram_btn.setEnabled(available)
+        self.zebra_btn.setEnabled(available)
         self.no_preview.setVisible(not available)
         if not available:
             self.no_preview.setText(f"{reason}\n\nFraming and focus have to be set on the camera itself. Scanning works as usual.")
         self.setWindowTitle("Scanlight — Live View" if available else "Scanlight — Scan (no live view)")
+
+    def set_focus(self, fraction: Optional[float]) -> None:
+        """Show the focus meter reading: 0..1 of the peak, or None while there is none."""
+        if fraction is None:
+            text, kind = "Focus meter: no reading", "muted"
+        else:
+            at_peak = fraction >= _FOCUS_AT_PEAK
+            text = "Focus meter: at peak" if at_peak else f"Focus meter: {round(fraction * 100)}% of peak"
+            kind = "success" if at_peak else "muted"
+        self.focus_label.setText(text)
+        if kind != self._focus_kind:
+            self._focus_kind = kind
+            set_hint_kind(self.focus_label, kind)
 
     def set_progress(self, frac: float) -> None:
         self._flash_token += 1
@@ -280,6 +382,7 @@ class LiveViewWindow(QDialog):
     def set_status(self, text: str) -> None:
         self.status.setText(text)
 
-    def closeEvent(self, ev) -> None:
+    def done(self, result: int) -> None:
+        # Esc reaches here without a closeEvent, so the session cleanup hangs off done().
         self.closed.emit()
-        super().closeEvent(ev)
+        super().done(result)

@@ -74,11 +74,17 @@ def test_resolve_batch_selection_omits_selected_frame_without_a_window():
 
 
 def test_resolve_batch_selection_falls_back_to_every_slot_the_feeder_holds():
-    settings = ScannerSettings(scan_window=(0.2, 0.2, 0.8, 0.8))
-    frames, windows, base = resolve_batch_selection(settings, capacity=4)
+    frames, windows, base = resolve_batch_selection(ScannerSettings(), capacity=4)
     assert frames == (1, 2, 3, 4)
     assert windows == {}
-    assert base == (0.2, 0.2, 0.8, 0.8)
+    assert base is None
+
+
+def test_a_strip_batch_ignores_the_single_frame_window() -> None:
+    """The window comes from a single-frame device's Preview; a strip sets windows per frame."""
+    settings = ScannerSettings(scan_window=(0.2, 0.2, 0.8, 0.8))
+    assert resolve_batch_selection(settings, capacity=4)[2] is None
+    assert resolve_batch_selection(settings, whole_strip=True)[2] is None
 
 
 def test_a_measured_strip_with_no_selection_means_every_frame() -> None:
@@ -137,8 +143,8 @@ def test_an_unset_saved_frame_range_selects_nothing():
 
 
 def test_a_key_this_version_dropped_keeps_the_rest_of_the_blob():
-    restored = ScannerSettings.from_dict({"gone_in_this_version": True, "output_folder": "/scans"})
-    assert restored.output_folder == "/scans"
+    restored = ScannerSettings.from_dict({"gone_in_this_version": True, "output_folder": "/scans", "output_format": "TIFF (mono)"})
+    assert restored.output_format == "TIFF (mono)"
 
 
 def test_legacy_multi_exposure_true_migrates_to_adaptive_mode():

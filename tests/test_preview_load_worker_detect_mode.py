@@ -173,7 +173,7 @@ def test_new_preview_generation_skips_older_queued_work(qapp):
         generation=1,
         use_splash=False,
     )
-    worker.expect_generation(2)
+    worker._state.expect_generation(2)
 
     worker.process(old)
 
@@ -198,12 +198,26 @@ def test_obsolete_preview_failure_is_not_reported(qapp):
     worker.load_failed.connect(lambda *args: failures.append(args))
 
     def fail_after_navigation(*_args, **_kwargs):
-        worker.expect_generation(2)
+        worker._state.expect_generation(2)
         raise RuntimeError("obsolete failure")
 
     service.load_linear_preview.side_effect = fail_after_navigation
-    worker.expect_generation(1)
+    worker._state.expect_generation(1)
     worker.process(task)
 
     assert errors == []
     assert failures == []
+
+
+def test_the_decode_orientation_rides_out_with_the_loaded_preview(qapp):
+    from negpy.desktop.workers.render import PreviewLoadTask, PreviewLoadWorker
+
+    service = MagicMock()
+    service.load_linear_preview.return_value = (np.ones((4, 4, 3), dtype=np.float32), (4, 4), {"orientation": 6})
+    worker = PreviewLoadWorker(service)
+    finished = []
+    worker.finished.connect(lambda *args: finished.append(args))
+
+    worker.process(PreviewLoadTask(file_path="turned.ARW", workspace_color_space="Adobe RGB", use_camera_wb=False, use_splash=False))
+
+    assert finished[0][6][4] == 6

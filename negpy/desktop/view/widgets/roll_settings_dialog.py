@@ -26,6 +26,7 @@ from negpy.desktop.view.styles.templates import (
     wrap_tooltip,
 )
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.desktop.view.widgets.granular_settings_dialog import ScopeRadios, build_scope_row
 from negpy.desktop.view.widgets.location_picker_dialog import LocationPickerDialog
 from negpy.desktop.view.widgets.searchable_gear_combo import SearchableGearCombo
@@ -47,7 +48,7 @@ from negpy.features.metadata.models import FORMAT_OPTIONS, MetadataConfig, PUSH_
 from negpy.services.assets.presets import MetadataPresets
 
 _METADATA_ROWS: dict[str, SettingRow] = {row.label: row for title, rows in CATALOG if title == "Metadata" for row in rows}
-_SIMPLE_GROUPS = ("Exposure", "Sync Metadata to Batch", "Protect Original Metadata", "Description Fields")
+_SIMPLE_GROUPS = ("Exposure", "Protect Original Metadata", "Description Fields")
 
 
 def _fmt(value) -> str:
@@ -73,11 +74,13 @@ class RollSettingsDialog(QDialog):
         *,
         sel_count: int,
         roll_count: int,
+        repo=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Roll Settings")
         self.resize(440, 640)
         self._library = gear_library
+        self._repo = repo
         self._meta = source_config.metadata
         self._checks: dict[str, QCheckBox] = {}
         self._simple_labels: dict[str, QLabel] = {}
@@ -117,6 +120,7 @@ class RollSettingsDialog(QDialog):
         root.addLayout(scope_row)
         root.addLayout(self._build_footer())
         pin_dialog_default(self.apply_btn, scope=self)
+        remember_dialog_geometry(self, self._repo, "roll_settings")
 
     # ── group scaffolding ───────────────────────────────────────────────
 
@@ -277,6 +281,7 @@ class RollSettingsDialog(QDialog):
             self._meta.location_state,
             self._meta.location_country,
             parent=self,
+            repo=self._repo,
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return

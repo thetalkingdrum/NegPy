@@ -641,6 +641,26 @@ def test_grouping_leaves_an_assembled_asset_alone(tmp_path, monkeypatch):
     assert out[0] is assembled
 
 
+def test_grouping_passes_over_a_merged_triplet_tiff(tmp_path, monkeypatch):
+    from negpy.desktop.workers.render import AssetDiscoveryWorker
+    from negpy.services.export.frame_merge import write_merged_frame
+
+    names = ["f2_r.raw", "f2_g.raw", "f2_b.raw"]
+    _fake_probes(monkeypatch, {n: {"r": RED, "g": GREEN, "b": BLUE}[n[-5]] for n in names})
+    merged_path = str(tmp_path / "f1_r_RGB.tif")
+    cfg = replace(WorkspaceConfig(), rgbscan=RgbScanConfig(enabled=True, green_path="/g.raw", blue_path="/b.raw"))
+    write_merged_frame(np.full((4, 6, 3), 0.5, dtype=np.float32), str(tmp_path / "f1_r.raw"), merged_path, cfg)
+    merged = {"name": "f1_r_RGB.tif", "path": merged_path, "hash": "m"}
+    loose = [{"name": n, "path": str(tmp_path / n), "hash": n} for n in names]
+
+    worker = AssetDiscoveryWorker()
+    reports: list = []
+    worker.rgb_grouped.connect(reports.append)
+    out = worker._group_rgb_triplets([merged, *loose])
+    assert [a["name"] for a in out] == ["f1_r_RGB.tif", "f2_r (RGB)"]
+    assert reports == []
+
+
 def test_config_roundtrip_preserves_rgbscan():
     cfg = WorkspaceConfig()
     cfg = type(cfg)(**{**cfg.__dict__, "rgbscan": RgbScanConfig(enabled=True, green_path="/g", blue_path="/b")})
@@ -771,8 +791,11 @@ def test_thumbnail_worker_namespaces_triplet_cache(monkeypatch):
         def get_thumbnail(self, key):
             return saved.get(key)
 
-        def save_thumbnail(self, key, img):
+        def save_thumbnail(self, key, img, fingerprint=None):
             saved[key] = img
+
+        def get_thumbnail_fingerprint(self, key):
+            return None
 
     img = Image.new("RGB", (4, 4))
     monkeypatch.setattr(thumbnails, "decode_bounded_source_preview", lambda *a, **k: img)
@@ -801,8 +824,11 @@ def test_triplet_ignores_stale_plain_hash_cache(monkeypatch):
         def get_thumbnail(self, key):
             return saved.get(key)
 
-        def save_thumbnail(self, key, img):
+        def save_thumbnail(self, key, img, fingerprint=None):
             saved[key] = img
+
+        def get_thumbnail_fingerprint(self, key):
+            return None
 
     monkeypatch.setattr(thumbnails, "decode_bounded_source_preview", lambda *a, **k: merged)
     monkeypatch.setattr(thumbnails, "prepare_thumbnail", lambda i, ts: i)

@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PyQt6.QtWidgets import QCheckBox, QMessageBox
 from negpy.kernel.system.text import count_of
 from negpy.services.assets import rolls
@@ -29,6 +31,21 @@ def confirm_load_roll(parent, repo, image_count: int, label: str) -> bool:
     if remember.isChecked():
         repo.save_global_setting("library_autoload_folders", True)
     return True
+
+
+def confirm_close_roll(parent, roll_name: str | None) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    if roll_name is None:
+        box.setWindowTitle("Unload All")
+        box.setText("Unload all frames from the Film Strip?")
+    else:
+        box.setWindowTitle("Close Roll")
+        box.setText(f"Close “{roll_name}”?")
+    box.setInformativeText("Your saved edits stay in the database. The roll stays in the Library.")
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(QMessageBox.StandardButton.Yes)
+    return box.exec() == QMessageBox.StandardButton.Yes
 
 
 def confirm_unload(parent, *, clear_all: bool = False, count: int = 1) -> bool:
@@ -108,6 +125,20 @@ def confirm_delete_mask(parent) -> bool:
     return box.exec() == QMessageBox.StandardButton.Yes
 
 
+def confirm_roll_auto_crop(parent, on: bool, count: int) -> bool:
+    """Ask before a Roll push changes the roll's Auto Crop: the frames that follow the
+    roll gain or lose an auto crop."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Auto Crop")
+    box.setText(f"Turn Auto Crop {'on' if on else 'off'} for this roll?")
+    change = "are auto-cropped" if on else "lose their auto crop"
+    box.setInformativeText(f"{count_of(count, 'frame')} that follow the roll {change}. A hand-drawn crop stays.")
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(QMessageBox.StandardButton.Yes)
+    return box.exec() == QMessageBox.StandardButton.Yes
+
+
 def confirm_reset_frames(parent, count: int, *, roll: bool = False) -> bool:
     """Ask before resetting several frames to their defaults at once.
 
@@ -156,6 +187,16 @@ def confirm_clear_heals(parent, count: int) -> bool:
     return box.exec() == QMessageBox.StandardButton.Yes
 
 
+def confirm_clear_clones(parent, count: int) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Clear All Clones")
+    box.setText(f"Remove all {count_of(count, 'clone stroke')} from this image?")
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(QMessageBox.StandardButton.Yes)
+    return box.exec() == QMessageBox.StandardButton.Yes
+
+
 def confirm_assembly_mode(parent, mode: str, count: int) -> bool:
     """Ask before Trichrome or Half Frame mode goes on.
 
@@ -172,6 +213,58 @@ def confirm_assembly_mode(parent, mode: str, count: int) -> bool:
     box.setDefaultButton(turn_on)
     box.exec()
     return box.clickedButton() is turn_on
+
+
+def confirm_sensor_capture(parent) -> bool:
+    """Ask before Capture from Camera fires the shutter. Film left in the holder still
+    measures and saves a profile, a wrong one, so the rig is checked here."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Calibrate Sensor")
+    box.setText("Shoot the red, green and blue exposures now?")
+    box.setInformativeText(
+        "Take the film out of the holder. Set the camera to Manual (M), at the ISO and aperture you scan with.\n\n"
+        "NegPy lights each LED in turn and sets the shutter itself."
+    )
+    capture = box.addButton("Capture", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(capture)
+    box.exec()
+    return box.clickedButton() is capture
+
+
+def confirm_frame_merge(parent, title: str, counts: dict, skipped: list) -> Optional[bool]:
+    """None on Cancel, else whether the sources go to the Trash. *counts* is frames per composite kind."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle(title)
+    one = sum(counts.values()) == 1
+    box.setText(f"Merge {_merge_subject(counts)} into {'a TIFF negative' if one else 'TIFF negatives'}?")
+    lines = ["Each frame becomes a linear TIFF negative beside its primary source and keeps its edit. The demosaic is baked in."]
+    if counts.get("stitch"):
+        lines.append("A stitch also bakes in its flat field and sensor correction; the TIFF cannot be unstitched.")
+    if skipped:
+        shown = skipped[:8]
+        more = f"\n…and {len(skipped) - len(shown)} more" if len(skipped) > len(shown) else ""
+        lines.append("Skipped:\n" + "\n".join(shown) + more)
+    box.setInformativeText("\n\n".join(lines))
+    trash = QCheckBox("Move each merged frame's source files to the Trash")
+    trash.setToolTip("Off keeps the source files, and the frame stays in the Film Strip beside the TIFF")
+    trash.setChecked(True)
+    box.setCheckBox(trash)
+    merge = box.addButton("Merge", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(merge)
+    box.exec()
+    if box.clickedButton() is not merge:
+        return None
+    return trash.isChecked()
+
+
+def _merge_subject(counts: dict) -> str:
+    names = {"rgb": ("triplet", ""), "stitch": ("stitch", "stitches")}
+    parts = [count_of(counts[k], *names[k]) for k in ("rgb", "stitch") if counts.get(k)]
+    return " and ".join(parts) if parts else count_of(0, "frame")
 
 
 def _confirm_with_verb(parent, title: str, text: str, informative: str, verb: str) -> bool:

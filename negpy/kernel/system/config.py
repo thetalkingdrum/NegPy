@@ -38,7 +38,6 @@ APP_CONFIG = AppConfig(
     sensor_dir=os.path.join(BASE_USER_DIR, "sensor"),
     flatfield_dir=os.path.join(BASE_USER_DIR, "flatfield"),
     gear_dir=os.path.join(BASE_USER_DIR, "gear"),
-    contact_sheet_templates_dir=os.path.join(BASE_USER_DIR, "contact_sheets"),
     default_export_dir=os.path.join(BASE_USER_DIR, "export"),
     adobe_rgb_profile=get_resource_path("icc/AdobeCompat-v4.icc"),
     use_gpu=True,
@@ -54,12 +53,12 @@ DEFAULT_WORKSPACE_CONFIG = WorkspaceConfig(
     process=ProcessConfig(
         process_mode=ProcessMode.C41,
         analysis_buffer=0.05,
-        # Legacy default Lab separation 1.5 carried over to the capture-side domain.
-        crosstalk_strength=0.5,
+        # Off until a profile is calibrated: a crosstalk matrix describes one scanning setup.
+        crosstalk_strength=0.0,
     ),
     exposure=ExposureConfig(
         density=1.0,
-        grade=2.5,
+        grade=115.0,
         toe=0.0,
         toe_width=2.5,
         shoulder=0.0,
@@ -68,8 +67,8 @@ DEFAULT_WORKSPACE_CONFIG = WorkspaceConfig(
     geometry=GeometryConfig(
         rotation=0,
         fine_rotation=0.0,
-        autocrop_offset=1,
-        autocrop_ratio=AspectRatio.R_3_2,
+        autocrop_offset=0,
+        autocrop_ratio=AspectRatio.FREE,
     ),
     lab=LabConfig(
         clahe_strength=0.0,

@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -1643,6 +1643,39 @@ def _trim_opaque_border(
     return ny1, ny2, nx1, nx2
 
 
+# OpenCV's warps assert on a side of SHRT_MAX px or more; a larger frame is warped in tiles.
+_CV_WARP_MAX = 32767
+_WARP_TILE = 8192
+
+
+def _remap_tiled(img: ImageBuffer, source_of: Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]) -> ImageBuffer:
+    """Same-size bilinear warp with replicated edges, one output tile at a time. ``source_of(xs, ys)`` maps output
+    to source coords; each tile reads only its source box, so every remap stays under OpenCV's size limit."""
+    h, w = img.shape[:2]
+    out = np.empty_like(img)
+    for y0 in range(0, h, _WARP_TILE):
+        for x0 in range(0, w, _WARP_TILE):
+            y1, x1 = min(h, y0 + _WARP_TILE), min(w, x0 + _WARP_TILE)
+            ys, xs = np.meshgrid(np.arange(y0, y1, dtype=np.float64), np.arange(x0, x1, dtype=np.float64), indexing="ij")
+            map_x, map_y = source_of(xs, ys)
+            sx0 = int(np.clip(np.floor(map_x.min()) - 1, 0, w - 1))
+            sx1 = int(np.clip(np.ceil(map_x.max()) + 2, sx0 + 1, w))
+            sy0 = int(np.clip(np.floor(map_y.min()) - 1, 0, h - 1))
+            sy1 = int(np.clip(np.ceil(map_y.max()) + 2, sy0 + 1, h))
+            out[y0:y1, x0:x1] = cv2.remap(
+                np.ascontiguousarray(img[sy0:sy1, sx0:sx1]),
+                (map_x - sx0).astype(np.float32),
+                (map_y - sy0).astype(np.float32),
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+    return out
+
+
+def _too_big_to_warp(img: ImageBuffer) -> bool:
+    return max(img.shape[:2]) >= _CV_WARP_MAX
+
+
 def apply_fine_rotation(img: ImageBuffer, angle: float) -> ImageBuffer:
     """
     Sub-degree rotation (bilinear).
@@ -1653,6 +1686,11 @@ def apply_fine_rotation(img: ImageBuffer, angle: float) -> ImageBuffer:
     h, w = img.shape[:2]
     center = (w / 2.0, h / 2.0)
     m_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+    if _too_big_to_warp(img):
+        inv = cv2.invertAffineTransform(m_mat)
+        return ensure_image(
+            _remap_tiled(img, lambda xs, ys: (inv[0, 0] * xs + inv[0, 1] * ys + inv[0, 2], inv[1, 0] * xs + inv[1, 1] * ys + inv[1, 2]))
+        )
 
     res = cv2.warpAffine(
         img,
@@ -1679,6 +1717,7 @@ def _radial_center(w: int, h: int) -> Tuple[float, float, float]:
     return (w - 1) * 0.5, (h - 1) * 0.5, 0.5 * math.hypot(w, h)
 
 
+@lru_cache(maxsize=32)
 def compute_distortion_scale(k1: float, w: int, h: int, _samples: int = 128) -> float:
     """Largest scale at which the output frame still maps fully inside the input — fills
     the frame without empty/replicated borders. Numeric, so it's sign-agnostic (the
@@ -1741,6 +1780,16 @@ def apply_radial_distortion(img: ImageBuffer, k1: float) -> ImageBuffer:
     if abs(k1) < _DISTORT_EPS:
         return img
     h, w = img.shape[:2]
+    if _too_big_to_warp(img):
+        cx, cy, halfdiag = _radial_center(w, h)
+        s = compute_distortion_scale(k1, w, h)
+
+        def source_of(xs: np.ndarray, ys: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            px, py = (xs - cx) * s, (ys - cy) * s
+            f = 1.0 + k1 * (px * px + py * py) / (halfdiag * halfdiag)
+            return cx + px * f, cy + py * f
+
+        return ensure_image(_remap_tiled(img, source_of))
     map_x, map_y = _radial_maps(k1, w, h)
     res = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     return ensure_image(res)
@@ -1772,6 +1821,14 @@ def map_point_radial(px: float, py: float, k1: float, w: int, h: int) -> Tuple[f
 # in transform.wgsl and in map_coords_to_geometry; change the quad in all three.
 
 _KEYSTONE_EPS = 1e-4  # per-cent
+_KEYSTONE_SOLVE_MAX_ITER = 20
+_KEYSTONE_SOLVE_TOL = 1e-7
+
+
+def keystone_quad(converge_v: float, converge_h: float) -> np.ndarray:
+    """Return the normalized source quad for the keystone correction."""
+    a, b = converge_v * 0.005, converge_h * 0.005
+    return np.asarray([[a, b], [1.0 - a, -b], [1.0 + a, 1.0 + b], [-a, 1.0 - b]], dtype=np.float32)
 
 
 def keystone_matrix_normalized(converge_v: float, converge_h: float) -> np.ndarray:
@@ -1782,8 +1839,7 @@ def keystone_matrix_normalized(converge_v: float, converge_h: float) -> np.ndarr
     both derive from it. Convergences are per-cent; positive converge_v stretches the
     top edge, positive converge_h the left.
     """
-    a, b = converge_v * 0.005, converge_h * 0.005
-    src = np.float32([[a, b], [1.0 - a, -b], [1.0 + a, 1.0 + b], [-a, 1.0 - b]])
+    src = keystone_quad(converge_v, converge_h)
     dst = np.float32([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
     return cv2.getPerspectiveTransform(src, dst).astype(np.float64)
 
@@ -1806,6 +1862,14 @@ def apply_keystone(img: ImageBuffer, converge_v: float, converge_h: float) -> Im
     if abs(converge_v) < _KEYSTONE_EPS and abs(converge_h) < _KEYSTONE_EPS:
         return img
     h, w = img.shape[:2]
+    if _too_big_to_warp(img):
+        hi = np.linalg.inv(keystone_matrix(converge_v, converge_h, w, h))
+
+        def source_of(xs: np.ndarray, ys: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            d = hi[2, 0] * xs + hi[2, 1] * ys + hi[2, 2]
+            return (hi[0, 0] * xs + hi[0, 1] * ys + hi[0, 2]) / d, (hi[1, 0] * xs + hi[1, 1] * ys + hi[1, 2]) / d
+
+        return ensure_image(_remap_tiled(img, source_of))
     res = cv2.warpPerspective(
         img,
         keystone_matrix(converge_v, converge_h, w, h),
@@ -1914,6 +1978,8 @@ def apply_margin_to_roi(
     Expands/Contracts ROI.
     """
     y1, y2, x1, x2 = roi
+    # An inset larger than half the crop would turn the ROI inside out.
+    margin_px = min(margin_px, (y2 - y1 - 1) / 2, (x2 - x1 - 1) / 2)
     ny1, ny2, nx1, nx2 = y1 + margin_px, y2 - margin_px, x1 + margin_px, x2 - margin_px
     return int(max(0, ny1)), int(min(h, ny2)), int(max(0, nx1)), int(min(w, nx2))
 
@@ -2179,6 +2245,10 @@ def autocrop_detection_key(geometry: GeometryConfig) -> str:
             geometry.autocrop_ratio,
             geometry.autocrop_mode,
             round(geometry.autocrop_rebate_trim, 4),
+            # Only when set: a frozen rect with no distortion keeps its key.
+            *((round(geometry.distortion_k1, 4),) if geometry.distortion_k1 else ()),
+            # Only when on: turning Square Before Crop on re-detects, and squares, a cropped frame.
+            *(("square",) if geometry.autocrop_square else ()),
         )
     )
 
@@ -2188,17 +2258,9 @@ def resolve_autocrop_rect(
     geometry: GeometryConfig,
     preview_size: float,
 ) -> Optional[Tuple[float, float, float, float]]:
-    """Detect the auto crop and return a normalized rect in transformed-image space, as
-    GeometryConfig.crop_rect stores it and the canvas overlay draws it.
-
-    The only border detection a render reaches; the caller freezes the result, so every
-    later render of the edit crops identically at any resolution. Runs on a copy normalized
-    to AUTOCROP_DETECT_RES, replaying the GeometryProcessor transform order
-    (rot90 -> flips -> fine rotation).
-
-    The rect excludes Crop Offset, which get_manual_rect_coords adds back on every render;
-    only the 2 px baseline margin is baked in. None when the buffer is too small.
-    """
+    """The auto crop as a normalized rect in transformed-image space; the caller freezes it, so later renders crop
+    the same at any resolution. Runs at AUTOCROP_DETECT_RES in GeometryProcessor order (rot90 -> flips -> fine
+    rotation -> distortion -> keystone). Excludes Crop Offset, which get_manual_rect_coords adds per render; None when too small."""
     h, w = img.shape[:2]
     det_s = min(1.0, AUTOCROP_DETECT_RES / max(h, w))
     if det_s < 1.0:
@@ -2214,6 +2276,8 @@ def resolve_autocrop_rect(
     tmp = np.ascontiguousarray(tmp.astype(np.float32, copy=False))
     if geometry.fine_rotation != 0.0:
         tmp = apply_fine_rotation(tmp, geometry.fine_rotation)
+    if geometry.distortion_k1 != 0.0:
+        tmp = apply_radial_distortion(tmp, geometry.distortion_k1)
     # Detection must see the frame the render produces, or the rect is found on a
     # straight rebate and applied to a keystoned one.
     tmp = apply_keystone(tmp, geometry.converge_v, geometry.converge_h)
@@ -2236,7 +2300,7 @@ def resolve_autocrop_rect(
     return (x1 / rw, y1 / rh, x2 / rw, y2 / rh)
 
 
-def map_coords_to_geometry(
+def _pre_keystone_point(
     nx: float,
     ny: float,
     orig_shape: Tuple[int, int],
@@ -2244,14 +2308,9 @@ def map_coords_to_geometry(
     fine_rotation: float = 0.0,
     flip_horizontal: bool = False,
     flip_vertical: bool = False,
-    roi: Optional[ROI] = None,
     distortion_k1: float = 0.0,
-    converge_v: float = 0.0,
-    converge_h: float = 0.0,
-) -> Tuple[float, float]:
-    """
-    Maps raw coordinates to geometry-transformed space.
-    """
+) -> Tuple[float, float, float, float]:
+    """Map a raw-normalized point to pixel space before keystone correction."""
     h_orig, w_orig = orig_shape
     px, py = nx * w_orig, ny * h_orig
     h, w = h_orig, w_orig
@@ -2278,10 +2337,29 @@ def map_coords_to_geometry(
         res_pt = m_mat @ pt
         px, py = float(res_pt[0]), float(res_pt[1])
 
-    # Inverse of the resample map: undistorted feature point -> corrected-image position
-    # (last forward op, matching GeometryProcessor / transform.wgsl).
     if distortion_k1 != 0.0:
         px, py = map_point_radial(px, py, distortion_k1, w, h)
+
+    return px, py, w, h
+
+
+def map_coords_to_geometry(
+    nx: float,
+    ny: float,
+    orig_shape: Tuple[int, int],
+    rotation_k: int = 0,
+    fine_rotation: float = 0.0,
+    flip_horizontal: bool = False,
+    flip_vertical: bool = False,
+    roi: Optional[ROI] = None,
+    distortion_k1: float = 0.0,
+    converge_v: float = 0.0,
+    converge_h: float = 0.0,
+) -> Tuple[float, float]:
+    """
+    Maps raw coordinates to geometry-transformed space.
+    """
+    px, py, w, h = _pre_keystone_point(nx, ny, orig_shape, rotation_k, fine_rotation, flip_horizontal, flip_vertical, distortion_k1)
 
     if converge_v != 0.0 or converge_h != 0.0:
         px, py = map_point_keystone(px, py, converge_v, converge_h, w, h)
@@ -2292,10 +2370,92 @@ def map_coords_to_geometry(
         py -= y1
         h, w = y2 - y1, x2 - x1
 
-    nx_new = np.clip(px / max(w, 1), 0.0, 1.0)
-    ny_new = np.clip(py / max(h, 1), 0.0, 1.0)
+    # Not clamped: a vertex off the frame (a Card Edge drawn from outside, a large Oval)
+    # must keep its place, as the overlay draws it.
+    return float(px / max(w, 1)), float(py / max(h, 1))
 
-    return float(nx_new), float(ny_new)
+
+def solve_keystone_from_edges(
+    edges: Dict[str, Tuple[Tuple[float, float], Tuple[float, float]]],
+    orig_shape: Tuple[int, int],
+    initial_converge_v: float = 0.0,
+    initial_converge_h: float = 0.0,
+    rotation_k: int = 0,
+    fine_rotation: float = 0.0,
+    flip_horizontal: bool = False,
+    flip_vertical: bool = False,
+    distortion_k1: float = 0.0,
+) -> Tuple[float, float]:
+    """Solve tilt and swing so opposite marked rebate edges become parallel."""
+    required = ("left", "right", "top", "bottom")
+    missing = [name for name in required if name not in edges]
+    if missing:
+        raise ValueError(f"solve_keystone_from_edges needs all four edges; missing {missing}")
+
+    pre = {
+        name: tuple(
+            _pre_keystone_point(
+                point[0],
+                point[1],
+                orig_shape,
+                rotation_k,
+                fine_rotation,
+                flip_horizontal,
+                flip_vertical,
+                distortion_k1,
+            )
+            for point in edges[name]
+        )
+        for name in required
+    }
+
+    def slope_v(name: str, converge_v: float, converge_h: float) -> float:
+        (px1, py1, width, height), (px2, py2, _, _) = pre[name]
+        mapped1 = map_point_keystone(px1, py1, converge_v, converge_h, width, height)
+        mapped2 = map_point_keystone(px2, py2, converge_v, converge_h, width, height)
+        dy = mapped2[1] - mapped1[1]
+        if abs(dy) < 1e-9:
+            raise ValueError(f"the {name} edge is horizontal after correction; mark it along its length")
+        return (mapped2[0] - mapped1[0]) / dy
+
+    def slope_h(name: str, converge_v: float, converge_h: float) -> float:
+        (px1, py1, width, height), (px2, py2, _, _) = pre[name]
+        mapped1 = map_point_keystone(px1, py1, converge_v, converge_h, width, height)
+        mapped2 = map_point_keystone(px2, py2, converge_v, converge_h, width, height)
+        dx = mapped2[0] - mapped1[0]
+        if abs(dx) < 1e-9:
+            raise ValueError(f"the {name} edge is vertical after correction; mark it along its length")
+        return (mapped2[1] - mapped1[1]) / dx
+
+    def residuals(converge_v: float, converge_h: float) -> np.ndarray:
+        return np.array(
+            [
+                slope_v("left", converge_v, converge_h) - slope_v("right", converge_v, converge_h),
+                slope_h("top", converge_v, converge_h) - slope_h("bottom", converge_v, converge_h),
+            ]
+        )
+
+    converge_v = float(np.clip(initial_converge_v, -15.0, 15.0))
+    converge_h = float(np.clip(initial_converge_h, -15.0, 15.0))
+    epsilon = 1e-3
+    for _ in range(_KEYSTONE_SOLVE_MAX_ITER):
+        residual = residuals(converge_v, converge_h)
+        if np.max(np.abs(residual)) < _KEYSTONE_SOLVE_TOL:
+            break
+        jacobian = np.column_stack(
+            (
+                (residuals(converge_v + epsilon, converge_h) - residual) / epsilon,
+                (residuals(converge_v, converge_h + epsilon) - residual) / epsilon,
+            )
+        )
+        try:
+            delta = np.linalg.solve(jacobian, -residual)
+        except np.linalg.LinAlgError:
+            delta, *_ = np.linalg.lstsq(jacobian, -residual, rcond=None)
+        converge_v = float(np.clip(converge_v + delta[0], -15.0, 15.0))
+        converge_h = float(np.clip(converge_h + delta[1], -15.0, 15.0))
+
+    return converge_v, converge_h
 
 
 def smooth_polyline(
@@ -2400,6 +2560,11 @@ def rotate_geometry_and_analysis(
     """
     pipeline_direction = -direction if geo.flip_horizontal != geo.flip_vertical else direction
     new_geo = replace(geo, rotation=(geo.rotation + pipeline_direction) % 4)
+    if geo.converge_v != 0.0 or geo.converge_h != 0.0:
+        converge_v, converge_h = geo.converge_v, geo.converge_h
+        for _ in range(direction % 4):
+            converge_v, converge_h = 0.0 - converge_h, converge_v
+        new_geo = replace(new_geo, converge_v=converge_v, converge_h=converge_h)
     if geo.crop_rect is not None:
         new_geo = replace(new_geo, crop_rect=rotate_normalized_rect(geo.crop_rect, direction))
     new_rect = rotate_normalized_rect(analysis_rect, direction) if analysis_rect is not None else None
@@ -2417,9 +2582,9 @@ def toggle_flip(geo: GeometryConfig, horizontal: bool) -> GeometryConfig:
     it frames.
     """
     if horizontal:
-        new_geo = replace(geo, flip_horizontal=not geo.flip_horizontal)
+        new_geo = replace(geo, flip_horizontal=not geo.flip_horizontal, converge_h=0.0 - geo.converge_h)
     else:
-        new_geo = replace(geo, flip_vertical=not geo.flip_vertical)
+        new_geo = replace(geo, flip_vertical=not geo.flip_vertical, converge_v=0.0 - geo.converge_v)
     if geo.fine_rotation != 0.0:
         new_geo = replace(new_geo, fine_rotation=-geo.fine_rotation)
     if geo.crop_rect is not None:

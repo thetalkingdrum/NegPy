@@ -226,3 +226,63 @@ def test_align_slider_columns_lines_up_label_and_value(qapp):
 
     assert short.label.minimumWidth() == long.label.minimumWidth() >= long.label.sizeHint().width()
     assert short.spin.minimumWidth() == long.spin.minimumWidth() >= long.spin.sizeHint().width()
+
+
+def test_align_slider_columns_starts_grouped_tracks_at_same_x(qapp):
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+    from negpy.desktop.view.widgets.sliders import SliderGroup, align_slider_columns
+
+    root = QWidget()
+    layout = QVBoxLayout(root)
+    layout.setContentsMargins(0, 0, 0, 0)
+    alone = CompactSlider("Toe", 0.0, 1.0, 0.5)
+    grouped = CompactSlider("Highlights Density", -1.0, 1.0, 0.0)
+    layout.addWidget(alone)
+    layout.addWidget(SliderGroup(grouped, CompactSlider("Shadows Density", -1.0, 1.0, 0.0)))
+
+    align_slider_columns(root)
+    root.resize(400, 200)
+    root.show()
+    qapp.processEvents()
+
+    assert alone.slider.mapTo(root, alone.slider.rect().topLeft()).x() == grouped.slider.mapTo(root, grouped.slider.rect().topLeft()).x()
+
+
+def test_label_text_sits_against_the_track(qapp):
+    slider = CompactSlider("Density", 0.0, 2.0, 1.0)
+
+    assert slider.label.alignment() & Qt.AlignmentFlag.AlignRight
+
+
+def test_field_label_right_aligns_only_in_a_column(qapp):
+    from negpy.desktop.view.styles.templates import field_label
+
+    assert not field_label("Camera").alignment() & Qt.AlignmentFlag.AlignRight
+    assert field_label("Format", 90).alignment() & Qt.AlignmentFlag.AlignRight
+
+
+def test_field_row_in_a_slider_card_spans_the_track(qapp):
+    from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QVBoxLayout, QWidget
+
+    from negpy.desktop.view.styles.templates import field_label
+    from negpy.desktop.view.widgets.sliders import align_slider_columns
+
+    card = QWidget()
+    body = QVBoxLayout(card)
+    slider = CompactSlider("Sharpening", 0.0, 1.0, 0.5)
+    body.addWidget(slider)
+    row = QHBoxLayout()
+    label = field_label("Method")
+    combo = QComboBox()
+    row.addWidget(label)
+    row.addWidget(combo, 1)
+    body.addLayout(row)
+    align_slider_columns(card)
+    card.resize(400, 100)
+    card.show()
+    qapp.processEvents()
+
+    assert label.alignment() & Qt.AlignmentFlag.AlignRight
+    assert combo.x() == slider.x() + slider.slider.x()
+    assert combo.geometry().right() == slider.x() + slider.slider.geometry().right()

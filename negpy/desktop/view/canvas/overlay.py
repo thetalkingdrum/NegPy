@@ -2,19 +2,23 @@ import logging
 import math
 import os
 import sys
+import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import qtawesome as qta
-from PyQt6.QtCore import QLineF, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QLineF, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QImage, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QShortcut
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
+from negpy.desktop.auto_sliders import shown_values
 from negpy.desktop.converters import ImageConverter
-from negpy.desktop.session import AppState, ToolMode
+from negpy.desktop.session import UNCROPPED_PREVIEW_TOOLS, AppState, ToolMode
 from negpy.desktop.view.canvas.crop_guides import CropGuide, guide_shapes
 from negpy.desktop.view.canvas.printing_notes import notes_outline, notes_sheet, paint_card, paint_map
+from negpy.desktop.view.styles.color_vision import palette_for
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.stats import PIN_COLORS
 from negpy.domain.types import LUMA_B, LUMA_G, LUMA_R
@@ -23,6 +27,7 @@ from negpy.features.exposure.analysis import (
     STRIP_DENSITIES,
     STRIP_GRADES,
     STRIP_GRID,
+    clip_masks,
     loupe_acutance,
     proof_grid,
     ring_cc,
@@ -32,6 +37,7 @@ from negpy.features.exposure.analysis import (
     strip_cell_at,
     strip_nearest_cell,
     zone_grid,
+    zone_mask,
     zone_region_labels,
 )
 from negpy.features.exposure.densitometer import zone_roman
@@ -46,6 +52,7 @@ from negpy.features.exposure.logic import tone_key_weight_np
 from negpy.features.exposure.placement import key_edges
 from negpy.features.local.logic import limited_indices, min_points, outline_points, overlapping_masks, rasterise
 from negpy.features.local.models import MaskShape
+from negpy.features.process.path import RenderPath, render_path
 from negpy.features.retouch.models import HEAL_SIZE_REF
 from negpy.features.retouch.logic import trace_scratch
 from negpy.services.view.coordinate_mapping import CoordinateMapping
@@ -57,6 +64,11 @@ _LASSO_SNAP_PX = 12.0
 _CROP_HANDLE_PX = 10.0
 _EDGE_HANDLE_LENGTH_PX = 14.0
 _EDGE_HANDLE_THICKNESS_PX = 4.0
+_AUTO_PAN_EDGE_ZONE_FRACTION = 0.02
+_AUTO_PAN_INTERVAL_MS = 16
+_AUTO_PAN_MAX_SPEED_PX_S = 1200.0
+_AUTO_PAN_SPEED_MULTIPLIER = 4.0
+_AUTO_PAN_MAX_TICK_S = 0.05
 _CROP_MIN_SCREEN_PX = 24.0
 # Drag distance required before an outside-the-rect press starts redrawing an
 # existing crop (stray-click guard).
@@ -76,11 +88,20 @@ _SHAPE_FOR_TOOL = {
 }
 _LOCAL_TOOLS = (ToolMode.NONE, *_SHAPE_FOR_TOOL)
 
-# Dust-overlay marker colors: bright, and distinct from the muted accent of manual heals, so
-# auto-detected and IR spots are told apart at a glance.
-_DUST_MARK_LUMA = QColor(57, 255, 20)  # neon: a mark has to read over any film, so it is not a palette colour
-_DUST_MARK_IR = QColor(255, 0, 255)  # neon magenta — IR detection
-_IR_CORRECTED_ALPHA = 55  # dim magenta wash over IR-division-corrected regions
+_IR_CORRECTED_ALPHA = 55  # dim wash over repaired regions
+_CLIP_WASH_ALPHA = 200  # clipped pixels must read as marks over any print
+_ZONE_HIGHLIGHT_ALPHA = 150
+
+
+def _tint_qimage(layers: List[Tuple[np.ndarray, QColor]], alpha: int) -> QImage:
+    """Premultiplied wash: each boolean mask in its color, later layers over earlier ones."""
+    gh, gw = layers[0][0].shape[:2]
+    buf = np.zeros((gh, gw, 4), dtype=np.uint8)
+    a = alpha / 255.0
+    for mask, color in layers:
+        buf[mask] = (int(color.red() * a), int(color.green() * a), int(color.blue() * a), alpha)
+    return QImage(buf.data, gw, gh, gw * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+
 
 _ZONE_LINE_ALPHA = 150
 _ZONE_LINE_SHADOW_ALPHA = 110  # dark underlay so the white edges hold over blown highlights
@@ -115,6 +136,47 @@ def draw_view_badge(painter: QPainter, text: str, x: float, y: float, width: flo
     painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, text)
 
 
+def hit_resize_handle(pos: QPointF, handles: Dict[str, QPointF]) -> Optional[str]:
+    for name, pt in handles.items():
+        dx, dy = pos.x() - pt.x(), pos.y() - pt.y()
+        if dx * dx + dy * dy <= _CROP_HANDLE_PX * _CROP_HANDLE_PX:
+            return name
+    return None
+
+
+def resize_cursor(handle: str) -> Qt.CursorShape:
+    if handle in ("tl", "br"):
+        return Qt.CursorShape.SizeFDiagCursor
+    if handle in ("tr", "bl"):
+        return Qt.CursorShape.SizeBDiagCursor
+    return Qt.CursorShape.SizeHorCursor if handle in ("left", "right") else Qt.CursorShape.SizeVerCursor
+
+
+def draw_resize_handles(painter: QPainter, corners: Dict[str, QPointF], edges: Optional[Dict[str, QPointF]] = None) -> None:
+    handle_pen = QPen(Qt.GlobalColor.white, 1.5, Qt.PenStyle.SolidLine)
+    handle_pen.setCosmetic(True)
+    painter.setPen(handle_pen)
+    painter.setBrush(QColor(THEME.accent_primary))
+    for pt in corners.values():
+        painter.drawRect(QRectF(pt.x() - 5, pt.y() - 5, 10, 10))
+    for name, pt in (edges or {}).items():
+        if name in ("top", "bottom"):
+            rect = QRectF(
+                pt.x() - _EDGE_HANDLE_LENGTH_PX / 2.0,
+                pt.y() - _EDGE_HANDLE_THICKNESS_PX / 2.0,
+                _EDGE_HANDLE_LENGTH_PX,
+                _EDGE_HANDLE_THICKNESS_PX,
+            )
+        else:
+            rect = QRectF(
+                pt.x() - _EDGE_HANDLE_THICKNESS_PX / 2.0,
+                pt.y() - _EDGE_HANDLE_LENGTH_PX / 2.0,
+                _EDGE_HANDLE_THICKNESS_PX,
+                _EDGE_HANDLE_LENGTH_PX,
+            )
+        painter.drawRect(rect)
+
+
 def loupe_src_rect(buf_w: int, buf_h: int, cx: float, cy: float, side: float) -> QRectF:
     """A `side`-square sample window on the buffer, centred on (cx, cy) and **shifted** to stay
     inside it — a partly out-of-bounds source rect blits garbage. Clamped to the buffer when
@@ -133,6 +195,10 @@ def zone_pin_caption(index: int, pin: Any) -> str:
     head = f"{index + 1} · {pin.label}" if pin.label else f"{index + 1}"
     target = zone_roman(pin.target_zone)
     return f"{head} → {target}" if pin.label and target != pin.label else head
+
+
+# Tools that paint with the round brush and commit the stroke on release.
+_BRUSH_TOOLS = (ToolMode.DUST_PICK, ToolMode.CLONE)
 
 
 def _overlay_label_font(painter: QPainter):
@@ -232,6 +298,7 @@ class CanvasOverlay(QWidget):
     """
 
     clicked = pyqtSignal(float, float)
+    pan_requested = pyqtSignal(float, float)
     crop_rect_changed = pyqtSignal(float, float, float, float, bool)
     crop_rotation_changed = pyqtSignal(float, bool)  # (fine_rotation_deg, persist)
     crop_confirmed = pyqtSignal()
@@ -241,11 +308,14 @@ class CanvasOverlay(QWidget):
     cursor_left = pyqtSignal()
     local_mask_created = pyqtSignal(str, list)  # (shape value, viewport-normalised points)
     scratch_completed = pyqtSignal(list)
+    clone_stroke_completed = pyqtSignal(list)  # viewport-normalized points
+    clone_source_picked = pyqtSignal(float, float)  # viewport-normalized x, y
     dust_exclusion_painted = pyqtSignal(list)  # viewport-normalized points of a right-drag
     local_mask_selected = pyqtSignal(int)
     local_mask_edited = pyqtSignal(int, list)  # (mask index, viewport-normalized vertices)
     local_vertex_deleted = pyqtSignal(int, int)  # (mask index, vertex index)
     straighten_completed = pyqtSignal(float)  # fine-rotation delta, stored convention (CCW+)
+    keystone_line_marked = pyqtSignal(str, float, float, float, float)
     test_strip_picked = pyqtSignal(int, int)  # (row, col) of the clicked patch
     zone_pin_moved = pyqtSignal(int, float, float, bool)  # (pin index, nx, ny, drag ended)
     zone_placement_confirmed = pyqtSignal()  # Enter over the canvas: commit the solved print
@@ -317,6 +387,11 @@ class CanvasOverlay(QWidget):
         # Same, for the auto-corrected-region magenta wash (ir_corrected_mask +
         # inpainted hair masks), keyed per mask object identity.
         self._wash_cache: Dict[int, Tuple[tuple, QImage]] = {}
+        # Placed heals in viewport-normalized coords, keyed on (uv_grid, retouch config) identity,
+        # and their screen shapes, keyed on that plus the content rect.
+        self._heal_norm_cache: Optional[Tuple[Any, Any, tuple]] = None
+        self._heal_shape_cache: Optional[Tuple[tuple, tuple, list]] = None
+        self._heal_layer_cache: Optional[Tuple[list, tuple, QPixmap]] = None
 
         # The rendered frame as NumPy, for the instruments that measure pixels (zone grid,
         # grain loupe, notes sheet). The GPU path hands over a texture instead, read back only
@@ -326,6 +401,8 @@ class CanvasOverlay(QWidget):
         self._host_qimage_cache: Optional[Tuple[tuple, QImage]] = None
         self._zone_cells: Optional[np.ndarray] = None
         self._zone_labels: List[Tuple[int, int, int]] = []
+        # Clipping Overlay and zone-highlight washes for the displayed frame, keyed by what they mark.
+        self._frame_washes: Dict[tuple, Optional[QImage]] = {}
 
         # Test strip mosaic, converted once and keyed by the buffer it came from.
         self._strip_cache: Optional[Tuple[tuple, QImage]] = None
@@ -343,6 +420,13 @@ class CanvasOverlay(QWidget):
         # Straighten tool: reference-line drag (press -> drag -> release applies).
         self._straighten_p1: Optional[QPointF] = None
         self._straighten_p2: Optional[QPointF] = None
+        self._keystone_lines: Dict[str, Tuple[QPointF, QPointF]] = {}
+        self._keystone_draw_p1: Optional[QPointF] = None
+        self._keystone_draw_p2: Optional[QPointF] = None
+
+        self._auto_pan_active = False
+        self._auto_pan_pointer: Optional[QPointF] = None
+        self._auto_pan_last_tick: Optional[float] = None
 
         # Zone-placement pin being dragged (the controller re-reads the tone as it moves).
         self._pin_drag_index: Optional[int] = None
@@ -388,6 +472,11 @@ class CanvasOverlay(QWidget):
         self._line_hover_timer = QTimer(self)
         self._line_hover_timer.setSingleShot(True)
         self._line_hover_timer.timeout.connect(self._trace_line_hover)
+
+        self._auto_pan_timer = QTimer(self)
+        self._auto_pan_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._auto_pan_timer.setInterval(_AUTO_PAN_INTERVAL_MS)
+        self._auto_pan_timer.timeout.connect(self._auto_pan_tick)
 
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -475,6 +564,8 @@ class CanvasOverlay(QWidget):
         self.update()
 
     def set_tool_mode(self, mode: ToolMode) -> None:
+        if mode != self._tool_mode:
+            self._stop_auto_pan()
         self._tool_mode = mode
         if mode == ToolMode.CROP_MANUAL:
             self._crop_rect_norm = self.state.config.geometry.crop_rect
@@ -497,13 +588,21 @@ class CanvasOverlay(QWidget):
             self._shape_draw_p2 = None
         if mode != ToolMode.SCRATCH_PICK:
             self._scratch_pts = []
-        if mode != ToolMode.DUST_PICK:
+        if mode not in _BRUSH_TOOLS:
             self._heal_drag_pts = []
         if mode != ToolMode.STRAIGHTEN:
             self._straighten_p1 = None
             self._straighten_p2 = None
+        if mode != ToolMode.KEYSTONE_LINES:
+            self._keystone_lines = {}
+            self._keystone_draw_p1 = None
+            self._keystone_draw_p2 = None
         if mode != ToolMode.ZONE_PLACE:
             self._pin_drag_index = None
+        self.update()
+
+    def clear_keystone_lines(self) -> None:
+        self._keystone_lines.clear()
         self.update()
 
     def set_local_slider_drag(self, dragging: bool) -> None:
@@ -530,6 +629,7 @@ class CanvasOverlay(QWidget):
         self._local_muted_masks = frozenset()
 
     def _end_crop_drag(self) -> None:
+        self._stop_auto_pan()
         self._crop_drag_mode = None
         self._crop_anchor_screen = None
         self._crop_press_norm = None
@@ -568,8 +668,15 @@ class CanvasOverlay(QWidget):
             self.update()
             return True
         if self._tool_mode == ToolMode.STRAIGHTEN and self._straighten_p1 is not None:
+            self._stop_auto_pan()
             self._straighten_p1 = None
             self._straighten_p2 = None
+            self.update()
+            return True
+        if self._tool_mode == ToolMode.KEYSTONE_LINES and self._keystone_draw_p1 is not None:
+            self._stop_auto_pan()
+            self._keystone_draw_p1 = None
+            self._keystone_draw_p2 = None
             self.update()
             return True
         return False
@@ -589,6 +696,7 @@ class CanvasOverlay(QWidget):
         self._gpu_texture = gpu_texture
         self._host_qimage_cache = None
         self._zone_cells = None  # rebuilt lazily on the next zones paint
+        self._frame_washes = {}
         # Kept so a strip mosaic gets the same display transform as this buffer did.
         self._display_cs = color_space
         self._monitor_icc_bytes = monitor_icc_bytes
@@ -612,6 +720,8 @@ class CanvasOverlay(QWidget):
         """Repaint the split after the stashed baseline frame changed (or went away)."""
         self._compare_qimage_cache = None
         self._split_dragging = False
+        if not self._compare_split_active() and self.cursor().shape() == Qt.CursorShape.SplitHCursor:
+            self.unsetCursor()
         self.update()
 
     def drop_gpu_texture(self) -> None:
@@ -639,7 +749,7 @@ class CanvasOverlay(QWidget):
         buf = self._host_buffer()
         if buf is None:
             return None
-        key = (id(buf), self._display_cs, self._proof)
+        key = (id(buf), self._display_cs, self._monitor_icc_bytes, self._proof)
         if self._host_qimage_cache is not None and self._host_qimage_cache[0] == key:
             return self._host_qimage_cache[1]
         img = ImageConverter.to_qimage(buf, self._display_cs, self._monitor_icc_bytes, self._proof)
@@ -673,8 +783,9 @@ class CanvasOverlay(QWidget):
         final_w = img_w * total_scale
         final_h = img_h * total_scale
 
+        # Zoom scales about the widget center to match the GPU shader; the fit area's center moves with it.
         center_x = (w / 2) + (self.pan_x * w)
-        center_y = (fit_h / 2) + (self.pan_y * h)
+        center_y = (h / 2) + ((fit_h - h) / 2) * self.zoom_level + (self.pan_y * h)
 
         self._view_rect = QRectF(center_x - (final_w / 2), center_y - (final_h / 2), final_w, final_h)
         self._remap_inflight_points(old_rect)
@@ -701,12 +812,201 @@ class CanvasOverlay(QWidget):
             self._scratch_pts = [remap(p) for p in self._scratch_pts]
         if self._heal_drag_pts:
             self._heal_drag_pts = [remap(p) for p in self._heal_drag_pts]
+        if self._exclude_drag_pts:
+            self._exclude_drag_pts = [remap(p) for p in self._exclude_drag_pts]
+        if self._rotate_center is not None:
+            self._rotate_center = remap(self._rotate_center)
+        if self._rotate_press is not None:
+            self._rotate_press = remap(self._rotate_press)
         if self._local_edit_verts is not None:
             self._local_edit_verts = [remap(p) for p in self._local_edit_verts]
         if self._straighten_p1 is not None:
             self._straighten_p1 = remap(self._straighten_p1)
         if self._straighten_p2 is not None:
             self._straighten_p2 = remap(self._straighten_p2)
+        if self._keystone_draw_p1 is not None:
+            self._keystone_draw_p1 = remap(self._keystone_draw_p1)
+        if self._keystone_draw_p2 is not None:
+            self._keystone_draw_p2 = remap(self._keystone_draw_p2)
+        self._keystone_lines = {name: (remap(p1), remap(p2)) for name, (p1, p2) in self._keystone_lines.items()}
+        if self._crop_anchor_screen is not None:
+            self._crop_anchor_screen = remap(self._crop_anchor_screen)
+        if self._crop_draw_p1 is not None:
+            self._crop_draw_p1 = remap(self._crop_draw_p1)
+        if self._crop_draw_p2 is not None:
+            self._crop_draw_p2 = remap(self._crop_draw_p2)
+
+    def _begin_auto_pan(self, pos: QPointF) -> None:
+        self._auto_pan_active = True
+        self._auto_pan_pointer = QPointF(pos)
+        self._auto_pan_last_tick = time.monotonic()
+        self._refresh_auto_pan_timer()
+
+    def _track_auto_pan_pointer(self, pos: QPointF) -> None:
+        if not self._auto_pan_active:
+            return
+        self._auto_pan_pointer = QPointF(pos)
+        self._refresh_auto_pan_timer()
+
+    def _stop_auto_pan(self) -> None:
+        self._auto_pan_active = False
+        self._auto_pan_pointer = None
+        self._auto_pan_last_tick = None
+        self._auto_pan_timer.stop()
+
+    def _auto_pan_velocity(self) -> QPointF:
+        if not self._auto_pan_active or self._auto_pan_pointer is None:
+            return QPointF()
+        width, height = float(self.width()), float(self.height())
+        if width <= 0.0 or height <= 0.0 or self._view_rect.isEmpty():
+            return QPointF()
+
+        pos = self._auto_pan_pointer
+        zone_x = width * _AUTO_PAN_EDGE_ZONE_FRACTION
+        zone_y = height * _AUTO_PAN_EDGE_ZONE_FRACTION
+        excess_x = excess_y = 0.0
+        direction_x = direction_y = 0.0
+
+        if self._view_rect.left() < 0.0 and pos.x() < zone_x:
+            excess_x = zone_x - pos.x()
+            direction_x = 1.0
+        if self._view_rect.right() > width and pos.x() > width - zone_x:
+            excess_x = pos.x() - (width - zone_x)
+            direction_x = -1.0
+        if self._view_rect.top() < 0.0 and pos.y() < zone_y:
+            excess_y = zone_y - pos.y()
+            direction_y = 1.0
+        if self._view_rect.bottom() > height and pos.y() > height - zone_y:
+            excess_y = pos.y() - (height - zone_y)
+            direction_y = -1.0
+
+        ratio_x, ratio_y = excess_x / width, excess_y / height
+        if ratio_x <= 0.0 and ratio_y <= 0.0:
+            return QPointF()
+
+        if ratio_x >= ratio_y:
+            speed = min(_AUTO_PAN_MAX_SPEED_PX_S * _AUTO_PAN_SPEED_MULTIPLIER * ratio_x, _AUTO_PAN_MAX_SPEED_PX_S)
+            return QPointF(direction_x * speed, 0.0)
+        speed = min(_AUTO_PAN_MAX_SPEED_PX_S * _AUTO_PAN_SPEED_MULTIPLIER * ratio_y, _AUTO_PAN_MAX_SPEED_PX_S)
+        return QPointF(0.0, direction_y * speed)
+
+    def _refresh_auto_pan_timer(self) -> None:
+        if not self._auto_pan_active:
+            return
+        if self._auto_pan_velocity().isNull():
+            self._auto_pan_timer.stop()
+            self._auto_pan_last_tick = None
+        elif not self._auto_pan_timer.isActive():
+            self._auto_pan_last_tick = time.monotonic()
+            self._auto_pan_timer.start()
+
+    def _auto_pan_tick(self, now: Optional[float] = None) -> None:
+        current = time.monotonic() if now is None else now
+        velocity = self._auto_pan_velocity()
+        if velocity.isNull() or self._auto_pan_pointer is None:
+            self._auto_pan_timer.stop()
+            self._auto_pan_last_tick = None
+            return
+
+        previous = self._auto_pan_last_tick if self._auto_pan_last_tick is not None else current
+        elapsed = min(max(current - previous, 0.0), _AUTO_PAN_MAX_TICK_S)
+        self._auto_pan_last_tick = current
+        if elapsed <= 0.0:
+            return
+
+        self.pan_requested.emit(velocity.x() * elapsed, velocity.y() * elapsed)
+        self._update_tracked_gesture(self._auto_pan_pointer, QApplication.keyboardModifiers())
+
+    def _update_tracked_gesture(self, pos: QPointF, modifiers: Qt.KeyboardModifier) -> bool:
+        if self._crop_drag_mode == "corner" and self._crop_anchor_screen is not None:
+            cur_screen = QPointF(
+                float(np.clip(pos.x(), self._view_rect.left(), self._view_rect.right())),
+                float(np.clip(pos.y(), self._view_rect.top(), self._view_rect.bottom())),
+            )
+            rect = self._apply_aspect_and_min(self._crop_anchor_screen, cur_screen)
+            self._crop_rect_norm = rect
+            self.crop_rect_changed.emit(*rect, False)
+            self.update()
+            return True
+
+        if (
+            self._crop_drag_mode == "edge"
+            and self._crop_edge_which is not None
+            and self._crop_rect_norm is not None
+            and not self._view_rect.isEmpty()
+        ):
+            cur_screen = QPointF(
+                float(np.clip(pos.x(), self._view_rect.left(), self._view_rect.right())),
+                float(np.clip(pos.y(), self._view_rect.top(), self._view_rect.bottom())),
+            )
+            cursor_nx, cursor_ny = self._screen_to_norm(cur_screen)
+            x1, y1, x2, y2 = self._crop_rect_norm
+            min_w = min(_CROP_MIN_SCREEN_PX / self._view_rect.width(), 1.0)
+            min_h = min(_CROP_MIN_SCREEN_PX / self._view_rect.height(), 1.0)
+            if self._crop_edge_which == "left":
+                new_rect = (float(np.clip(cursor_nx, 0.0, max(0.0, x2 - min_w))), y1, x2, y2)
+            elif self._crop_edge_which == "right":
+                new_rect = (x1, y1, float(np.clip(cursor_nx, min(1.0, x1 + min_w), 1.0)), y2)
+            elif self._crop_edge_which == "top":
+                new_rect = (x1, float(np.clip(cursor_ny, 0.0, max(0.0, y2 - min_h))), x2, y2)
+            else:
+                new_rect = (x1, y1, x2, float(np.clip(cursor_ny, min(1.0, y1 + min_h), 1.0)))
+            self._crop_rect_norm = new_rect
+            self.crop_rect_changed.emit(*new_rect, False)
+            self.update()
+            return True
+
+        if self._crop_drag_mode == "move" and self._crop_press_norm is not None and self._crop_orig_rect is not None:
+            curr_norm = self._screen_to_norm(pos)
+            fine = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            sensitivity = 0.5 if fine else 1.0
+            dx = (curr_norm[0] - self._crop_press_norm[0]) * sensitivity
+            dy = (curr_norm[1] - self._crop_press_norm[1]) * sensitivity
+            new_rect = translate_normalized_rect(self._crop_orig_rect, dx, dy)
+            if any(abs(a - b) > 5e-4 for a, b in zip(new_rect, self._crop_rect_norm or new_rect)):
+                self._crop_rect_norm = new_rect
+                self.crop_rect_changed.emit(*new_rect, False)
+                self.update()
+            return True
+
+        if self._tool_mode == ToolMode.STRAIGHTEN and self._straighten_p1 is not None:
+            self._straighten_p2 = QPointF(
+                float(np.clip(pos.x(), self._view_rect.left(), self._view_rect.right())),
+                float(np.clip(pos.y(), self._view_rect.top(), self._view_rect.bottom())),
+            )
+            self.update()
+            return True
+
+        if self._tool_mode == ToolMode.KEYSTONE_LINES and self._keystone_draw_p1 is not None:
+            self._keystone_draw_p2 = QPointF(
+                float(np.clip(pos.x(), self._view_rect.left(), self._view_rect.right())),
+                float(np.clip(pos.y(), self._view_rect.top(), self._view_rect.bottom())),
+            )
+            self.update()
+            return True
+
+        if self._crop_drag_mode == "draw" and self._crop_draw_p1 is not None:
+            mx = float(np.clip(pos.x(), self._view_rect.left(), self._view_rect.right()))
+            my = float(np.clip(pos.y(), self._view_rect.top(), self._view_rect.bottom()))
+            if not self._crop_draw_armed:
+                if (QPointF(mx, my) - self._crop_draw_p1).manhattanLength() < _CROP_REDRAW_SLOP_PX:
+                    return True
+                self._crop_draw_armed = True
+
+            dx = mx - self._crop_draw_p1.x()
+            dy = my - self._crop_draw_p1.y()
+            target_ratio = self._oriented_target_ratio(dx, dy)
+            if target_ratio is None:
+                self._crop_draw_p2 = QPointF(mx, my)
+            else:
+                if abs(dx) > abs(dy) * target_ratio:
+                    dx = abs(dy) * target_ratio * (1 if dx >= 0 else -1)
+                else:
+                    dy = abs(dx) / target_ratio * (1 if dy >= 0 else -1)
+                self._crop_draw_p2 = QPointF(self._crop_draw_p1.x() + dx, self._crop_draw_p1.y() + dy)
+            self.update()
+            return True
+        return False
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -752,9 +1052,10 @@ class CanvasOverlay(QWidget):
         if (
             self._buffer_overlay_visible
             and self._buffer_overlay_ratio > 1e-4
-            and self._tool_mode not in (ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW)
+            and self._tool_mode not in UNCROPPED_PREVIEW_TOOLS
+            and not self.state.canvas_value("crop_preview_full")
         ):
-            d = visible_rect
+            d = self._content_view_rect()
             margin_w = d.width() * self._buffer_overlay_ratio
             margin_h = d.height() * self._buffer_overlay_ratio
             inner = QRectF(d.x() + margin_w, d.y() + margin_h, d.width() - 2 * margin_w, d.height() - 2 * margin_h)
@@ -776,7 +1077,9 @@ class CanvasOverlay(QWidget):
             self._draw_brush(painter, THEME.warn_amber)
 
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
-            if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK):
+            if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK) or (
+                self._tool_mode == ToolMode.CLONE and not self.state.clone_picking
+            ):
                 self._draw_brush(painter)
             elif self._tool_mode not in _SHAPE_FOR_TOOL:
                 pen = QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DotLine)
@@ -785,20 +1088,26 @@ class CanvasOverlay(QWidget):
                 painter.drawLine(QPointF(visible_rect.x(), self._mouse_pos.y()), QPointF(visible_rect.right(), self._mouse_pos.y()))
                 painter.drawLine(QPointF(self._mouse_pos.x(), visible_rect.top()), QPointF(self._mouse_pos.x(), visible_rect.bottom()))
 
-        if self.state.config.local.masks:
+        if self.state.config.local.masks and (self.state.local_masks_shown or self._tool_mode in _SHAPE_FOR_TOOL):
             self._draw_local_masks(painter)
+        else:
+            # Hit-testing reads these, so a hidden mask keeps no handle to grab.
+            self._local_mask_screen_polys = []
+            self._local_mask_screen_ctrl = []
         if self._tool_mode == ToolMode.LOCAL_DRAW:
             self._draw_lasso_in_progress(painter)
         if self._tool_mode in (ToolMode.LOCAL_OVAL, ToolMode.LOCAL_GRADIENT):
             self._draw_shape_in_progress(painter)
-        if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.SCRATCH_LINE):
+        if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.SCRATCH_LINE, ToolMode.CLONE):
             self._draw_placed_heals(painter)
         if self._tool_mode == ToolMode.SCRATCH_LINE:
             self._draw_line_hover(painter)
         if self._tool_mode == ToolMode.SCRATCH_PICK:
             self._draw_scratch_in_progress(painter)
-        if self._tool_mode == ToolMode.DUST_PICK:
+        if self._tool_mode in _BRUSH_TOOLS and not (self._tool_mode == ToolMode.CLONE and self.state.clone_picking):
             self._draw_heal_drag_in_progress(painter)
+        if self._tool_mode == ToolMode.CLONE:
+            self._draw_clone_source(painter)
         # Committed patches show with the detection overlay or a retouch tool, where the
         # question "what is the detector doing here" is being asked; a drag always shows.
         if self._exclude_drag_pts or (
@@ -808,21 +1117,32 @@ class CanvasOverlay(QWidget):
             self._draw_dust_exclusions(painter)
         if self._tool_mode == ToolMode.STRAIGHTEN:
             self._draw_straighten_line(painter)
+        if self._tool_mode == ToolMode.KEYSTONE_LINES:
+            self._draw_keystone_lines_tool(painter)
 
         if self.state.dust_overlay_mode != "off":
             self._draw_dust_overlay(painter)
 
-        # Crop/analysis modes show the uncropped frame, so the boxes wouldn't line up.
+        # UNCROPPED_PREVIEW_TOOLS show the uncropped frame, where the boxes would not line up. The tool test hides
+        # them as the tool opens; crop_preview_full keeps them hidden while that frame is still on screen after it closes.
         content_aligned = (
             not self.state.flat_peek
             and not self.state.negative_peek
-            and self._tool_mode not in (ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW)
+            and not self.state.flatfield_peek
+            and self._tool_mode not in UNCROPPED_PREVIEW_TOOLS
+            and not self.state.canvas_value("crop_preview_full")
         )
         if self.state.test_strip and content_aligned:
             # Takes the content rect over from the zone grid: both would claim it.
             self._draw_test_strip(painter)
         elif self.state.zones_overlay and content_aligned:
             self._draw_zone_grid(painter)
+
+        if content_aligned and not self.state.test_strip:
+            if self.state.clipping_overlay:
+                self._draw_clipping_overlay(painter)
+            if self.state.zone_highlight is not None:
+                self._draw_zone_highlight(painter)
 
         # Pins are content-anchored, so they hide with the strip (whose mosaic
         # replaces the frame) and in the uncropped tool views.
@@ -838,7 +1158,7 @@ class CanvasOverlay(QWidget):
             self._draw_rotation_grid(painter, visible_rect)
 
         if self._crop_preview_visible and self._crop_preview_rect:
-            self._draw_crop_preview(painter, visible_rect)
+            self._draw_crop_preview(painter, self._content_view_rect())
 
         # Keyed off the stashed baseline, not state.compare_mode: the toggle flips before its
         # render lands, and half a split with no before frame is just the edit.
@@ -846,7 +1166,7 @@ class CanvasOverlay(QWidget):
             self._draw_compare_split(painter)
 
         # Exclusive with the split above, so the two badges cannot land on each other.
-        if self.state.negative_peek or self.state.embedded_peek or self.state.flat_peek:
+        if self.state.negative_peek or self.state.embedded_peek or self.state.flat_peek or self.state.flatfield_peek:
             self._draw_peek_badge(painter)
 
         # Last: the glass sits over everything else and claims no content rect, so it stays out
@@ -917,7 +1237,7 @@ class CanvasOverlay(QWidget):
         buf = self.state.compare_before
         if not isinstance(buf, np.ndarray):
             return None
-        key = (id(buf), self._display_cs, self._proof)
+        key = (id(buf), self._display_cs, self._monitor_icc_bytes, self._proof)
         if self._compare_qimage_cache is not None and self._compare_qimage_cache[0] == key:
             return self._compare_qimage_cache[1]
         img = ImageConverter.to_qimage(buf, self._display_cs, self._monitor_icc_bytes, self._proof)
@@ -972,7 +1292,14 @@ class CanvasOverlay(QWidget):
 
     def _draw_peek_badge(self, painter: QPainter) -> None:
         """Name the peek on the canvas. Otherwise only the toolbar says the view is on."""
-        text = "NEGATIVE" if self.state.negative_peek else ("EMBEDDED" if self.state.embedded_peek else "FLAT SCAN")
+        if self.state.negative_peek:
+            text = "NEGATIVE"
+        elif self.state.embedded_peek:
+            text = "EMBEDDED"
+        elif self.state.flatfield_peek:
+            text = "FLAT FIELD"
+        else:
+            text = "FLAT SCAN"
         rect = self._content_view_rect()
         if rect.isEmpty():
             return
@@ -995,9 +1322,28 @@ class CanvasOverlay(QWidget):
         painter.drawEllipse(self._mouse_pos, radius, radius)
 
     def _brush_screen_radius(self, size: float) -> float:
+        """A heal's footprint is a fraction of the whole source frame, not of the crop."""
+        scale = self._screen_per_raw_px()
+        h_raw, w_raw = self.state.original_res
+        if scale is None:
+            rect = self._content_view_rect()
+            return (size / (2.0 * HEAL_SIZE_REF)) * max(rect.width(), rect.height())
+        return (size / (2.0 * HEAL_SIZE_REF)) * max(w_raw, h_raw) * scale
+
+    def _screen_per_raw_px(self) -> Optional[float]:
+        """Screen pixels per source pixel, read off the uv grid of the shown render."""
+        with self.state.metrics_lock:
+            uv = self.state.last_metrics.get("uv_grid")
+        h_raw, w_raw = self.state.original_res
         rect = self._content_view_rect()
-        max_screen_dim = max(rect.width(), rect.height())
-        return (size / (2.0 * HEAL_SIZE_REF)) * max_screen_dim
+        if uv is None or uv.ndim != 3 or uv.shape[1] < 2 or not (h_raw and w_raw) or rect.isEmpty():
+            return None
+        row = uv.shape[0] // 2
+        du, dv = (uv[row, 1] - uv[row, 0])[:2]
+        raw_per_grid = float(np.hypot(du * w_raw, dv * h_raw))
+        if raw_per_grid <= 0.0:
+            return None
+        return rect.width() / uv.shape[1] / raw_per_grid
 
     def _preview_curve_path(self, pts: List[QPointF]) -> QPainterPath:
         """Smoothed path through the placed points plus the live cursor."""
@@ -1048,6 +1394,43 @@ class CanvasOverlay(QWidget):
                 region.addEllipse(QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t), radius, radius)
         region.addEllipse(pts[-1], radius, radius)
         return region
+
+    def _clone_source_screen(self) -> Optional[QPointF]:
+        """The Clone source on screen: the cursor while picking, the picked source, or the brush plus the offset."""
+        if self.state.clone_picking:
+            return self._mouse_pos if self._content_view_rect().contains(self._mouse_pos) else None
+        with self.state.metrics_lock:
+            uv_grid = self.state.last_metrics.get("uv_grid")
+        source, offset = self.state.clone_source, self.state.clone_offset
+        if uv_grid is None or (source is None and offset is None):
+            return None
+        if offset is None and source is not None and self._heal_drag_pts:
+            start = self._map_to_image_coords(self._heal_drag_pts[0])
+            if start is not None:
+                rx, ry = CoordinateMapping.map_click_to_raw(start[0], start[1], uv_grid)
+                offset = (source[0] - rx, source[1] - ry)
+        if offset is None:
+            assert source is not None
+            return self._raw_to_screen(source[0], source[1], uv_grid)
+        here = self._map_to_image_coords(self._mouse_pos)
+        if here is None:
+            return None
+        rx, ry = CoordinateMapping.map_click_to_raw(here[0], here[1], uv_grid)
+        return self._raw_to_screen(rx + offset[0], ry + offset[1], uv_grid)
+
+    def _draw_clone_source(self, painter: QPainter) -> None:
+        center = self._clone_source_screen()
+        if center is None:
+            return
+        radius = self._brush_screen_radius(self.state.config.retouch.manual_dust_size)
+        pen = QPen(Qt.GlobalColor.white, 1.0, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(center, radius, radius)
+        arm = min(radius, 6.0)
+        painter.drawLine(QPointF(center.x() - arm, center.y()), QPointF(center.x() + arm, center.y()))
+        painter.drawLine(QPointF(center.x(), center.y() - arm), QPointF(center.x(), center.y() + arm))
 
     def _draw_heal_drag_in_progress(self, painter: QPainter) -> None:
         """Translucent mask of the area being painted with the heal tool (click-drag)."""
@@ -1121,6 +1504,87 @@ class CanvasOverlay(QWidget):
         painter.setPen(QColor(THEME.accent_primary))
         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
 
+    def _classify_keystone_edge(self, p1: QPointF, p2: QPointF) -> str:
+        dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
+        vertical = abs(abs(math.degrees(math.atan2(dy, dx))) - 90.0) < 45.0
+        rect = self._content_view_rect()
+        mid = QPointF((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0)
+        if vertical:
+            return "left" if mid.x() < rect.center().x() else "right"
+        return "top" if mid.y() < rect.center().y() else "bottom"
+
+    def _draw_keystone_lines_tool(self, painter: QPainter) -> None:
+        labels = {"left": "Left", "right": "Right", "top": "Top", "bottom": "Bottom"}
+        accent_pen = QPen(QColor(THEME.accent_primary), 1.5, Qt.PenStyle.SolidLine)
+        accent_pen.setCosmetic(True)
+        painter.setPen(accent_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for name, (p1, p2) in self._keystone_lines.items():
+            painter.drawLine(p1, p2)
+            mid = QPointF((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0)
+            badge = QRectF(mid.x() - 26.0, mid.y() - 11.0, 52.0, 20.0)
+            painter.setBrush(QColor(0, 0, 0, 170))
+            painter.drawRoundedRect(badge, 4.0, 4.0)
+            painter.setPen(QColor(THEME.accent_primary))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, labels[name])
+            painter.setPen(accent_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if self._keystone_draw_p1 is None or self._keystone_draw_p2 is None:
+            return
+        p1, p2 = self._keystone_draw_p1, self._keystone_draw_p2
+        white_pen = QPen(Qt.GlobalColor.white, 1.5, Qt.PenStyle.SolidLine)
+        white_pen.setCosmetic(True)
+        painter.setPen(white_pen)
+        painter.drawLine(p1, p2)
+        painter.setBrush(QColor(255, 255, 255, 200))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(p1, 3.0, 3.0)
+        painter.drawEllipse(p2, 3.0, 3.0)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _content_host_buffer(self) -> Optional[np.ndarray]:
+        """The displayed frame's image content as NumPy, border padding cut away."""
+        src = self._host_buffer()
+        if src is not None and self._content_rect is not None:
+            ox, oy, cw, ch = self._content_rect
+            src = src[oy : oy + ch, ox : ox + cw]
+        return src
+
+    def _frame_wash(self, key: tuple, build) -> Optional[QImage]:
+        if key not in self._frame_washes:
+            src = self._content_host_buffer()
+            self._frame_washes[key] = None if src is None else build(src)
+        return self._frame_washes[key]
+
+    def _draw_clipping_overlay(self, painter: QPainter) -> None:
+        """Pixels at paper black and paper white, in the Color vision pair."""
+        shadow, highlight = palette_for(self.state.color_vision).pair
+
+        def build(src: np.ndarray) -> Optional[QImage]:
+            masks = clip_masks(src)
+            if masks is None:
+                return None
+            low, high = masks
+            return _tint_qimage([(low, QColor(shadow)), (high, QColor(highlight))], _CLIP_WASH_ALPHA)
+
+        img = self._frame_wash(("clip", shadow, highlight), build)
+        if img is not None:
+            painter.drawImage(self._content_view_rect(), img)
+
+    def _draw_zone_highlight(self, painter: QPainter) -> None:
+        """The zone the strip's hover names, washed over the pixels that print in it."""
+        zone = int(self.state.zone_highlight)
+        color = palette_for(self.state.color_vision).spot
+
+        def build(src: np.ndarray) -> Optional[QImage]:
+            mask = zone_mask(src, zone)
+            return None if mask is None else _tint_qimage([(mask, QColor(color))], _ZONE_HIGHLIGHT_ALPHA)
+
+        img = self._frame_wash(("zone", zone, color), build)
+        if img is not None:
+            painter.drawImage(self._content_view_rect(), img)
+
     def _draw_zone_grid(self, painter: QPainter) -> None:
         """Adams-zone map over the image content: a fixed grid whose internal edges are
         drawn only where the zone changes, so neighbouring cells of the same zone merge
@@ -1131,12 +1595,9 @@ class CanvasOverlay(QWidget):
         instead of reflowing under the cursor while panning; zoom deep enough and you're
         inside one cell. Rebuild from the visible sub-rect if that ever matters."""
         if self._zone_cells is None:
-            src = self._host_buffer()
+            src = self._content_host_buffer()
             if src is None:
                 return
-            if self._content_rect is not None:
-                ox, oy, cw, ch = self._content_rect
-                src = src[oy : oy + ch, ox : ox + cw]
             self._zone_cells = zone_grid(src)
             if self._zone_cells is None:
                 return
@@ -1300,7 +1761,7 @@ class CanvasOverlay(QWidget):
         mosaic = self.state.test_strip_mosaic
         if mosaic is None:
             return None
-        key = (id(mosaic), self._display_cs, self._proof)
+        key = (id(mosaic), self._display_cs, self._monitor_icc_bytes, self._proof)
         if self._strip_cache is not None and self._strip_cache[0] == key:
             return self._strip_cache[1]
         img = ImageConverter.to_qimage(mosaic, self._display_cs, self._monitor_icc_bytes, self._proof)
@@ -1420,43 +1881,93 @@ class CanvasOverlay(QWidget):
             rotated_cell(current, base_grid, rotation),
         )
 
+    def _placed_heals_norm(self, conf: Any, uv_grid: np.ndarray) -> tuple:
+        """(heal stroke points, spot centers, clone stroke points), viewport-normalized. The cache
+        holds both keys, so their ids cannot be reused while it lives."""
+        cached = self._heal_norm_cache
+        if cached is not None and cached[0] is uv_grid and cached[1] is conf:
+            return cached[2]
+        strokes = tuple(
+            [CoordinateMapping.map_raw_to_viewport(px, py, uv_grid) for px, py in stroke[0]] for stroke in conf.manual_heal_strokes
+        )
+        spots = tuple(CoordinateMapping.map_raw_to_viewport(rx, ry, uv_grid) for rx, ry, _size in conf.manual_dust_spots)
+        clones = tuple([CoordinateMapping.map_raw_to_viewport(px, py, uv_grid) for px, py in stroke[0]] for stroke in conf.clone_strokes)
+        value = (strokes, spots, clones)
+        self._heal_norm_cache = (uv_grid, conf, value)
+        return value
+
+    def _norm_to_content(self, nx: float, ny: float, rect: QRectF) -> QPointF:
+        return QPointF(rect.x() + nx * rect.width(), rect.y() + ny * rect.height())
+
+    def _placed_heal_shapes(self, conf: Any, uv_grid: np.ndarray) -> list:
+        """Screen shapes: ("dab", center, radius), ("region", path), ("spot", center, radius), ("clone", path)."""
+        norm = self._placed_heals_norm(conf, uv_grid)
+        rect = self._content_view_rect()
+        key = (rect.x(), rect.y(), rect.width(), rect.height())
+        cached = self._heal_shape_cache
+        if cached is not None and cached[0] == key and cached[1] is norm:
+            return cached[2]
+        shapes: list = []
+        for stroke, pts in zip(conf.manual_heal_strokes, norm[0]):
+            screen_pts = [self._norm_to_content(nx, ny, rect) for nx, ny in pts]
+            radius = max(2.0, self._brush_screen_radius(stroke[1]))
+            if len(screen_pts) == 1:
+                shapes.append(("dab", screen_pts[0], radius))
+                continue
+            if len(screen_pts) >= 3:
+                screen_pts = [QPointF(x, y) for x, y in smooth_polyline([(p.x(), p.y()) for p in screen_pts], closed=False)]
+            shapes.append(("region", self._heal_region_path(screen_pts, radius)))
+        for (_rx, _ry, size), (nx, ny) in zip(conf.manual_dust_spots, norm[1]):
+            shapes.append(("spot", self._norm_to_content(nx, ny, rect), max(2.0, self._brush_screen_radius(size))))
+        for stroke, pts in zip(conf.clone_strokes, norm[2]):
+            screen_pts = [self._norm_to_content(nx, ny, rect) for nx, ny in pts]
+            if len(screen_pts) >= 3:
+                screen_pts = [QPointF(x, y) for x, y in smooth_polyline([(p.x(), p.y()) for p in screen_pts], closed=False)]
+            shapes.append(("clone", self._heal_region_path(screen_pts, max(2.0, self._brush_screen_radius(stroke[1])))))
+        self._heal_shape_cache = (key, norm, shapes)
+        return shapes
+
+    def _placed_heal_layer(self, shapes: list) -> QPixmap:
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr)
+        cached = self._heal_layer_cache
+        if cached is not None and cached[0] is shapes and cached[1] == key:
+            return cached[2]
+        pix = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(THEME.accent_primary), 1.0, Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+        # Masked area only, with no centerline and no outline.
+        fill = QColor(THEME.accent_primary)
+        fill.setAlpha(40)
+        for shape in shapes:
+            if shape[0] in ("region", "clone"):
+                # The outline sets a clone apart from a heal.
+                p.setPen(pen if shape[0] == "clone" else Qt.PenStyle.NoPen)
+                p.setBrush(fill)
+                p.drawPath(shape[1])
+            else:
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(shape[1], shape[2], shape[2])
+        p.end()
+        self._heal_layer_cache = (shapes, key, pix)
+        return pix
+
     def _draw_placed_heals(self, painter: QPainter) -> None:
         """Thin outlines of committed heals (strokes + legacy spots) while a retouch tool is active."""
         conf = self.state.config.retouch
-        if not (conf.manual_heal_strokes or conf.manual_dust_spots or conf.scratch_lines):
+        if not (conf.manual_heal_strokes or conf.manual_dust_spots or conf.scratch_lines or conf.clone_strokes):
             return
         with self.state.metrics_lock:
             uv_grid = self.state.last_metrics.get("uv_grid")
         if uv_grid is None:
             return
 
-        pen = QPen(QColor(THEME.accent_primary), 1.0, Qt.PenStyle.SolidLine)
-        pen.setCosmetic(True)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        for stroke in conf.manual_heal_strokes:
-            points, size = stroke[0], stroke[1]
-            screen_pts = [self._raw_to_screen(px, py, uv_grid) for px, py in points]
-            radius = max(2.0, self._brush_screen_radius(size))
-            if len(screen_pts) == 1:
-                painter.setPen(pen)
-                painter.drawEllipse(screen_pts[0], radius, radius)
-            else:
-                if len(screen_pts) >= 3:
-                    screen_pts = [QPointF(x, y) for x, y in smooth_polyline([(p.x(), p.y()) for p in screen_pts], closed=False)]
-                # Masked area only, with no centerline and no outline.
-                fill = QColor(THEME.accent_primary)
-                fill.setAlpha(40)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(fill)
-                painter.drawPath(self._heal_region_path(screen_pts, radius))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        painter.setPen(pen)
-        for rx, ry, size in conf.manual_dust_spots:
-            center = self._raw_to_screen(rx, ry, uv_grid)
-            radius = max(2.0, self._brush_screen_radius(size))
-            painter.drawEllipse(center, radius, radius)
+        painter.drawPixmap(0, 0, self._placed_heal_layer(self._placed_heal_shapes(conf, uv_grid)))
 
         # Traced scratches draw as the band they repair, not a hairline.
         for line in conf.scratch_lines:
@@ -1503,8 +2014,8 @@ class CanvasOverlay(QWidget):
 
     def _draw_dust_overlay(self, painter: QPainter) -> None:
         """Display-only visualization of the auto/IR dust-detection set. Modes:
-        'marked' (neon markers over the image), 'ir' (the geometry-aligned raw IR
-        channel, no markers)."""
+        'marked' (washes over the image), 'ir' (the geometry-aligned raw IR channel, no
+        markers)."""
         mode = self.state.dust_overlay_mode
         if mode == "ir":
             img = self._ir_layer_qimage()
@@ -1512,9 +2023,8 @@ class CanvasOverlay(QWidget):
                 painter.drawImage(self._content_view_rect(), img)
             return
 
-        # Dim wash over every repaired region. No source emits capsules any more, since they are
-        # all masks by the time they reach the render, so color tells them apart: green for
-        # optically detected specks, magenta for IR and inpainted defects.
+        # Dim wash over every repaired region. Every source reaches the render as a mask, so the
+        # Color vision pair tells them apart: optically detected specks, then IR and inpainted defects.
         for mask, color in self._corrected_masks():
             wash = self._mask_wash_qimage(mask, color)
             if wash is not None:
@@ -1551,16 +2061,18 @@ class CanvasOverlay(QWidget):
     def _corrected_masks(self) -> List[Tuple[np.ndarray, QColor]]:
         """Repaired-region masks to wash, with the color that names their source."""
         with self.state.metrics_lock:
+            # Detected dust and IR repairs are told apart by hue alone.
+            luma_color, ir_color = (QColor(c) for c in palette_for(self.state.color_vision).pair)
             masks: List[Tuple[np.ndarray, QColor]] = []
             luma = self.state.last_metrics.get("detected_dust_mask")
             if luma is not None:
-                masks.append((luma, _DUST_MARK_LUMA))
+                masks.append((luma, luma_color))
             corr = self.state.last_metrics.get("ir_corrected_mask")
             if corr is not None:
-                masks.append((corr, _DUST_MARK_IR))
+                masks.append((corr, ir_color))
             hairs = self.state.last_metrics.get("hair_inpaint_masks")
             if hairs:
-                masks.extend((h, _DUST_MARK_IR) for h in hairs)
+                masks.extend((h, ir_color) for h in hairs)
         return masks
 
     def _mask_wash_qimage(self, mask: np.ndarray, color: QColor) -> Optional[QImage]:
@@ -1578,14 +2090,7 @@ class CanvasOverlay(QWidget):
         map_x = (uv_grid[..., 0] * (w_m - 1)).astype(np.float32)
         map_y = (uv_grid[..., 1] * (h_m - 1)).astype(np.float32)
         remapped = cv2.remap(np.ascontiguousarray(mask, dtype=np.float32), map_x, map_y, interpolation=cv2.INTER_NEAREST)
-        gh, gw = remapped.shape[:2]
-        af = (remapped > 0.5).astype(np.float32) * (_IR_CORRECTED_ALPHA / 255.0)
-        buf = np.empty((gh, gw, 4), dtype=np.uint8)
-        buf[..., 0] = (color.red() * af).astype(np.uint8)
-        buf[..., 1] = (color.green() * af).astype(np.uint8)
-        buf[..., 2] = (color.blue() * af).astype(np.uint8)
-        buf[..., 3] = (af * 255.0).astype(np.uint8)
-        img = QImage(buf.data, gw, gh, gw * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+        img = _tint_qimage([(remapped > 0.5, color)], _IR_CORRECTED_ALPHA)
         if len(self._wash_cache) > 8:  # drop stale ids from prior frames
             self._wash_cache.clear()
         self._wash_cache[id(mask)] = (key, img)
@@ -1642,11 +2147,7 @@ class CanvasOverlay(QWidget):
         }
 
     def _hit_test_crop_corner(self, pos: QPointF, corners: Dict[str, QPointF]) -> Optional[str]:
-        for name, pt in corners.items():
-            dx, dy = pos.x() - pt.x(), pos.y() - pt.y()
-            if dx * dx + dy * dy <= _CROP_HANDLE_PX * _CROP_HANDLE_PX:
-                return name
-        return None
+        return hit_resize_handle(pos, corners)
 
     def _crop_edge_midpoint_screen_points(self) -> Optional[Dict[str, QPointF]]:
         if self._crop_rect_norm is None or self._view_rect.isEmpty() or self.state.config.geometry.autocrop_ratio != "Free":
@@ -1662,11 +2163,7 @@ class CanvasOverlay(QWidget):
         }
 
     def _hit_test_crop_edge(self, pos: QPointF, edges: Dict[str, QPointF]) -> Optional[str]:
-        for name, pt in edges.items():
-            dx, dy = pos.x() - pt.x(), pos.y() - pt.y()
-            if dx * dx + dy * dy <= _CROP_HANDLE_PX * _CROP_HANDLE_PX:
-                return name
-        return None
+        return hit_resize_handle(pos, edges)
 
     def _crop_rotation_handle_points(self) -> Optional[Dict[str, QPointF]]:
         """Screen positions of the four rotation handles: one per crop-box edge,
@@ -1723,12 +2220,12 @@ class CanvasOverlay(QWidget):
         corners = self._crop_corner_screen_points()
         corner = self._hit_test_crop_corner(pos, corners) if corners else None
         if corner is not None:
-            self.setCursor(Qt.CursorShape.SizeFDiagCursor if corner in ("tl", "br") else Qt.CursorShape.SizeBDiagCursor)
+            self.setCursor(resize_cursor(corner))
             return
         edges = self._crop_edge_midpoint_screen_points()
         edge = self._hit_test_crop_edge(pos, edges) if edges else None
         if edge is not None:
-            self.setCursor(Qt.CursorShape.SizeHorCursor if edge in ("left", "right") else Qt.CursorShape.SizeVerCursor)
+            self.setCursor(resize_cursor(edge))
             return
         if corners is not None and QPolygonF(list(corners.values())).containsPoint(pos, Qt.FillRule.OddEvenFill):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -1842,31 +2339,7 @@ class CanvasOverlay(QWidget):
 
         self._draw_crop_guides(painter, QRectF(corners["tl"], corners["br"]))
 
-        handle_pen = QPen(Qt.GlobalColor.white, 1.5, Qt.PenStyle.SolidLine)
-        handle_pen.setCosmetic(True)
-        painter.setPen(handle_pen)
-        painter.setBrush(QColor(THEME.accent_primary))
-        for pt in corners.values():
-            painter.drawRect(QRectF(pt.x() - 5, pt.y() - 5, 10, 10))
-
-        edges = self._crop_edge_midpoint_screen_points()
-        if edges is not None:
-            for name, pt in edges.items():
-                if name in ("top", "bottom"):
-                    rect = QRectF(
-                        pt.x() - _EDGE_HANDLE_LENGTH_PX / 2.0,
-                        pt.y() - _EDGE_HANDLE_THICKNESS_PX / 2.0,
-                        _EDGE_HANDLE_LENGTH_PX,
-                        _EDGE_HANDLE_THICKNESS_PX,
-                    )
-                else:
-                    rect = QRectF(
-                        pt.x() - _EDGE_HANDLE_THICKNESS_PX / 2.0,
-                        pt.y() - _EDGE_HANDLE_LENGTH_PX / 2.0,
-                        _EDGE_HANDLE_THICKNESS_PX,
-                        _EDGE_HANDLE_LENGTH_PX,
-                    )
-                painter.drawRect(rect)
+        draw_resize_handles(painter, corners, self._crop_edge_midpoint_screen_points())
 
         self._draw_rotation_handles(painter, corners)
 
@@ -1944,7 +2417,8 @@ class CanvasOverlay(QWidget):
         masks = self.state.config.local.masks
         self._local_mask_screen_polys = []
         self._local_mask_screen_ctrl = []
-        if not masks:
+        # A slide prints no masks, so it draws no tint and no handle to grab.
+        if not masks or render_path(self.state.config.process) is not RenderPath.PRINT:
             return
 
         with self.state.metrics_lock:
@@ -1956,6 +2430,7 @@ class CanvasOverlay(QWidget):
         selected = getattr(self.state, "local_selected_mask", -1)
         limited = limited_indices(self.state.config.local)
         fresh_cache: Dict[tuple, QImage] = {}
+        dodge_burn = palette_for(self.state.color_vision).dodge_burn
         for i, mask in enumerate(masks):
             is_selected = i == selected
             if len(mask.vertices) < min_points(mask.shape):
@@ -1971,14 +2446,19 @@ class CanvasOverlay(QWidget):
 
             if not mask.enabled or i in getattr(self.state, "local_hidden_masks", ()):
                 continue
-            outline = QColor(THEME.burn) if mask.stops > 0 else QColor(THEME.dodge)
+            outline = QColor(dodge_burn[1] if mask.stops > 0 else dodge_burn[0])
             max_alpha = 70 if is_selected else 32
 
             # A vertex drag skips the feathered fill; it re-rasters every frame. A gesture on
             # the selected mask drops its fill and the fills it overlaps, so the change under
             # them stays visible.
             if working is None and i not in self._local_muted_masks:
-                sigma_screen = mask.feather * min(self._view_rect.width(), self._view_rect.height())
+                # The engine feathers by the whole frame's short side, not the padded view's.
+                scale = self._screen_per_raw_px()
+                content = self._content_view_rect()
+                sigma_screen = mask.feather * (
+                    min(self.state.original_res) * scale if scale is not None else min(content.width(), content.height())
+                )
                 pad = 3.0 * sigma_screen + 2.0
                 # A gradient has no boundary, and an inverted mask applies outside its own.
                 # Rasterise both on the full frame, not on a padded bounding box.
@@ -2034,7 +2514,7 @@ class CanvasOverlay(QWidget):
         conf = self.state.config
         edges = key_edges(mask, conf.exposure, conf.process.process_mode, metrics)
         roi = metrics.get("active_roi")
-        crop_full = self.state.active_tool in (ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW)
+        crop_full = bool(metrics.get("crop_preview_full"))
         # Box relative to the content, so panning reuses the cache.
         bx, by = x0 - content.x(), y0 - content.y()
         key = (
@@ -2094,7 +2574,9 @@ class CanvasOverlay(QWidget):
 
     def _recipe_lines(self) -> List[str]:
         conf = self.state.config
-        return recipe_lines(conf.exposure, conf.local, conf.finish, frame=self._frame_name())
+        meters = self.state.auto_meters.get(self.state.current_file_hash or "", {})
+        exposure = replace(conf.exposure, **shown_values(conf, meters))
+        return recipe_lines(exposure, conf.local, conf.finish, frame=self._frame_name())
 
     def _draw_printing_notes(self, painter: QPainter) -> None:
         """The printer's marked-up work print: hatched burns, open dodges, ±stop badges,
@@ -2107,21 +2589,30 @@ class CanvasOverlay(QWidget):
             for i, (mask, ctrl) in enumerate(zip(self.state.config.local.masks, self._local_mask_screen_ctrl))
             if mask.enabled and len(ctrl) >= min_points(mask.shape)
         ]
-        paint_map(painter, polys)
+        paint_map(painter, polys, palette_for(self.state.color_vision).dodge_burn)
         paint_card(painter, QPointF(rect.x() + _NOTES_CARD_INSET_PX, rect.y() + _NOTES_CARD_TOP_PX), self._recipe_lines())
 
     def printing_notes_sheet(self) -> Optional[QImage]:
         """The exportable notes sheet: the frame the canvas rendered, the map baked on
-        it, and the recipe in a band below. None when there is nothing to annotate."""
-        img = self._host_qimage()
-        if img is None:
+        it, and the recipe in a band below. None when there is nothing to annotate.
+
+        Converted for sRGB, not the monitor: the sheet is saved as an untagged JPEG."""
+        buf = self._host_buffer()
+        if buf is None:
             return None
+        img = ImageConverter.to_qimage(buf, self._display_cs, None, self._proof)
         with self.state.metrics_lock:
             uv_grid = self.state.last_metrics.get("uv_grid")
         if uv_grid is None and self.state.config.local.masks:
             return None
         return notes_sheet(
-            img, self._content_rect, self.state.config.local, uv_grid, self._recipe_lines(), self.state.config.exposure.grade
+            img,
+            self._content_rect,
+            self.state.config.local,
+            uv_grid,
+            self._recipe_lines(),
+            palette_for(self.state.color_vision).dodge_burn,
+            self.state.config.exposure.grade,
         )
 
     def _draw_local_handles(self, painter: QPainter, shape: MaskShape, ctrl_pts: List[QPointF], color: QColor) -> None:
@@ -2249,7 +2740,9 @@ class CanvasOverlay(QWidget):
             return
 
         if event.button() == Qt.MouseButton.MiddleButton or (
-            event.button() == Qt.MouseButton.LeftButton and self.zoom_level > 1.0 and self._tool_mode == ToolMode.NONE
+            event.button() == Qt.MouseButton.LeftButton
+            and self.zoom_level > 1.0
+            and (self._tool_mode == ToolMode.NONE or self.parent()._space_pan_held)
         ):
             self.parent()._is_panning = True
             self.parent()._last_mouse_pos = event.position()
@@ -2292,7 +2785,15 @@ class CanvasOverlay(QWidget):
             event.accept()
             return
 
-        if self._tool_mode == ToolMode.DUST_PICK:
+        if self._tool_mode == ToolMode.CLONE and event.modifiers() & Qt.KeyboardModifier.AltModifier:
+            coords = self._map_to_image_coords(event.position())
+            if coords is not None:
+                self.clone_source_picked.emit(*coords)
+                self.update()
+            event.accept()
+            return
+
+        if self._tool_mode in _BRUSH_TOOLS:
             # Heal commits on release: a plain click heals the spot, and a drag paints a
             # continuous stroke healed as one region, so one undo step and one render.
             if self._content_view_rect().contains(event.position()):
@@ -2307,9 +2808,19 @@ class CanvasOverlay(QWidget):
                 if self._view_rect.contains(event.position()):
                     self._straighten_p1 = event.position()
                     self._straighten_p2 = event.position()
+                    self._begin_auto_pan(event.position())
                     self.update()
                 event.accept()
                 return
+
+        if self._tool_mode == ToolMode.KEYSTONE_LINES:
+            if self._view_rect.contains(event.position()):
+                self._keystone_draw_p1 = event.position()
+                self._keystone_draw_p2 = event.position()
+                self._begin_auto_pan(event.position())
+                self.update()
+            event.accept()
+            return
 
         if self._tool_mode == ToolMode.ANALYSIS_DRAW:
             self._start_analysis_drag(event.position())
@@ -2339,6 +2850,8 @@ class CanvasOverlay(QWidget):
             -_CROP_HANDLE_PX, -_CROP_HANDLE_PX, _CROP_HANDLE_PX, _CROP_HANDLE_PX
         ).contains(event.position()):
             self._start_crop_drag(event.position())
+            if self._crop_drag_mode in ("corner", "edge", "move", "draw"):
+                self._begin_auto_pan(event.position())
 
         if coords is not None or self._crop_drag_mode is not None:
             self.update()
@@ -2446,6 +2959,7 @@ class CanvasOverlay(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         self._mouse_pos = event.position()
+        self._track_auto_pan_pointer(event.position())
 
         # An exclusion drag owns the mouse like the divider does below: it is painting, and a
         # tool or a pan reading the same motion would act on it twice. Sampled at half the
@@ -2494,7 +3008,7 @@ class CanvasOverlay(QWidget):
         # Placement tools carry special cursors (blank brush, pen nib, WB picker) that read as
         # broken over the empty canvas around the image. Fall back to the normal arrow there and
         # restore the tool cursor over the image.
-        if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.WB_PICK):
+        if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.WB_PICK, ToolMode.CLONE):
             if coords is None:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
             else:
@@ -2554,7 +3068,7 @@ class CanvasOverlay(QWidget):
         # Painting a heal stroke: accumulate the drag path, spaced by half the brush radius so
         # long drags stay a reasonable number of capsule segments, and clamped to the image so
         # the stroke cannot run off into the border.
-        if self._tool_mode == ToolMode.DUST_PICK and self._heal_drag_pts and event.buttons() & Qt.MouseButton.LeftButton:
+        if self._tool_mode in _BRUSH_TOOLS and self._heal_drag_pts and event.buttons() & Qt.MouseButton.LeftButton:
             rect = self._content_view_rect()
             pos = QPointF(
                 float(np.clip(event.position().x(), rect.left(), rect.right())),
@@ -2608,93 +3122,8 @@ class CanvasOverlay(QWidget):
             event.accept()
             return
 
-        if self._crop_drag_mode == "corner" and self._crop_anchor_screen is not None:
-            cur_screen = QPointF(
-                float(np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())),
-                float(np.clip(event.position().y(), self._view_rect.top(), self._view_rect.bottom())),
-            )
-            rect = self._apply_aspect_and_min(self._crop_anchor_screen, cur_screen)
-            self._crop_rect_norm = rect
-            self.crop_rect_changed.emit(*rect, False)
-            self.update()
+        if self._update_tracked_gesture(event.position(), event.modifiers()):
             event.accept()
-            return
-
-        if (
-            self._crop_drag_mode == "edge"
-            and self._crop_edge_which is not None
-            and self._crop_rect_norm is not None
-            and not self._view_rect.isEmpty()
-        ):
-            cur_screen = QPointF(
-                float(np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())),
-                float(np.clip(event.position().y(), self._view_rect.top(), self._view_rect.bottom())),
-            )
-            cursor_nx, cursor_ny = self._screen_to_norm(cur_screen)
-            x1, y1, x2, y2 = self._crop_rect_norm
-            min_w = min(_CROP_MIN_SCREEN_PX / self._view_rect.width(), 1.0)
-            min_h = min(_CROP_MIN_SCREEN_PX / self._view_rect.height(), 1.0)
-            if self._crop_edge_which == "left":
-                new_rect = (float(np.clip(cursor_nx, 0.0, max(0.0, x2 - min_w))), y1, x2, y2)
-            elif self._crop_edge_which == "right":
-                new_rect = (x1, y1, float(np.clip(cursor_nx, min(1.0, x1 + min_w), 1.0)), y2)
-            elif self._crop_edge_which == "top":
-                new_rect = (x1, float(np.clip(cursor_ny, 0.0, max(0.0, y2 - min_h))), x2, y2)
-            else:
-                new_rect = (x1, y1, x2, float(np.clip(cursor_ny, min(1.0, y1 + min_h), 1.0)))
-            self._crop_rect_norm = new_rect
-            self.crop_rect_changed.emit(*new_rect, False)
-            self.update()
-            event.accept()
-            return
-
-        if self._crop_drag_mode == "move" and self._crop_press_norm is not None and self._crop_orig_rect is not None:
-            curr_norm = self._screen_to_norm(event.position())
-            # Normalized coords track the cursor 1:1, so a plain drag moves the crop with the
-            # mouse. Shift halves it for fine placement.
-            fine = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            sensitivity = 0.5 if fine else 1.0
-            dx = (curr_norm[0] - self._crop_press_norm[0]) * sensitivity
-            dy = (curr_norm[1] - self._crop_press_norm[1]) * sensitivity
-            new_rect = translate_normalized_rect(self._crop_orig_rect, dx, dy)
-            if any(abs(a - b) > 5e-4 for a, b in zip(new_rect, self._crop_rect_norm or new_rect)):
-                self._crop_rect_norm = new_rect
-                self.crop_rect_changed.emit(*new_rect, False)
-                self.update()
-            event.accept()
-            return
-
-        if self._tool_mode == ToolMode.STRAIGHTEN and self._straighten_p1 is not None:
-            self._straighten_p2 = QPointF(
-                float(np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())),
-                float(np.clip(event.position().y(), self._view_rect.top(), self._view_rect.bottom())),
-            )
-            self.update()
-            event.accept()
-            return
-
-        if self._crop_drag_mode == "draw" and self._crop_draw_p1 is not None:
-            mx = np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())
-            my = np.clip(event.position().y(), self._view_rect.top(), self._view_rect.bottom())
-
-            if not self._crop_draw_armed:
-                if (QPointF(mx, my) - self._crop_draw_p1).manhattanLength() < _CROP_REDRAW_SLOP_PX:
-                    return
-                self._crop_draw_armed = True
-
-            dx = mx - self._crop_draw_p1.x()
-            dy = my - self._crop_draw_p1.y()
-            target_ratio = self._oriented_target_ratio(dx, dy)
-            if target_ratio is None:
-                self._crop_draw_p2 = QPointF(mx, my)
-            else:
-                if abs(dx) > abs(dy) * target_ratio:
-                    dx = abs(dy) * target_ratio * (1 if dx >= 0 else -1)
-                else:
-                    dy = abs(dx) / target_ratio * (1 if dy >= 0 else -1)
-
-                self._crop_draw_p2 = QPointF(self._crop_draw_p1.x() + dx, self._crop_draw_p1.y() + dy)
-            self.update()
             return
 
         self.update()
@@ -2703,6 +3132,8 @@ class CanvasOverlay(QWidget):
         """The selected mask and its screen control points, or None."""
         idx = getattr(self.state, "local_selected_mask", -1)
         masks = self.state.config.local.masks
+        if render_path(self.state.config.process) is not RenderPath.PRINT:
+            return None
         if 0 <= idx < len(masks) and idx < len(self._local_mask_screen_ctrl):
             pts = self._local_mask_screen_ctrl[idx]
             if len(pts) >= min_points(masks[idx].shape):
@@ -2878,6 +3309,10 @@ class CanvasOverlay(QWidget):
         elif self._tool_mode == ToolMode.ZONE_PLACE and self.state.zone_pins:
             self.zone_placement_confirmed.emit()
 
+    def finish_in_progress(self) -> None:
+        """What Enter does: close the scratch, lasso, crop or zone pins being drawn."""
+        self._finish_draw_if_active()
+
     def has_scratch_points(self) -> bool:
         return bool(self._scratch_pts)
 
@@ -2893,14 +3328,12 @@ class CanvasOverlay(QWidget):
             self.update()
 
     def heal_hit_test(self, pos: QPointF) -> Optional[Tuple[str, int]]:
-        """Placed heal under `pos`, as ("stroke"|"spot", index), or None.
+        """Placed heal under `pos`, as ("stroke"|"spot"|"line"|"clone", index), or None.
 
-        Mirrors the geometry `_draw_placed_heals` renders: raw-normalized points
-        mapped to screen through the uv grid, hit within the brush band radius
-        (plus a small slop so thin strokes stay clickable).
+        Mirrors the geometry `_draw_placed_heals` renders, hit within the brush radius plus a slop.
         """
         conf = self.state.config.retouch
-        if not (conf.manual_heal_strokes or conf.manual_dust_spots or conf.scratch_lines):
+        if not (conf.manual_heal_strokes or conf.manual_dust_spots or conf.scratch_lines or conf.clone_strokes):
             return None
         with self.state.metrics_lock:
             uv_grid = self.state.last_metrics.get("uv_grid")
@@ -2910,19 +3343,28 @@ class CanvasOverlay(QWidget):
         slop = 4.0
         best: Optional[Tuple[str, int]] = None
         best_dist = float("inf")
-        for i, (points, size, _dx, _dy) in enumerate(conf.manual_heal_strokes):
-            screen_pts = [self._raw_to_screen(px, py, uv_grid) for px, py in points]
+        norm_strokes, norm_spots, norm_clones = self._placed_heals_norm(conf, uv_grid)
+        rect = self._content_view_rect()
+        for i, ((_points, size, _dx, _dy), pts) in enumerate(zip(conf.manual_heal_strokes, norm_strokes)):
+            screen_pts = [self._norm_to_content(nx, ny, rect) for nx, ny in pts]
             radius = max(2.0, self._brush_screen_radius(size)) + slop
             d = _distance_to_polyline(pos, screen_pts)
             if d <= radius and d < best_dist:
                 best = ("stroke", i)
                 best_dist = d
-        for i, (rx, ry, size) in enumerate(conf.manual_dust_spots):
-            center = self._raw_to_screen(rx, ry, uv_grid)
+        for i, ((_rx, _ry, size), (nx, ny)) in enumerate(zip(conf.manual_dust_spots, norm_spots)):
+            center = self._norm_to_content(nx, ny, rect)
             radius = max(2.0, self._brush_screen_radius(size)) + slop
             d = math.hypot(pos.x() - center.x(), pos.y() - center.y())
             if d <= radius and d < best_dist:
                 best = ("spot", i)
+                best_dist = d
+        for i, (stroke, pts) in enumerate(zip(conf.clone_strokes, norm_clones)):
+            screen_pts = [self._norm_to_content(nx, ny, rect) for nx, ny in pts]
+            radius = max(2.0, self._brush_screen_radius(stroke[1])) + slop
+            d = _distance_to_polyline(pos, screen_pts)
+            if d <= radius and d < best_dist:
+                best = ("clone", i)
                 best_dist = d
         for i, (nx0, ny0, nx1, ny1, _width) in enumerate(conf.scratch_lines):
             a = self._raw_to_screen(nx0, ny0, uv_grid)
@@ -2960,7 +3402,7 @@ class CanvasOverlay(QWidget):
     def _right_click_excludes(self) -> bool:
         """Whether a plain right-click excludes instead of opening the menu. The heal and
         scratch tools keep theirs: right-click is how a heal is deleted while one is live."""
-        return self.state.right_click_excludes and self._tool_mode not in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK)
+        return self.state.right_click_excludes and self._tool_mode not in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.CLONE)
 
     def contextMenuEvent(self, event) -> None:
         # An armed right press may still become an exclusion drag, so the menu waits for the
@@ -3008,7 +3450,7 @@ class CanvasOverlay(QWidget):
             event.accept()
             return
 
-        if self._tool_mode == ToolMode.DUST_PICK and self._heal_drag_pts and event.button() == Qt.MouseButton.LeftButton:
+        if self._tool_mode in _BRUSH_TOOLS and self._heal_drag_pts and event.button() == Qt.MouseButton.LeftButton:
             pts = self._heal_drag_pts
             self._heal_drag_pts = []
             rect = self._content_view_rect()
@@ -3022,6 +3464,8 @@ class CanvasOverlay(QWidget):
             if len(vertices) == 1:
                 # Plain click: the classic single-spot heal.
                 self.clicked.emit(*vertices[0])
+            elif len(vertices) > 1 and self._tool_mode == ToolMode.CLONE:
+                self.clone_stroke_completed.emit(vertices)
             elif len(vertices) > 1:
                 # Drag: the painted path becomes one multi-point heal stroke.
                 self.scratch_completed.emit(vertices)
@@ -3048,12 +3492,32 @@ class CanvasOverlay(QWidget):
 
         if self._tool_mode == ToolMode.STRAIGHTEN and self._straighten_p1 is not None:
             p1, p2 = self._straighten_p1, self._straighten_p2 or self._straighten_p1
+            self._stop_auto_pan()
             self._straighten_p1 = None
             self._straighten_p2 = None
             dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
             # Ignore accidental clicks: a reference line needs some length.
             if math.hypot(dx, dy) >= 8.0:
                 self.straighten_completed.emit(straighten_delta_degrees(dx, dy))
+            self.update()
+            event.accept()
+            return
+
+        if self._tool_mode == ToolMode.KEYSTONE_LINES and self._keystone_draw_p1 is not None:
+            p1, p2 = self._keystone_draw_p1, self._keystone_draw_p2 or self._keystone_draw_p1
+            self._stop_auto_pan()
+            self._keystone_draw_p1 = None
+            self._keystone_draw_p2 = None
+            if math.hypot(p2.x() - p1.x(), p2.y() - p1.y()) >= 8.0:
+                edge = self._classify_keystone_edge(p1, p2)
+                self._keystone_lines[edge] = (p1, p2)
+                with self.state.metrics_lock:
+                    uv_grid = self.state.last_metrics.get("uv_grid")
+                c1, c2 = self._map_to_image_coords(p1), self._map_to_image_coords(p2)
+                if uv_grid is not None and c1 is not None and c2 is not None:
+                    r1 = CoordinateMapping.map_click_to_raw(c1[0], c1[1], uv_grid)
+                    r2 = CoordinateMapping.map_click_to_raw(c2[0], c2[1], uv_grid)
+                    self.keystone_line_marked.emit(edge, r1[0], r1[1], r2[0], r2[1])
             self.update()
             event.accept()
             return
@@ -3124,6 +3588,24 @@ class CanvasOverlay(QWidget):
         self._mouse_pos = QPointF(-1.0, -1.0)
         self.update()
         super().leaveEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._stop_auto_pan()
+        super().hideEvent(event)
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.EnabledChange and not self.isEnabled():
+            self._stop_auto_pan()
+        super().changeEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        self._stop_auto_pan()
+        super().focusOutEvent(event)
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.UngrabMouse:
+            self._stop_auto_pan()
+        return super().event(event)
 
     def update_overlay(self, filename: str, res: str, colorspace: str, extra: str, edits: int = 0) -> None:
         self.update()

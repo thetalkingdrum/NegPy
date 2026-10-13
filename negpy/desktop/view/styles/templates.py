@@ -3,7 +3,20 @@ import html
 
 import qtawesome as qta
 from PyQt6.QtCore import QEvent, QSize, Qt
-from PyQt6.QtWidgets import QDialogButtonBox, QLabel, QProgressBar, QPushButton, QStackedLayout, QWidget
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QStackedLayout,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
+    QWidget,
+)
 
 from negpy.desktop.view.styles.fonts import ui_font_family
 from negpy.desktop.view.styles.theme import THEME
@@ -96,14 +109,42 @@ def _button_icon(icon_name: str, checkable: bool, on_accent: bool = False):
     return qta.icon(icon_name, color=color, color_disabled=THEME.text_muted)
 
 
-def tool_toggle(icon_name: str, label: str, tooltip: str) -> QPushButton:
+class _LabeledButton(QPushButton):
+    """Icon + label button that shows only its icon while its row is too narrow for the label.
+    The text stays set, so the size hint keeps asking for the full label."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, self.sizePolicy().verticalPolicy())
+
+    def _compact(self) -> bool:
+        return bool(self.text()) and not self.icon().isNull() and self.width() < self.sizeHint().width()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        if not self.text() or self.icon().isNull():
+            return hint
+        return QSize(ICON_BUTTON_WIDTH, hint.height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._compact():
+            super().paintEvent(event)
+            return
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        opt.text = ""
+        QStylePainter(self).drawControl(QStyle.ControlElement.CE_PushButton, opt)
+
+
+def tool_toggle(icon_name: str, label: str, tooltip: str, align_left: bool = False) -> QPushButton:
     """Checkable tool button; empty label keeps it icon-only, empty icon_name keeps it text-only.
+    align_left lines the label up with toggles stacked above or below it; centered by default.
     Carries an edited_dot like labeled_toggle, for a tool whose effect outlives its checked state."""
-    btn = QPushButton((" " + label) if (label and icon_name) else label)
+    btn = _LabeledButton((" " + label) if (label and icon_name) else label)
     btn.setCheckable(True)
     if icon_name:
         btn.setIcon(_button_icon(icon_name, checkable=True))
-    btn.setStyleSheet(tool_toggle_qss(icon_only=not label))
+    btn.setStyleSheet(tool_toggle_qss(icon_only=not label, align_left=align_left))
     btn.setFixedHeight(default_button_height())
     btn.setToolTip(wrap_tooltip(tooltip))
     btn.plain_tooltip = tooltip
@@ -113,7 +154,7 @@ def tool_toggle(icon_name: str, label: str, tooltip: str) -> QPushButton:
 
 def labeled_toggle(icon_name: str, label: str, checked: bool, tooltip: str) -> QPushButton:
     """Labeled checkable button (icon + text), the Pick WB / Linear RAW look."""
-    btn = QPushButton(label)
+    btn = _LabeledButton(label)
     btn.setCheckable(True)
     btn.setChecked(checked)
     if icon_name:
@@ -129,7 +170,7 @@ def labeled_toggle(icon_name: str, label: str, checked: bool, tooltip: str) -> Q
 def labeled_action(icon_name: str, label: str, tooltip: str, primary: bool = False) -> QPushButton:
     """One-shot action with an optional icon and a label; the non-checkable twin of labeled_toggle.
     primary=True gives it the one filled look (the panel's call to action)."""
-    btn = QPushButton(label)
+    btn = _LabeledButton(label)
     if icon_name:
         btn.setIcon(_button_icon(icon_name, checkable=False, on_accent=primary))
     if primary:
@@ -157,6 +198,20 @@ def icon_button(icon_name: str, tooltip: str, width: int | None = ICON_BUTTON_WI
     return btn
 
 
+def header_button(icon: QIcon, tooltip: str) -> QPushButton:
+    """A section header's small flat icon button (reset, scope pair, header toggles), also for a
+    help or row icon that sits in a line of text."""
+    btn = QPushButton()
+    btn.setIcon(icon)
+    btn.setFixedSize(HEADER_BUTTON_SIZE, HEADER_BUTTON_SIZE)
+    btn.setIconSize(QSize(HEADER_ICON_SIZE, HEADER_ICON_SIZE))
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setObjectName("collapsible_reset_btn")
+    if tooltip:
+        btn.setToolTip(wrap_tooltip(tooltip))
+    return btn
+
+
 def wrap_tooltip(text: str, footer: str = "") -> str:
     """Plain-text tooltips never word-wrap in Qt; rich text does. Wrap in <qt> so
     long tooltips break into lines instead of spanning the screen. Text that
@@ -166,7 +221,7 @@ def wrap_tooltip(text: str, footer: str = "") -> str:
     `footer` is trusted markup appended inside the <qt> document, so callers adding
     a boilerplate line don't have to re-implement the escape/passthrough rule."""
     if not text.startswith("<qt>"):
-        body = text if ("<" in text and ">" in text) else html.escape(text)
+        body = text if ("<" in text and ">" in text) else html.escape(text).replace("\n", "<br>")
         text = f"<qt>{body}</qt>"
     if footer:
         text = text.removesuffix("</qt>") + footer + "</qt>"
@@ -174,7 +229,7 @@ def wrap_tooltip(text: str, footer: str = "") -> str:
 
 
 def hint_label(text: str = "", kind: str = "muted") -> QLabel:
-    """Small informational label under a control. kind: "muted" | "warning" |
+    """Small informational label under a control. kind: "muted" | "warning" | "success" |
     "error" — styled by the QLabel[hint=...] rules in modern_dark.qss. Change
     kind at runtime with set_hint_kind (a plain setProperty won't repolish)."""
     lbl = QLabel(text)
@@ -331,9 +386,25 @@ class StatusStrip(QWidget):
             self._stack.setCurrentWidget(self._summary)
 
 
+def header_row(header: QLabel, *buttons: QWidget) -> QHBoxLayout:
+    """A section_subheader with icon buttons at its right end, for tools and actions that
+    act on the whole subsection. The header's top margin moves to the row, so the icons
+    center on the text rather than on the margin."""
+    # 1px, not 0: any nonzero QSS margin also indents the label text, and this keeps it
+    # in line with every other subheader.
+    header.setStyleSheet(header.styleSheet().replace(f"margin-top: {THEME.space_xl}px;", "margin-top: 1px;"))
+    row = QHBoxLayout()
+    row.setContentsMargins(0, THEME.space_xl - 1, 0, 0)
+    row.addWidget(header, 1)
+    for btn in buttons:
+        row.addWidget(btn)
+    return row
+
+
 def section_subheader(text: str) -> QLabel:
-    """Small all-caps label for section grouping in sidebars."""
+    """Small all-caps label for section grouping in sidebars; wraps in a panel too narrow for it."""
     lbl = QLabel(text.upper())
+    lbl.setWordWrap(True)
     lbl.setStyleSheet(
         f"font-size: {THEME.font_size_small}px; "
         f"color: {THEME.text_hint}; "
@@ -372,16 +443,37 @@ def field_label_qss() -> str:
     return f"font-size: {THEME.font_size_base}px; color: {THEME.text_secondary}; font-weight: {THEME.weight_semibold};"
 
 
-def field_label(text: str) -> QLabel:
+class FieldLabel(QLabel):
+    """A field_label; its own type so a card can find it and align it with the slider labels."""
+
+
+def field_label(text: str, width: int | None = None) -> QLabel:
     """Muted semibold label for a combo/entry field."""
-    lbl = QLabel(text)
+    lbl = FieldLabel(text)
     lbl.setStyleSheet(field_label_qss())
+    if width is not None:
+        lbl.setFixedWidth(width)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setContentsMargins(0, 0, THEME.space_md, 0)
     return lbl
 
 
-def tool_toggle_qss(icon_only: bool = False) -> str:
+def field_row(label: str, field: QWidget, *trailing: QWidget) -> QHBoxLayout:
+    """The label is the layout's first item, so a caller can hide it with its field."""
+    row = QHBoxLayout()
+    caption = field_label(label, FIELD_LABEL_WIDTH)
+    row.addWidget(caption)
+    row.addWidget(field, 1)
+    for widget in trailing:
+        row.addWidget(widget)
+    return row
+
+
+def tool_toggle_qss(icon_only: bool = False, align_left: bool = False) -> str:
     """Icon-only padding; the checked look is the app-wide rule in modern_dark.qss."""
-    return "QPushButton {padding: 6px;}" if icon_only else ""
+    if icon_only:
+        return "QPushButton {padding: 6px;}"
+    return f"QPushButton {{text-align: left; padding-left: {THEME.space_xl}px;}}" if align_left else ""
 
 
 def slider_label_qss(color: str) -> str:

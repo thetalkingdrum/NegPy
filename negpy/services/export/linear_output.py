@@ -1,18 +1,11 @@
 """Linear Output: export a loader's decoded buffer as an untagged 16-bit file.
 
-For single files, bypasses the entire darkroom pipeline — no normalization,
-exposure, lab, toning, finish, flatfield, or sensor-crosstalk correction.
-
-For composites (stitch / RGB-scan triplets), flatfield and sensor correction
-are applied per-part before assembly so the output is physically correct
-(no vignetting seams or channel crosstalk).
-
 Output format is TIFF (zlib-compressed) or lossless JPEG XL.
 """
 
 import io
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 import imagecodecs
@@ -27,8 +20,11 @@ from negpy.domain.models import TiffCompression
 from negpy.features.metadata.resolution import Resolution
 from negpy.features.metadata.fsdate import sync_export_filesystem_dates
 from negpy.services.export.encoders import encode_tiff
+from negpy.features.geometry.logic import apply_radial_distortion
 from negpy.features.geometry.models import GeometryConfig
-from negpy.features.process.models import DemosaicMode, ProcessConfig
+from negpy.features.lens.logic import apply_lens
+from negpy.features.lens.models import LensCorrections, LensMetadata
+from negpy.features.process.models import DemosaicMode, ProcessConfig, SensorUnmix
 from negpy.features.process.sensor import apply_sensor_correction
 from negpy.features.hdr.logic import merge_bracket
 from negpy.features.hdr.models import HdrConfig, hdr_active
@@ -37,6 +33,7 @@ from negpy.features.rgbscan.models import RgbScanConfig, is_rgb_triplet
 from negpy.features.stitch.logic import stitch_composite
 from negpy.features.stitch.models import StitchConfig, stitch_has_triplets
 from negpy.infrastructure.loaders.constants import SUPPORTED_JPEG_EXTENSIONS, SUPPORTED_RAW_EXTENSIONS, SUPPORTED_TIFF_EXTENSIONS
+from negpy.infrastructure.loaders.lens_metadata import bind_decode, read_lens_metadata
 from negpy.infrastructure.loaders.helpers import NonStandardFileWrapper, read_orientation, resolve_demosaic
 from negpy.infrastructure.loaders.pakon_loader import PakonLoader
 from negpy.infrastructure.loaders.fff_loader import is_flextight_fff
@@ -70,6 +67,7 @@ class _SourceMeta:
     # Resolved CFA interpolation label (e.g. "AHD", "Markesteijn 3-pass"), or None for a
     # source with no CFA. Set only by a camera-RAW decode; carried through every merge.
     demosaic: Optional[str] = None
+    lens_corrected: bool = False
 
 
 def _read_source_meta_tiff(file_path: str) -> _SourceMeta:
@@ -186,6 +184,10 @@ def is_linear_output_supported(file_path: str) -> bool:
     return False
 
 
+# The only decodes that read Input gamma.
+GAMMA_SOURCE_TYPES = ("tiff", "nef")
+
+
 def linear_output_source_type(file_path: str) -> str:
     """Classify a file for Linear Output expansion options.
 
@@ -224,13 +226,6 @@ def _apply_user_geometry(f32: np.ndarray, geometry: GeometryConfig) -> np.ndarra
         f32 = np.ascontiguousarray(np.fliplr(f32))
     if geometry.flip_vertical:
         f32 = np.ascontiguousarray(np.flipud(f32))
-    return f32
-
-
-def _apply_geometry(f32: np.ndarray, orientation: int, geometry: Optional[GeometryConfig]) -> np.ndarray:
-    f32 = apply_exif_orientation(f32, orientation)
-    if geometry is not None:
-        f32 = _apply_user_geometry(f32, geometry)
     return f32
 
 
@@ -348,13 +343,64 @@ def _decode_linear(
     apply_wb: bool = False,
     apply_flatfield: bool = False,
     apply_sensor: bool = False,
+    apply_lens: bool = False,
+    half: int = 0,
     gamma_key: str = "linear",
 ) -> tuple[np.ndarray, Optional[np.ndarray], Optional[_CameraWB], _SourceMeta]:
     """Decode to an oriented float32 buffer. Returns (rgb, ir_or_none, camera_wb_or_none, source_meta)."""
+    lens = LensCorrections()
+    if apply_lens and geometry is not None:
+        lens = LensCorrections(geometry.lens_distortion_from_metadata, geometry.lens_ca_from_metadata)
+    rgb, ir, wb, meta = _decode_source(
+        file_path,
+        expansion=expansion,
+        rgbscan=rgbscan,
+        stitch=stitch,
+        hdr=hdr,
+        flatfield=flatfield,
+        process=process,
+        apply_wb=apply_wb,
+        apply_flatfield=apply_flatfield,
+        apply_sensor=apply_sensor,
+        lens=lens,
+        gamma_key=gamma_key,
+    )
+    if geometry is not None:
+        rgb = _apply_user_geometry(rgb, geometry)
+        if ir is not None:
+            ir = _apply_user_geometry(ir, geometry)
+    # After rot90 and flips, in GeometryProcessor's order; IR takes the same warp so ICE stays aligned.
+    # A half skips it: its k1 is centered on the half, not on the whole scan the dump holds.
+    if apply_lens and geometry is not None and geometry.distortion_k1 != 0.0 and not half:
+        rgb = apply_radial_distortion(rgb, geometry.distortion_k1)
+        if ir is not None:
+            ir = apply_radial_distortion(ir, geometry.distortion_k1)
+        meta = replace(meta, lens_corrected=True)
+    return rgb, ir, wb, meta
+
+
+def _decode_source(
+    file_path: str,
+    expansion: Optional[float] = None,
+    rgbscan: Optional[RgbScanConfig] = None,
+    stitch: Optional[StitchConfig] = None,
+    hdr: Optional[HdrConfig] = None,
+    flatfield: Optional[FlatFieldConfig] = None,
+    process: Optional[ProcessConfig] = None,
+    apply_wb: bool = False,
+    apply_flatfield: bool = False,
+    apply_sensor: bool = False,
+    lens: LensCorrections = LensCorrections(),
+    gamma_key: str = "linear",
+) -> tuple[np.ndarray, Optional[np.ndarray], Optional[_CameraWB], _SourceMeta]:
+    """Source bakes and EXIF orientation, no user geometry. Flat Field runs before the lens warp.
+
+    Only a single camera RAW takes the embedded warp, as in `prepare_lens_source`.
+    """
     wb_blocked = bool(wb_bake_block_reason(rgbscan, process))
     demosaic = process.demosaic_export if process is not None else DemosaicMode.AUTO
     if stitch is not None and stitch.stitch_enabled and stitch.stitch_paths:
-        rgb, ir, wb, meta = _decode_stitch(file_path, stitch, geometry, flatfield, process)
+        rgb, ir, wb, meta = _decode_stitch(file_path, stitch, flatfield, process)
         if apply_wb and not wb_blocked and wb is not None:
             rgb = _apply_white_balance(rgb, wb)
         return rgb, ir, wb, meta
@@ -362,60 +408,64 @@ def _decode_linear(
     # bracket of anything but plain camera RAW would export as its unmerged reference frame:
     # the canvas merged, the file did not, and nothing said so.
     if hdr is not None and hdr_active(hdr):
-        rgb, wb, meta = _decode_hdr(file_path, hdr, geometry, expansion=expansion, gamma_key=gamma_key, process=process)
+        rgb, wb, meta = _decode_hdr(file_path, hdr, expansion=expansion, gamma_key=gamma_key, process=process)
         if apply_flatfield and flatfield is not None:
-            rgb = _apply_flatfield_correction(rgb, flatfield)
+            rgb = _apply_flatfield_correction(rgb, flatfield, orientation=read_orientation(file_path))
         if apply_sensor and process is not None and process.sensor_matrix is not None:
-            rgb = apply_sensor_correction(rgb, process.sensor_matrix)
+            rgb = apply_sensor_correction(rgb, process.sensor_matrix, process.sensor_unmix)
         if apply_wb and not wb_blocked and wb is not None:
             rgb = _apply_white_balance(rgb, wb)
         return rgb, None, wb, meta
     if PakonLoader.can_handle(file_path):
-        rgb, ir = _decode_pakon(file_path, geometry, expansion=expansion)
+        rgb, ir = _decode_pakon(file_path, expansion=expansion)
         meta = _SourceMeta(make="Pakon", model=_pakon_spec_desc(file_path))
         return rgb, ir, None, meta
     if _is_dng(file_path) and _is_linearraw_dng(file_path):
         meta = _read_source_meta_tiff(file_path)
-        rgb, ir = _decode_dng(file_path, geometry, expansion=expansion)
+        rgb, ir = _decode_dng(file_path, expansion=expansion)
         return rgb, ir, None, meta
     if is_coolscan_nef(file_path):
         meta = _read_source_meta_tiff(file_path)
-        rgb, ir = _decode_nef(file_path, geometry, gamma_key=gamma_key)
+        rgb, ir = _decode_nef(file_path, gamma_key=gamma_key)
         return rgb, ir, None, meta
     if is_flextight_fff(file_path):
         meta = _read_fff_meta(file_path)
-        rgb, ir = _decode_fff(file_path, geometry)
+        rgb, ir = _decode_fff(file_path)
         return rgb, ir, None, meta
     if is_noritsu_raw(file_path):
-        rgb, ir = _decode_noritsu(file_path, geometry, expansion=expansion)
+        rgb, ir = _decode_noritsu(file_path, expansion=expansion)
         meta = _SourceMeta(make="Noritsu")
         return rgb, ir, None, meta
     if _is_camera_raw(file_path):
         if rgbscan is not None and is_rgb_triplet(rgbscan):
-            rgb, ir, wb, meta = _decode_camera_raw_triplet(file_path, rgbscan, geometry, demosaic)
+            rgb, ir, wb, meta = _decode_camera_raw_triplet(file_path, rgbscan, demosaic)
             if apply_flatfield and flatfield is not None:
-                rgb = _apply_flatfield_correction(rgb, flatfield)
+                rgb = _apply_flatfield_correction(rgb, flatfield, orientation=read_orientation(file_path))
             if apply_wb and not wb_blocked and wb is not None:
                 rgb = _apply_white_balance(rgb, wb)
             return rgb, ir, wb, meta
         meta = _read_source_meta_tiff(file_path)
-        rgb, ir, wb, decode_meta = _decode_camera_raw(file_path, geometry, demosaic)
+        rgb, wb, decode_meta, lens_meta = _decode_camera_raw_buffer(file_path, demosaic)
+        if apply_flatfield and flatfield is not None:
+            rgb = _apply_flatfield_correction(rgb, flatfield, orientation=read_orientation(file_path))
+        warped = bool(lens.distortion and lens_meta.distortion or lens.ca and lens_meta.ca)
+        if warped:
+            rgb = apply_lens(rgb, lens_meta, read_orientation(file_path), lens)
         merged = _SourceMeta(
             make=meta.make or decode_meta.make,
             model=meta.model or decode_meta.model,
             datetime=meta.datetime or decode_meta.datetime,
             demosaic=decode_meta.demosaic,
+            lens_corrected=warped,
         )
-        if apply_flatfield and flatfield is not None:
-            rgb = _apply_flatfield_correction(rgb, flatfield)
         if apply_sensor and process is not None and process.sensor_matrix is not None:
-            rgb = apply_sensor_correction(rgb, process.sensor_matrix)
+            rgb = apply_sensor_correction(rgb, process.sensor_matrix, process.sensor_unmix)
         if apply_wb and not wb_blocked and wb is not None:
             rgb = _apply_white_balance(rgb, wb)
-        return rgb, ir, wb, merged
+        return rgb, None, wb, merged
     if _is_tiff(file_path):
         meta = _read_source_meta_tiff(file_path)
-        rgb, ir = _decode_tiff(file_path, geometry, gamma_key=gamma_key, expansion=expansion)
+        rgb, ir = _decode_tiff(file_path, gamma_key=gamma_key, expansion=expansion)
         return rgb, ir, None, meta
     raise ValueError(f"Linear Output is not supported for this file type: {file_path}")
 
@@ -451,7 +501,6 @@ def _pakon_spec_desc(file_path: str) -> str:
 
 def _decode_tiff(
     file_path: str,
-    geometry: Optional[GeometryConfig] = None,
     gamma_key: str = "linear",
     expansion: Optional[float] = None,
 ) -> tuple[np.ndarray, Optional[np.ndarray]]:
@@ -459,9 +508,11 @@ def _decode_tiff(
     from negpy.infrastructure.loaders.ir_planes import find_ir_plane
     from negpy.infrastructure.loaders.tiff_loader import _extract_ir_from_extrasamples, _read_sidecar_ir
 
+    from negpy.infrastructure.loaders.tiff_loader import planar_to_chunky
+
     with _tifffile.TiffFile(file_path) as tif:
         page = tif.pages[0]
-        arr = page.asarray()
+        arr = planar_to_chunky(page.asarray(), getattr(page, "planarconfig", 1))
     if arr.dtype == np.uint16:
         scale = 1.0 / 65535.0
     elif arr.dtype == np.uint8:
@@ -495,13 +546,13 @@ def _decode_tiff(
     if expansion is not None and expansion > 1.0:
         f32 = np.clip(f32 * expansion, 0.0, 1.0)
     orientation = read_orientation(file_path)
-    f32 = _apply_geometry(f32, orientation, geometry)
+    f32 = apply_exif_orientation(f32, orientation)
     if ir is not None:
-        ir = _apply_geometry(ir, orientation, geometry)
+        ir = apply_exif_orientation(ir, orientation)
     return f32, ir
 
 
-def _decode_pakon(file_path: str, geometry: Optional[GeometryConfig] = None, expansion: Optional[float] = None) -> tuple[np.ndarray, None]:
+def _decode_pakon(file_path: str, expansion: Optional[float] = None) -> tuple[np.ndarray, None]:
     loader = PakonLoader()
     ctx_mgr, metadata = loader.load(file_path)
     with ctx_mgr as wrapper:
@@ -511,18 +562,16 @@ def _decode_pakon(file_path: str, geometry: Optional[GeometryConfig] = None, exp
     factor = expansion if expansion is not None else _default_pakon_expansion(file_path)
     if factor > 1.0:
         f32 = np.clip(f32 * factor, 0.0, 1.0)
-    f32 = _apply_geometry(f32, metadata.get("orientation", 0), geometry)
+    f32 = apply_exif_orientation(f32, metadata.get("orientation", 0))
     return f32, None
 
 
 def _decode_via_loader(
     loader: Any,
     file_path: str,
-    geometry: Optional[GeometryConfig] = None,
     gamma_key: str = "linear",
     expansion: Optional[float] = None,
 ) -> tuple[np.ndarray, Optional[np.ndarray]]:
-    """Decode through a main-path loader with linear_raw=True, then apply geometry."""
     ctx_mgr, metadata = loader.load(file_path, linear_raw=True)
     with ctx_mgr as wrapper:
         f32 = wrapper.data if isinstance(wrapper, NonStandardFileWrapper) else np.asarray(wrapper)
@@ -533,36 +582,31 @@ def _decode_via_loader(
     if expansion is not None and expansion > 1.0:
         f32 = np.clip(f32 * expansion, 0.0, 1.0)
     orientation = metadata.get("orientation", 0)
-    f32 = _apply_geometry(f32, orientation, geometry)
+    f32 = apply_exif_orientation(f32, orientation)
     if ir is not None:
-        ir = _apply_geometry(ir, orientation, geometry)
+        ir = apply_exif_orientation(ir, orientation)
     return f32, ir
 
 
 def _decode_nef(
     file_path: str,
-    geometry: Optional[GeometryConfig] = None,
     gamma_key: str = "linear",
 ) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Read a Coolscan NEF via the main loader. Returns (rgb, ir_or_none)."""
     from negpy.infrastructure.loaders.nef_loader import NefLoader
 
-    return _decode_via_loader(NefLoader(), file_path, geometry, gamma_key)
+    return _decode_via_loader(NefLoader(), file_path, gamma_key)
 
 
-def _decode_fff(
-    file_path: str,
-    geometry: Optional[GeometryConfig] = None,
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
+def _decode_fff(file_path: str) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Read a Flextight FFF via the main loader. Returns (rgb, ir_or_none)."""
     from negpy.infrastructure.loaders.fff_loader import FffLoader
 
-    return _decode_via_loader(FffLoader(), file_path, geometry)
+    return _decode_via_loader(FffLoader(), file_path)
 
 
 def _decode_noritsu(
     file_path: str,
-    geometry: Optional[GeometryConfig] = None,
     expansion: Optional[float] = None,
 ) -> tuple[np.ndarray, None]:
     """Read a headerless Noritsu EZController RAW. Returns (rgb, None)."""
@@ -577,22 +621,17 @@ def _decode_noritsu(
     factor = expansion if expansion is not None else NORITSU_EXPANSION
     if factor > 1.0:
         f32 = np.clip(f32 * factor, 0.0, 1.0)
-    f32 = _apply_geometry(f32, 0, geometry)
     return f32, None
 
 
-def _decode_dng(
-    file_path: str, geometry: Optional[GeometryConfig] = None, expansion: Optional[float] = None
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
+def _decode_dng(file_path: str, expansion: Optional[float] = None) -> tuple[np.ndarray, Optional[np.ndarray]]:
     peeked_4ch = _peek_linearraw_4ch(file_path)
     if peeked_4ch is not None:
         rgb, ir = peeked_4ch
         if expansion is not None and expansion > 1.0:
             rgb = np.clip(rgb * expansion, 0.0, 1.0)
         orientation = read_orientation(file_path)
-        rgb = _apply_geometry(rgb, orientation, geometry)
-        ir = _apply_geometry(ir, orientation, geometry)
-        return rgb, ir
+        return apply_exif_orientation(rgb, orientation), apply_exif_orientation(ir, orientation)
 
     # 3-channel LinearRaw (SilverFast HDRi, and DNG 1.7 JPEG-XL from DxO PhotoLab/PureRAW and
     # Lightroom Enhance): the same tag-aware decode as the RawpyLoader import fallback, so
@@ -618,17 +657,16 @@ def _decode_dng(
             f"mismatch in {file_path} (DefaultCrop* tag with an HDRi IR page?)"
         )
     orientation = read_orientation(file_path)
-    rgb = _apply_geometry(rgb, orientation, geometry)
+    rgb = apply_exif_orientation(rgb, orientation)
     if ir is not None:
-        ir = _apply_geometry(ir, orientation, geometry)
+        ir = apply_exif_orientation(ir, orientation)
     return rgb, ir
 
 
-def _decode_camera_raw_buffer(file_path: str, demosaic: str = DemosaicMode.AUTO) -> tuple[np.ndarray, _CameraWB, _SourceMeta]:
+def _decode_camera_raw_buffer(file_path: str, demosaic: str = DemosaicMode.AUTO) -> tuple[np.ndarray, _CameraWB, _SourceMeta, LensMetadata]:
     """Decode a camera RAW to an oriented float32 buffer without applying user geometry.
 
-    Returns (f32, camera_wb, source_meta).  EXIF orientation *is* applied (lossless,
-    baked into the file) but user rotation/flip is not — the caller decides that.
+    Returns (f32, camera_wb, source_meta, lens); `lens` is bound to this decode's visible area.
     """
     raw = rawpy.imread(file_path)
     wb = _CameraWB(
@@ -648,28 +686,19 @@ def _decode_camera_raw_buffer(file_path: str, demosaic: str = DemosaicMode.AUTO)
         user_flip=0,
         adjust_maximum_thr=0.0,
     )
+    lens = bind_decode(read_lens_metadata(file_path), raw)
     raw.close()
     rgb = ensure_rgb(rgb)
     f32 = uint16_to_float32(rgb)
     orientation = read_orientation(file_path)
     f32 = apply_exif_orientation(f32, orientation)
     meta = _SourceMeta(datetime=dt_str, demosaic=label)
-    return f32, wb, meta
-
-
-def _decode_camera_raw(
-    file_path: str, geometry: Optional[GeometryConfig] = None, demosaic: str = DemosaicMode.AUTO
-) -> tuple[np.ndarray, None, _CameraWB, _SourceMeta]:
-    f32, wb, meta = _decode_camera_raw_buffer(file_path, demosaic)
-    if geometry is not None:
-        f32 = _apply_user_geometry(f32, geometry)
-    return f32, None, wb, meta
+    return f32, wb, meta, lens
 
 
 def _decode_hdr(
     file_path: str,
     hdr: HdrConfig,
-    geometry: Optional[GeometryConfig] = None,
     expansion: Optional[float] = None,
     gamma_key: str = "linear",
     process: Optional[ProcessConfig] = None,
@@ -680,10 +709,6 @@ def _decode_hdr(
     bracket decodes exactly as its frames do on their own — whatever the format. Source
     corrections are left to the caller: they belong after the merge, since the decode pins
     the white level the merge's thresholds key on.
-
-    Geometry is applied once, to the merged result, so registration is not fighting a
-    per-frame rotation. Frames are pulled one at a time by merge_bracket — a full-res
-    bracket held all at once is several GB.
     """
 
     # `process` rides along for the demosaic choice only; corrections stay after the merge.
@@ -701,16 +726,14 @@ def _decode_hdr(
         demosaic=meta.demosaic,
     )
     f32 = merge_bracket(_decode, file_path, hdr)
-    if geometry is not None:
-        f32 = _apply_user_geometry(f32, geometry)
     return f32, wb, merged_meta
 
 
 def _decode_camera_raw_triplet(
-    file_path: str, rgbscan: RgbScanConfig, geometry: Optional[GeometryConfig] = None, demosaic: str = DemosaicMode.AUTO
+    file_path: str, rgbscan: RgbScanConfig, demosaic: str = DemosaicMode.AUTO
 ) -> tuple[np.ndarray, None, Optional[_CameraWB], _SourceMeta]:
     """Decode three narrowband exposures and merge into one RGB buffer."""
-    primary_f32, wb, meta = _decode_camera_raw_buffer(file_path, demosaic)
+    primary_f32, wb, meta, _ = _decode_camera_raw_buffer(file_path, demosaic)
     file_meta = _read_source_meta_tiff(file_path)
     merged_meta = _SourceMeta(
         make=file_meta.make or meta.make,
@@ -724,7 +747,7 @@ def _decode_camera_raw_triplet(
     def _decode(path: str) -> np.ndarray:
         if path in cache:
             return cache[path]
-        buf, _, _ = _decode_camera_raw_buffer(path, demosaic)
+        buf, _, _, _ = _decode_camera_raw_buffer(path, demosaic)
         cache[path] = buf
         return buf
 
@@ -735,8 +758,6 @@ def _decode_camera_raw_triplet(
     # final TIFF write, so a correction applied here would multiply an out-of-range value instead
     # of the ceiling it stands in for.
     f32 = np.clip(f32, 0.0, 1.0)
-    if geometry is not None:
-        f32 = _apply_user_geometry(f32, geometry)
     return f32, None, wb, merged_meta
 
 
@@ -745,58 +766,48 @@ def _decode_stitch_part(
     rgbscan: Optional[RgbScanConfig],
     flatfield: Optional[FlatFieldConfig],
     process: Optional[ProcessConfig],
-) -> np.ndarray:
-    """Decode one stitch part with flatfield and sensor correction applied.
-
-    Triplet merge is performed when *rgbscan* is a valid triplet config.
-    Sensor correction is skipped for triplets (no cross-channel leakage
-    with narrowband exposures).
-    """
+    unmix: bool = True,
+) -> tuple[np.ndarray, Optional[_CameraWB], _SourceMeta]:
+    """Decode one stitch part as it decodes alone: flatfield, a triplet merge for a triplet *rgbscan*, and the sensor
+    correction when ``unmix``, never for a triplet (narrowband exposures carry no crosstalk). Returns (buffer, as-shot WB,
+    source metadata)."""
     is_triplet = rgbscan is not None and is_rgb_triplet(rgbscan)
     demosaic = process.demosaic_export if process is not None else DemosaicMode.AUTO
 
+    wb: Optional[_CameraWB] = None
+    meta = _SourceMeta()
     if is_triplet:
-        primary_f32, _, _ = _decode_camera_raw_buffer(file_path, demosaic)
+        primary_f32, wb, meta, _ = _decode_camera_raw_buffer(file_path, demosaic)
         cache: dict[str, np.ndarray] = {file_path: primary_f32}
 
         def _decode(path: str) -> np.ndarray:
             if path in cache:
                 return cache[path]
-            buf, _, _ = _decode_camera_raw_buffer(path, demosaic)
+            buf, _, _, _ = _decode_camera_raw_buffer(path, demosaic)
             cache[path] = buf
             return buf
 
         f32 = merge_rgb_triplet(_decode, file_path, rgbscan.green_path, rgbscan.blue_path, align=rgbscan.align)
         f32 = np.clip(f32, 0.0, 1.0)  # see _decode_camera_raw_triplet: the warp can ring past 1.0
     else:
-        f32, _, _ = _decode_camera_raw_buffer(file_path, demosaic)
+        f32, _, wb, meta = _decode_linear(file_path, process=process)
 
     if flatfield is not None:
-        f32 = _apply_flatfield_correction(f32, flatfield)
-    if not is_triplet and process is not None and process.sensor_matrix is not None:
-        f32 = apply_sensor_correction(f32, process.sensor_matrix)
-    return f32
+        f32 = _apply_flatfield_correction(f32, flatfield, orientation=read_orientation(file_path))
+    if unmix and not is_triplet and process is not None and process.sensor_matrix is not None:
+        f32 = apply_sensor_correction(f32, process.sensor_matrix, process.sensor_unmix)
+    return f32, wb, meta
 
 
 def _decode_stitch(
     file_path: str,
     stitch: StitchConfig,
-    geometry: Optional[GeometryConfig],
     flatfield: Optional[FlatFieldConfig],
     process: Optional[ProcessConfig],
 ) -> tuple[np.ndarray, None, Optional[_CameraWB], _SourceMeta]:
     """Decode all stitch parts, apply per-part corrections, and assemble."""
     all_paths = [file_path, *stitch.stitch_paths]
     has_triplets = stitch_has_triplets(stitch)
-
-    primary_meta = _read_source_meta_tiff(file_path)
-    _, wb, decode_meta = _decode_camera_raw_buffer(file_path, process.demosaic_export if process is not None else DemosaicMode.AUTO)
-    merged_meta = _SourceMeta(
-        make=primary_meta.make or decode_meta.make,
-        model=primary_meta.model or decode_meta.model,
-        datetime=primary_meta.datetime or decode_meta.datetime,
-        demosaic=decode_meta.demosaic,
-    )
 
     parts: list[np.ndarray] = []
     for i, path in enumerate(all_paths):
@@ -805,12 +816,24 @@ def _decode_stitch(
             green, blue = stitch.stitch_triplets[i]
             if green and blue:
                 part_rgbscan = RgbScanConfig(enabled=True, green_path=green, blue_path=blue, align=stitch.stitch_align)
-        parts.append(_decode_stitch_part(path, part_rgbscan, flatfield, process))
+        # Unmixed once, assembled: the unmix reads the film base from the frame.
+        f32, part_wb, part_meta = _decode_stitch_part(path, part_rgbscan, flatfield, process, unmix=has_triplets)
+        parts.append(f32)
+        if i == 0:
+            wb, decode_meta = part_wb, part_meta
+
+    primary_meta = _read_source_meta_tiff(file_path)
+    merged_meta = _SourceMeta(
+        make=primary_meta.make or decode_meta.make,
+        model=primary_meta.model or decode_meta.model,
+        datetime=primary_meta.datetime or decode_meta.datetime,
+        demosaic=decode_meta.demosaic,
+    )
 
     irs: list[None] = [None] * len(parts)
     f32, _ = stitch_composite(parts, irs, stitch)
-    if geometry is not None:
-        f32 = _apply_user_geometry(f32, geometry)
+    if not has_triplets and process is not None and process.sensor_matrix is not None:
+        f32 = apply_sensor_correction(f32, process.sensor_matrix, process.sensor_unmix)
     return f32, None, wb if not has_triplets else None, merged_meta
 
 
@@ -827,7 +850,10 @@ def _normalize_wb_rgb(wb: tuple[float, float, float, float]) -> tuple[float, flo
 
 
 def _build_xmp(source_path: str, wb: _CameraWB, title: str = "", wb_applied: bool = False) -> bytes:
-    raw_name = os.path.basename(source_path)
+    from xml.sax.saxutils import escape
+
+    raw_name = escape(os.path.basename(source_path))
+    title = escape(title)
     title_block = ""
     if title:
         title_block = f"  <dc:title>\n   <rdf:Alt>\n    <rdf:li xml:lang='x-default'>{title}</rdf:li>\n   </rdf:Alt>\n  </dc:title>\n"
@@ -921,6 +947,13 @@ def _parse_tiff_datetime(dt_str: Optional[str]) -> Optional[str]:
     return None
 
 
+def _sensor_record(process: Optional[ProcessConfig]) -> bool | str:
+    """The unmix as the description records it: its Method's name when a matrix was applied."""
+    if process is None or process.sensor_matrix is None:
+        return True
+    return SensorUnmix(process.sensor_unmix).label
+
+
 def _linear_description(
     source_name: str,
     camera_wb: Optional[_CameraWB],
@@ -928,10 +961,11 @@ def _linear_description(
     source_format: str,
     wb_applied: bool,
     flatfield_applied: bool,
-    sensor_applied: bool,
+    sensor_applied: bool | str,
     ice_applied: bool,
     gamma_key: str,
     demosaic: Optional[str] = None,
+    lens_applied: bool = False,
 ) -> str:
     """The processing record both linear writers stamp on their output."""
     parts = [f"source: {source_format or source_name}"]
@@ -950,16 +984,16 @@ def _linear_description(
             parts.append(f"WB applied (as-shot: {r:.3f} {g:.3f} {b:.3f})")
         else:
             parts.append(f"no WB applied (as-shot: {r:.3f} {g:.3f} {b:.3f})")
-    else:
-        parts.append("no WB applied")
-    corrections = [s for s, on in (("flatfield", flatfield_applied), ("sensor", sensor_applied), ("ICE", ice_applied)) if on]
+    sensor = f"sensor ({sensor_applied})" if isinstance(sensor_applied, str) else "sensor"
+    applied = (("flatfield", flatfield_applied), ("lens", lens_applied), (sensor, sensor_applied), ("ICE", ice_applied))
+    corrections = [s for s, on in applied if on]
     if corrections:
         parts.append(f"corrections: {', '.join(corrections)}")
     parts.append("no color management")
     return f"NegPy Linear Output -- {', '.join(parts)}."
 
 
-# A linear dump resamples nothing, so it keeps the source's own resolution. This is
+# A linear dump keeps the source's pixel dimensions, so it keeps its resolution. This is
 # the fallback for a source that declares none: readers report tifffile's unit-less
 # default as 1 DPI.
 NOMINAL_DPI = 300
@@ -969,9 +1003,17 @@ def _write_bytes(dest, data: bytes) -> None:
     """Write to a path or an already-open file-like *dest*."""
     if hasattr(dest, "write"):
         dest.write(data)
-    else:
-        with open(dest, "wb") as fh:
+        return
+    # Through a part file, so a failed write never destroys the file it would replace.
+    part = f"{dest}.part"
+    try:
+        with open(part, "wb") as fh:
             fh.write(data)
+        os.replace(part, dest)
+    except BaseException:
+        if os.path.exists(part):
+            os.unlink(part)
+        raise
 
 
 def _linear_resolution(source_path: Optional[str]) -> "Resolution":
@@ -992,7 +1034,7 @@ def _write_tiff(
     source_format: str = "",
     wb_applied: bool = False,
     flatfield_applied: bool = False,
-    sensor_applied: bool = False,
+    sensor_applied: bool | str = False,
     ice_applied: bool = False,
     gamma_key: str = "linear",
     compression: TiffCompression = TiffCompression.ZIP,
@@ -1012,6 +1054,7 @@ def _write_tiff(
         ice_applied,
         gamma_key,
         demosaic=source_meta.demosaic if source_meta is not None else None,
+        lens_applied=source_meta is not None and source_meta.lens_corrected,
     )
 
     extratags: list[tuple] = []
@@ -1094,9 +1137,17 @@ def _write_ir_jxl(ir: np.ndarray, dest, effort: int = 7) -> None:
     data = bytes(bits)
     if hasattr(dest, "write"):
         dest.write(data)
-    else:
-        with open(dest, "wb") as fh:
+        return
+    # Through a part file, so a failed write never destroys the file it would replace.
+    part = f"{dest}.part"
+    try:
+        with open(part, "wb") as fh:
             fh.write(data)
+        os.replace(part, dest)
+    except BaseException:
+        if os.path.exists(part):
+            os.unlink(part)
+        raise
 
 
 def _attach_jxl_provenance(
@@ -1152,7 +1203,7 @@ def _write_jxl(
     source_format: str = "",
     wb_applied: bool = False,
     flatfield_applied: bool = False,
-    sensor_applied: bool = False,
+    sensor_applied: bool | str = False,
     ice_applied: bool = False,
     gamma_key: str = "linear",
     resolution: Optional[Resolution] = None,
@@ -1192,6 +1243,7 @@ def _write_jxl(
             ice_applied,
             gamma_key,
             demosaic=source_meta.demosaic if source_meta is not None else None,
+            lens_applied=source_meta is not None and source_meta.lens_corrected,
         ),
         camera_wb,
         source_path,
@@ -1201,9 +1253,17 @@ def _write_jxl(
     )
     if hasattr(dest, "write"):
         dest.write(data)
-    else:
-        with open(dest, "wb") as fh:
+        return
+    # Through a part file, so a failed write never destroys the file it would replace.
+    part = f"{dest}.part"
+    try:
+        with open(part, "wb") as fh:
             fh.write(data)
+        os.replace(part, dest)
+    except BaseException:
+        if os.path.exists(part):
+            os.unlink(part)
+        raise
 
 
 def export_linear_output(
@@ -1219,6 +1279,8 @@ def export_linear_output(
     apply_wb: bool = False,
     apply_flatfield: bool = False,
     apply_sensor: bool = False,
+    apply_lens: bool = False,
+    half: int = 0,
     apply_ice: bool = False,
     retouch: Optional[RetouchConfig] = None,
     gamma_key: str = "linear",
@@ -1238,6 +1300,9 @@ def export_linear_output(
     eff = _effective_expansion(file_path, expansion)
     fmt = _source_format_label(file_path, rgbscan, stitch)
     wb_applied = apply_wb and not wb_bake_block_reason(rgbscan, process)
+    # Input gamma is global and can carry over from an earlier TIFF.
+    if linear_output_source_type(file_path) not in GAMMA_SOURCE_TYPES:
+        gamma_key = "linear"
     f32, ir, camera_wb, meta = _decode_linear(
         file_path,
         geometry,
@@ -1250,6 +1315,8 @@ def export_linear_output(
         apply_wb=apply_wb,
         apply_flatfield=apply_flatfield,
         apply_sensor=apply_sensor,
+        apply_lens=apply_lens,
+        half=half,
         gamma_key=gamma_key,
     )
     ice_applied = False
@@ -1274,7 +1341,7 @@ def export_linear_output(
             source_format=fmt,
             wb_applied=wb_applied,
             flatfield_applied=apply_flatfield or is_stitch,
-            sensor_applied=apply_sensor or is_stitch,
+            sensor_applied=_sensor_record(process) if apply_sensor or is_stitch else False,
             ice_applied=ice_applied,
             gamma_key=gamma_key,
             resolution=resolution,
@@ -1291,7 +1358,7 @@ def export_linear_output(
             source_format=fmt,
             wb_applied=wb_applied,
             flatfield_applied=apply_flatfield or is_stitch,
-            sensor_applied=apply_sensor or is_stitch,
+            sensor_applied=_sensor_record(process) if apply_sensor or is_stitch else False,
             ice_applied=ice_applied,
             gamma_key=gamma_key,
             resolution=resolution,

@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from negpy.desktop.view.styles.templates import pin_dialog_default
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
 from negpy.kernel.system.text import human_bytes
 from negpy.services.assets.rolls import DISMISSED_FOLDERS_KEY, IMPORT_SOURCES_KEY, ROLLS_KEY, saved_rolls
 
@@ -80,6 +81,7 @@ class DatabaseDialog(QDialog):
 
         root.addLayout(self._build_footer())
         self._populate()
+        remember_dialog_geometry(self, repo, "database")
 
     def _build_footer(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -202,7 +204,7 @@ class DatabaseDialog(QDialog):
         try:
             self.repo.clear_saved_edits()
         except Exception as exc:
-            QMessageBox.critical(self, "Clear Failed", f"Could not clear the database:\n{exc}")
+            QMessageBox.critical(self, "Manage Database", f"Could not clear the database:\n{exc}")
         self._refresh()
 
     def _on_clear_thumbnails(self) -> None:
@@ -216,7 +218,7 @@ class DatabaseDialog(QDialog):
         try:
             self.controller.clear_thumbnail_cache()
         except Exception as exc:
-            QMessageBox.critical(self, "Clear Failed", f"Could not clear the thumbnail cache:\n{exc}")
+            QMessageBox.critical(self, "Manage Database", f"Could not clear the thumbnail cache:\n{exc}")
         self._refresh()
 
     def _on_clear_library(self) -> None:
@@ -234,7 +236,7 @@ class DatabaseDialog(QDialog):
             self.repo.save_global_setting(IMPORT_SOURCES_KEY, [])
             self.repo.save_global_setting(DISMISSED_FOLDERS_KEY, [])
         except Exception as exc:
-            QMessageBox.critical(self, "Clear Failed", f"Could not clear the library:\n{exc}")
+            QMessageBox.critical(self, "Manage Database", f"Could not clear the library:\n{exc}")
         self.controller.library_cleared.emit()
         self._refresh()
 
@@ -250,5 +252,5 @@ class DatabaseDialog(QDialog):
         try:
             self.repo.reset_everything()
         except Exception as exc:
-            QMessageBox.critical(self, "Reset Failed", f"Could not reset the database:\n{exc}")
+            QMessageBox.critical(self, "Manage Database", f"Could not reset the database:\n{exc}")
         self._refresh()

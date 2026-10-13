@@ -1,5 +1,7 @@
 import os
 
+from PyQt6.QtWidgets import QHBoxLayout
+
 from negpy.desktop.view.confirm import confirm_assembly_mode
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import hint_label, wrap_tooltip
@@ -8,31 +10,26 @@ from negpy.features.rgbscan.models import is_rgb_triplet
 
 
 class TrichromeSidebar(BaseSidebar):
-    """
-    Trichromatic capture: whether a folder groups into red/green/blue triplets, and
-    which three exposures the open frame is assembled from. The mode is a rig fact, not
-    a roll's — one flag for every roll — since a copy stand either shoots three
-    exposures per frame or it does not.
-    """
+    """Trichrome Mode per roll, and the three exposures the open frame is assembled from."""
 
     def _init_ui(self) -> None:
         self.enable_btn = self._small_toggle(
             "mdi.google-circles-communities",
             "Trichrome Mode",
-            bool(self.controller.session.repo.get_global_setting("rgbscan_mode", False)),
+            self.controller.rgb_scan_mode_for_roll(self.state.active_roll_id),
             wrap_tooltip(
-                "Assemble each frame from its red, green and blue exposures. A folder is grouped into "
-                "triplets in capture order on load; the mode applies to every roll you open."
+                "Assemble each frame from its red, green and blue exposures, grouped in capture order on load. "
+                "Each roll keeps its own mode."
             ),
+            align_left=True,
         )
-        self.layout.addWidget(self.enable_btn)
-
-        self.edit_btn = self._labeled_action(
-            "fa5s.pen",
-            " Edit Triplet…",
-            wrap_tooltip("Assign this frame's three exposures by hand, for a frame the grouping got wrong"),
+        self.edit_btn = self._icon_action(
+            "fa5s.pen", "Edit Triplet…: assign this frame's three exposures by hand, for a frame the grouping got wrong"
         )
-        self.layout.addWidget(self.edit_btn)
+        row = QHBoxLayout()
+        row.addWidget(self.enable_btn, 1)
+        row.addWidget(self.edit_btn)
+        self.layout.addLayout(row)
 
         self.hint = hint_label("")
         self.layout.addWidget(self.hint)
@@ -41,6 +38,7 @@ class TrichromeSidebar(BaseSidebar):
         self.enable_btn.toggled.connect(self._on_toggled)
         self.controller.rgb_scan_mode_changed.connect(self._follow_mode)
         self.edit_btn.clicked.connect(lambda: open_triplet_dialog(self, self.controller.session))
+        self.controller.session.files_changed.connect(self.sync_ui)
         self.sync_ui()
 
     def _on_toggled(self, checked: bool) -> None:
@@ -65,7 +63,7 @@ class TrichromeSidebar(BaseSidebar):
         conf = self.state.config.rgbscan
         self.block_signals(True)
         try:
-            self.enable_btn.setChecked(bool(self.controller.session.repo.get_global_setting("rgbscan_mode", False)))
+            self.enable_btn.setChecked(self.controller.rgb_scan_mode_for_roll(self.state.active_roll_id))
             self.edit_btn.setEnabled(bool(self.state.uploaded_files))
             if is_rgb_triplet(conf):
                 green, blue = os.path.basename(conf.green_path), os.path.basename(conf.blue_path)

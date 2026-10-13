@@ -18,6 +18,8 @@ Actions with no default key are not listed; every one of them can still be bound
 |-----|--------|
 | `Left` | Previous file |
 | `Right` | Next file |
+| `Home` | First file |
+| `End` | Last file |
 | `Ctrl + L` | Open the library |
 | `Ctrl + K` | Find a control, card or action |
 | `Ctrl + F` | Focus the film strip search box |
@@ -38,6 +40,7 @@ Actions with no default key are not listed; every one of them can still be bound
 | `Shift + D` | Toggle heal tool |
 | `Shift + S` | Toggle scratch tool |
 | `Shift + K` | Toggle transport-scratch line tool |
+| `Shift + J` | Toggle clone tool |
 | `Shift + B` | Toggle dodge & burn mask draw |
 | `Ctrl + R` | Toggle analysis region draw |
 | `M` | Peek flat scan (digital intermediate) |
@@ -63,7 +66,7 @@ Actions with no default key are not listed; every one of them can still be bound
 | `L` | Toggle straighten line tool |
 | `O` | Next crop guide overlay |
 | `Shift + O` | Rotate crop guide orientation |
-| `Shift + A` | Toggle autocrop |
+| `Shift + A` | Toggle Auto Crop |
 
 ## View
 | Key | Action |
@@ -81,7 +84,7 @@ Actions with no default key are not listed; every one of them can still be bound
 ## Retouch
 | Key | Action |
 |-----|--------|
-| `Alt + 9` / `Alt + Shift + 9` | Increase / decrease **Threshold** (default step 0.01) |
+| `Alt + 9` / `Alt + Shift + 9` | Increase / decrease **Spot threshold** (default step 0.01) |
 | `Alt + 0` / `Alt + Shift + 0` | Increase / decrease **Auto size** (default step 1 px) |
 | `Alt + M` / `Alt + Shift + M` | Increase / decrease **Brush size** (default step 1 px) |
 
@@ -139,7 +142,7 @@ Actions with no default key are not listed; every one of them can still be bound
 | `Alt + H` / `Alt + Shift + H` | Increase / decrease **Shadow hue** (default step 0.01) |
 | `Alt + G` / `Alt + Shift + G` | Increase / decrease **Shadow strength** (default step 0.01) |
 | `Alt + L` / `Alt + Shift + L` | Increase / decrease **Highlight hue** (default step 0.01) |
-| `Alt + Semicolon` / `Alt + Shift + Semicolon` | Increase / decrease **Highlight strength** (default step 0.01) |
+| `Alt + ;` / `Alt + Shift + ;` | Increase / decrease **Highlight strength** (default step 0.01) |
 
 ## Finishing
 | Key | Action |
@@ -162,6 +165,15 @@ Actions with no default key are not listed; every one of them can still be bound
 | `Ctrl + 9` | Scan tab |
 | `Ctrl + 0` | Favorites tab |
 
+## Camera Live View
+| Key | Action |
+|-----|--------|
+| `S` | Scan, or stop the capture |
+| `R` | Retake the current frame |
+| `M` | Meter: set the shutter from one RAW probe |
+| `H` | Show the live histogram |
+| `Z` | Show clipping zebras |
+
 ## Help
 | Key | Action |
 |-----|--------|
@@ -178,6 +190,7 @@ While a test strip or ring-around is up, `[` and `]` turn that proof's ladder in
 | `Pinch` | Zoom in / out; sizes the brush instead while the Heal or Scratch tool is live, or a right-click is set to exclude |
 | `Middle Click` + `Drag` | Pan zoomed image |
 | `Left Click` + `Drag` | Pan zoomed image (when no tool is active) |
+| `Space` + `Left-Drag` | Pan zoomed image while a canvas tool is active |
 
 ## Menu bar (macOS only)
 

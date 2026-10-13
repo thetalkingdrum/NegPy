@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QInputDialog, QListWidget, QListWidgetItem, QMenu, Q
 from negpy.desktop.view.confirm import confirm_delete_named
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.base import BaseSidebar
-from negpy.desktop.view.styles.templates import section_subheader
+from negpy.desktop.view.styles.templates import header_row, section_subheader
 from negpy.desktop.view.styles.theme import THEME
 
 _INDEX_ROLE = Qt.ItemDataRole.UserRole
@@ -24,17 +24,15 @@ class HistoryPanel(BaseSidebar):
 
     def _init_ui(self) -> None:
         self.work_print_header = section_subheader("WORK PRINTS")
-        self.layout.addWidget(self.work_print_header)
+        self.save_btn = self._icon_action("fa5s.save", "")
+        self.save_btn.setToolTip(tooltip_with_shortcut("Save Work Print: keep the current edit as a named version", "save_work_print"))
+        self.layout.addLayout(header_row(self.work_print_header, self.save_btn))
 
         self.work_prints = QListWidget()
         self.work_prints.setToolTip(_WORK_PRINT_TOOLTIP)
         self.work_prints.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.work_prints.setMaximumHeight(120)
         self.layout.addWidget(self.work_prints, 0)
-
-        self.save_btn = self._labeled_action("fa5s.save", " Save Work Print", "")
-        self.save_btn.setToolTip(tooltip_with_shortcut("Keep the current edit as a named version", "save_work_print"))
-        self.layout.addWidget(self.save_btn)
 
         self.layout.addWidget(section_subheader("EDIT HISTORY"))
 
@@ -80,7 +78,7 @@ class HistoryPanel(BaseSidebar):
         session = self.controller.session
         if not self.controller.state.current_file_hash:
             return
-        name, ok = QInputDialog.getText(self, "Save work print", "Name:", text=session.next_work_print_name())
+        name, ok = QInputDialog.getText(self, "Save Work Print", "Name:", text=session.next_work_print_name())
         name = name.strip()
         if not (ok and name):
             return
@@ -115,9 +113,18 @@ class HistoryPanel(BaseSidebar):
         if chosen is export_action:
             self.controller.export_work_print(name)
         elif chosen is rename_action:
-            new_name, ok = QInputDialog.getText(self, "Rename work print", "Name:", text=name)
-            if ok and new_name.strip():
-                self.controller.session.rename_work_print(name, new_name.strip())
+            new_name, ok = QInputDialog.getText(self, "Rename Work Print", "Name:", text=name)
+            new_name = new_name.strip()
+            if not (ok and new_name) or new_name == name:
+                return
+            exists = new_name in self.controller.session.work_prints()
+            if (
+                exists
+                and QMessageBox.question(self, "Replace Work Print", f"“{new_name}” already exists. Replace it?")
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+            self.controller.session.rename_work_print(name, new_name, replace_existing=exists)
         elif chosen is delete_action:
             if confirm_delete_named(
                 self,

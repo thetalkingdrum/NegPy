@@ -1,4 +1,7 @@
+import ast
 import os
+from pathlib import Path
+
 import pytest
 
 # Configure headless mode for CI/CD
@@ -29,6 +32,13 @@ def qapp():
     yield app
     app.quit()
     app.processEvents()
+
+
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """A panel starts a GitHub release check on construction; a live socket thread outlives
+    the test that built it and crashes Qt in a later one."""
+    monkeypatch.setattr("negpy.desktop.view.widgets.update_dialog.find_update", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -98,8 +108,26 @@ class FakeController:
             return bool(by_roll.get(roll_id, False))
         return bool(self.session.repo.get_global_setting("half_frame_mode", False))
 
+    def rgb_scan_mode_for_roll(self, roll_id):
+        by_roll = self.session.repo.get_global_setting("rgbscan_mode_by_roll", default=None) or {}
+        if roll_id and roll_id in by_roll:
+            return bool(by_roll[roll_id])
+        return bool(self.session.repo.get_global_setting("rgbscan_mode", False))
+
     def __getattr__(self, name):
         return getattr(self._mock, name)
+
+
+def dialog_classes() -> list[tuple[Path, ast.ClassDef]]:
+    view = Path(__file__).resolve().parents[1] / "negpy" / "desktop" / "view"
+    found = []
+    for path in sorted(view.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                (base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")) == "QDialog" for base in node.bases
+            ):
+                found.append((path, node))
+    return found
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True)

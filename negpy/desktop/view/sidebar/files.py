@@ -51,10 +51,19 @@ from negpy.desktop.view.confirm import (
     confirm_unload,
     warn_invalid_roll_name,
 )
-from negpy.desktop.view.keyboard_shortcuts import _reset_roll, _reset_selected
+from negpy.desktop.view.frame_merge_action import (
+    ACTION_IDS,
+    LABELS,
+    SCOPE_FRAME,
+    SCOPE_SELECTION,
+    merge_to_tiff,
+    mergeable_in,
+)
+from negpy.desktop.view.keyboard_shortcuts import _close_roll, _reset_roll, _reset_selected, close_roll_label
 from negpy.features.hdr.logic import anchor_choices
 from negpy.features.hdr.models import hdr_frame_paths
 from negpy.desktop.view.widgets.elided_label import ElidedLabel
+from negpy.desktop.view.widgets.marks import draw_mark_badge
 from negpy.desktop.view.widgets.sort_button import SortButton
 from negpy.desktop.view.widgets.overflow_bar import OverflowBar
 from negpy.desktop.view.shortcut_registry import label_with_shortcut, tooltip_with_shortcut
@@ -62,11 +71,13 @@ from negpy.desktop.view.styles.templates import (
     ICON_BUTTON_WIDTH,
     TOOLBAR_BUTTON_HEIGHT,
     TOOLBAR_ICON_SIZE,
+    icon_button,
     tool_toggle,
     wrap_tooltip,
 )
 from negpy.desktop.view.styles.theme import THEME, scene_color
 from negpy.desktop.view.widgets.granular_settings_dialog import open_apply_dialog, open_paste_dialog, open_sync_bounds_dialog
+from negpy.desktop.view.sidecar_action import LABEL as SIDECAR_LABEL, load_edit_from_sidecar
 from negpy.desktop.view.widgets.rgb_triplet_dialog import open_triplet_dialog
 from negpy.desktop.view.widgets.roll_settings_dialog import RollSettingsDialog
 from negpy.services.assets import rolls
@@ -104,7 +115,6 @@ class _ThumbnailDelegate(QStyledItemDelegate):
     _MARGIN = 5  # room for the selection ring outside the picture
     _SELECTION_OUTSET = 4  # the ring's outer edge, outside the picture edge
     _RADIUS = 4  # = button border-radius (modern_dark.qss)
-    _MARK = QColor(183, 28, 28, 150)  # THEME.accent_primary at ~60% alpha
     # Neutral, not the triage red: red already means "you marked this" and "this failed".
     # What a frame is built from is a fact about the asset, not a state the user set.
     _COMPOSITE_CHIP = QColor(20, 20, 20, 190)
@@ -223,18 +233,7 @@ class _ThumbnailDelegate(QStyledItemDelegate):
         return super().sizeHint(option, index)
 
     def _draw_mark_badge(self, painter: QPainter, img_rect: QRect, check: bool) -> None:
-        r = 9
-        cx, cy = img_rect.right() - r - 4, img_rect.bottom() - r - 4
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._MARK)
-        painter.drawEllipse(QRect(cx - r, cy - r, 2 * r, 2 * r))
-        painter.setPen(QPen(QColor(255, 255, 255, 230), 2, cap=Qt.PenCapStyle.RoundCap))
-        if check:
-            painter.drawLine(cx - 4, cy, cx - 1, cy + 3)
-            painter.drawLine(cx - 1, cy + 3, cx + 4, cy - 3)
-        else:
-            painter.drawLine(cx - 3, cy - 3, cx + 3, cy + 3)
-            painter.drawLine(cx + 3, cy - 3, cx - 3, cy + 3)
+        draw_mark_badge(painter, img_rect, check)
 
     def _draw_failed_badge(self, painter: QPainter, img_rect: QRect) -> None:
         r = 9
@@ -262,7 +261,7 @@ class _ThumbnailDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor(THEME.accent_primary), 2))
             painter.drawRoundedRect(QRectF(img_rect).adjusted(1 - out, 1 - out, out - 2, out - 2), self._RADIUS + out, self._RADIUS + out)
 
-    def _draw_composite_badge(self, painter: QPainter, img_rect: QRect, kind: str, half: int) -> None:
+    def _draw_composite_badge(self, painter: QPainter, img_rect: QRect, kind: str, half: int, split_axis: str = "x") -> None:
         """Bottom-left mark: this frame was assembled from more than one file.
 
         One glyph per kind, so a merge is told from a stitch without opening the menu.
@@ -290,11 +289,19 @@ class _ThumbnailDelegate(QStyledItemDelegate):
             painter.setBrush(Qt.BrushStyle.NoBrush)
         elif kind == "half":  # a split frame, this asset's own half filled
             painter.drawRect(QRect(cx - 6, cy - 4, 12, 8))
-            painter.fillRect(QRect(cx - 5 if half == 1 else cx + 1, cy - 3, 5, 7), self._COMPOSITE_GLYPH)
+            panes = self._half_badge_panes(cx, cy, split_axis)
+            painter.fillRect(panes[0] if half == 1 else panes[1], self._COMPOSITE_GLYPH)
         elif kind == "diptych":  # the same split frame with both halves filled
             painter.drawRect(QRect(cx - 6, cy - 4, 12, 8))
-            for left in (cx - 5, cx + 1):
-                painter.fillRect(QRect(left, cy - 3, 5, 7), self._COMPOSITE_GLYPH)
+            for pane in self._half_badge_panes(cx, cy, split_axis):
+                painter.fillRect(pane, self._COMPOSITE_GLYPH)
+
+    @staticmethod
+    def _half_badge_panes(cx: int, cy: int, split_axis: str) -> tuple[QRect, QRect]:
+        """(half 1, half 2) glyph panes: left/right for an "x" split, top/bottom for "y"."""
+        if split_axis == "y":
+            return QRect(cx - 5, cy - 3, 11, 3), QRect(cx - 5, cy + 1, 11, 3)
+        return QRect(cx - 5, cy - 3, 5, 7), QRect(cx + 1, cy - 3, 5, 7)
 
     @staticmethod
     def _border_pen(hover: bool) -> QPen:
@@ -325,7 +332,7 @@ class _ThumbnailDelegate(QStyledItemDelegate):
         if failed:
             self._draw_failed_badge(painter, area)
         if kind:
-            self._draw_composite_badge(painter, area, kind, int(file_info.get("half") or 0))
+            self._draw_composite_badge(painter, area, kind, int(file_info.get("half") or 0), str(file_info.get("split_axis") or "x"))
         painter.restore()
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
@@ -371,7 +378,9 @@ class _ThumbnailDelegate(QStyledItemDelegate):
             if failed:
                 self._draw_failed_badge(painter, img_rect)
             if kind:
-                self._draw_composite_badge(painter, img_rect, kind, int(file_info.get("half") or 0))
+                self._draw_composite_badge(
+                    painter, img_rect, kind, int(file_info.get("half") or 0), str(file_info.get("split_axis") or "x")
+                )
             painter.restore()
             return
         base = icon.pixmap(QSize(4096, 4096))  # largest available pixmap (~120px)
@@ -410,7 +419,7 @@ class _ThumbnailDelegate(QStyledItemDelegate):
         elif keeper:
             self._draw_mark_badge(painter, img_rect, check=True)
         if kind:
-            self._draw_composite_badge(painter, img_rect, kind, int(file_info.get("half") or 0))
+            self._draw_composite_badge(painter, img_rect, kind, int(file_info.get("half") or 0), str(file_info.get("split_axis") or "x"))
         if not failed and self._is_stale_thumbnail(file_info):
             self._draw_stale_dot(painter, img_rect)
         painter.setClipping(False)
@@ -888,12 +897,21 @@ class FileBrowser(QWidget):
         self.act_sheet_all = sheet_menu.addAction("All Frames")
         self.act_sheet_keepers = sheet_menu.addAction("Keepers Only")
         self.act_sheet_unrejected = sheet_menu.addAction("Hide Rejected")
-        for act in (self.act_sheet_all, self.act_sheet_keepers, self.act_sheet_unrejected):
+        self.act_sheet_unmarked = sheet_menu.addAction("Unmarked Only")
+        for act in (self.act_sheet_all, self.act_sheet_keepers, self.act_sheet_unrejected, self.act_sheet_unmarked):
             act.setCheckable(True)
             self._sheet_group.addAction(act)
         self.act_sheet_all.triggered.connect(lambda: self._apply_sheet_filter("all"))
         self.act_sheet_keepers.triggered.connect(lambda: self._apply_sheet_filter("keepers"))
         self.act_sheet_unrejected.triggered.connect(lambda: self._apply_sheet_filter("unrejected"))
+        self.act_sheet_unmarked.triggered.connect(lambda: self._apply_sheet_filter("unmarked"))
+        sheet_menu.addSeparator()
+        self.act_advance_after_mark = sheet_menu.addAction("Advance After Marking")
+        self.act_advance_after_mark.setCheckable(True)
+        self.act_advance_after_mark.setChecked(bool(self.session.repo.get_global_setting("advance_after_mark", False)))
+        self.act_advance_after_mark.setToolTip("Marking a frame Keeper or Reject moves on to the next frame")
+        self.act_advance_after_mark.toggled.connect(lambda on: self.session.repo.save_global_setting("advance_after_mark", on))
+        sheet_menu.setToolTipsVisible(True)
         self.sheet_btn.setMenu(sheet_menu)
 
         # The frames' own order; the Library's roll list has a Sort of its own.
@@ -966,11 +984,9 @@ class FileBrowser(QWidget):
 
         # Same query text, wider net: the box above filters what is loaded, and this runs it
         # against every library folder and opens what it finds.
-        self.library_search_btn = QToolButton()
-        self.library_search_btn.setIcon(qta.icon("mdi.folder-search-outline", color=THEME.text_primary))
-        self.library_search_btn.setFixedSize(28, 28)
-        self.library_search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.library_search_btn.setToolTip("Search the whole library — runs this search across your library folders and loads the matches")
+        self.library_search_btn = icon_button(
+            "mdi.folder-search-outline", "Search the whole library — runs this search across your library folders and loads the matches"
+        )
 
         # Opt-in (Preferences); hidden until then. Mutually exclusive with regex/the
         # structured query language -- ranks this session's frames by meaning instead.
@@ -997,6 +1013,7 @@ class FileBrowser(QWidget):
         # belongs to neither and stays reachable when either is folded away.
         layout.addLayout(search_row)
 
+        self._refresh_progress = ""
         self.tally_label = ElidedLabel("")
         self.tally_label.setStyleSheet(f"color: {THEME.text_secondary}; font-size: {THEME.font_size_small}px;")
         self.tally_label.setVisible(False)
@@ -1043,11 +1060,13 @@ class FileBrowser(QWidget):
         # header has room a wrapping toolbar row does not.
         frames_menu = QMenu(self.frames_section)
         frames_menu.addAction("New Roll…").triggered.connect(self._on_clear_all)
+        self.close_roll_action = frames_menu.addAction(label_with_shortcut("Close Roll…", "close_roll"))
+        self.close_roll_action.triggered.connect(lambda: _close_roll(self, self.controller))
+        frames_menu.aboutToShow.connect(self._sync_close_roll_action)
         frames_menu.addAction(label_with_shortcut("Reset Roll to Defaults…", "reset_roll")).triggered.connect(self._on_reset_roll)
         self.frames_section.set_actions_menu(
             frames_menu,
-            "New Roll clears the film strip so you can drag in a fresh batch of frames. "
-            "Reset Roll to Defaults undoes every loaded frame's edit at once.",
+            "Start, close or reset the roll",
         )
 
         # A splitter, like the right panel's Analysis/Tabs one, so the boundary can be
@@ -1089,8 +1108,15 @@ class FileBrowser(QWidget):
         return make_section(self.session.repo, title, key, content, icon, default_expanded=True)
 
     def _on_sections_splitter_moved(self, *_args) -> None:
-        self._section_sizes = self.sections_splitter.sizes()
-        self.session.repo.save_global_setting("session_sections_splitter_sizes", self._section_sizes)
+        self._remember_section_sizes()
+        self.session.repo.save_global_setting("session_sections_splitter_sizes", list(self._section_sizes))
+
+    def _remember_section_sizes(self) -> None:
+        """Record open panes only: a collapsed pane's live size is its header, not what it reopens to."""
+        sizes = self.sections_splitter.sizes()
+        for i, section in enumerate((self.library_section, self.frames_section)):
+            if section.toggle_button.isChecked():
+                self._section_sizes[i] = sizes[i]
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1141,7 +1167,7 @@ class FileBrowser(QWidget):
         new_sizes[index] = want
         new_sizes[other] = other_want
         self.sections_splitter.setSizes(new_sizes)
-        self._section_sizes = self.sections_splitter.sizes()
+        self._remember_section_sizes()
 
     def _rebalance_splitter_sizes(self) -> None:
         """Reassert the split on a window resize: a collapsed pane stays pinned to its
@@ -1185,6 +1211,7 @@ class FileBrowser(QWidget):
         self.list_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.hot_folder_btn.toggled.connect(self._on_hot_folder_toggled)
         self.controller.thumbnail_refresh_state_changed.connect(self._on_thumbnail_refresh_state_changed)
+        self.controller.thumbnail_refresh_progress.connect(self._on_thumbnail_refresh_progress)
         self.session.state_changed.connect(self.sync_ui)
         self.session.files_changed.connect(self._on_files_changed)
         self.controller.first_scene_created.connect(lambda: self._apply_sort_order("scene"))
@@ -1254,12 +1281,13 @@ class FileBrowser(QWidget):
         self.sync_ui()
 
     def _on_unload_clicked(self) -> None:
-        """Same as the context menu's Unload…: always targets the selection -- at least
-        the active frame, ordinarily -- never the whole roll. Opening a different roll
-        already replaces the film strip, so wiping everything is not something this
-        button needs to reach for; Clear All for the rare "go back to empty" case lives
-        in the empty-space context menu instead."""
+        """Same as the context menu's Unload…: the selection, never the whole roll."""
         self._on_remove_from_menu()
+
+    def _sync_close_roll_action(self) -> None:
+        state = self.session.state
+        self.close_roll_action.setText(label_with_shortcut(close_roll_label(state), "close_roll"))
+        self.close_roll_action.setEnabled(bool(state.uploaded_files))
 
     def _on_clear_all(self) -> None:
         """Drop every loaded frame, from the empty-space context menu."""
@@ -1437,6 +1465,7 @@ class FileBrowser(QWidget):
         self.act_sheet_all.setChecked(mode == "all")
         self.act_sheet_keepers.setChecked(mode == "keepers")
         self.act_sheet_unrejected.setChecked(mode == "unrejected")
+        self.act_sheet_unmarked.setChecked(mode == "unmarked")
         icon_color = "white" if mode != "all" else THEME.text_primary
         self.sheet_btn.setIcon(qta.icon("fa5s.filter", color=icon_color))
         self.session.asset_model.set_sheet_filter(mode)
@@ -1455,7 +1484,13 @@ class FileBrowser(QWidget):
             names.append("Keepers")
         elif model.sheet_filter == "unrejected":
             names.append("Hide Rejected")
+        elif model.sheet_filter == "unmarked":
+            names.append("Unmarked Only")
         return names
+
+    def _on_thumbnail_refresh_progress(self, text: str) -> None:
+        self._refresh_progress = text
+        self._update_tally()
 
     def _update_tally(self) -> None:
         files = self.session.state.uploaded_files
@@ -1480,6 +1515,9 @@ class FileBrowser(QWidget):
         # as what they are instead: an edit here reaches the roll each frame came from,
         # which a strip that looks identical either way gives no sign of.
         text = f"{roll_name or 'No roll'} — {text}"
+        # First, so a narrow panel elides the roll name rather than the progress.
+        if self._refresh_progress:
+            text = f"{self._refresh_progress} · {text}"
         self.tally_label.setText(text)
         self.tally_label.setToolTip(
             ""
@@ -1666,10 +1704,13 @@ class FileBrowser(QWidget):
         src = state.selected_file_idx
         if src == -1:
             return None
+        # The dialog's fields are the source, so the active frame is a target in both scopes
+        # (apply_preset_fields, not sync_selected_settings).
         visible = self.session.asset_model.visible_actual_indices()
-        sel_targets = len([i for i in set(state.selected_indices) if i != src and i in visible])
-        roll_targets = len([i for i in visible if i != src])
-        return RollSettingsDialog(self, state.config, GearProfiles.load_library(), sel_count=sel_targets, roll_count=roll_targets)
+        sel_count = len([i for i in set(state.selected_indices) if i in visible])
+        return RollSettingsDialog(
+            self, state.config, GearProfiles.load_library(), sel_count=sel_count, roll_count=len(visible), repo=self.session.repo
+        )
 
     def _exec_roll_settings_dialog(self, dlg: RollSettingsDialog) -> None:
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1736,8 +1777,8 @@ class FileBrowser(QWidget):
         menu.addAction(qta.icon("fa5s.file-import", color=icon_color), "Add Files…").triggered.connect(self.prompt_add_files)
         menu.addAction(qta.icon("fa5s.folder-plus", color=icon_color), "Add Folder…").triggered.connect(self.prompt_add_folder)
         menu.addSeparator()
-        clear = menu.addAction(qta.icon("fa5s.times-circle", color=icon_color), "Clear All…")
-        clear.triggered.connect(self._on_clear_all)
+        clear = menu.addAction(qta.icon("fa5s.times-circle", color=icon_color), close_roll_label(self.session.state))
+        clear.triggered.connect(lambda: _close_roll(self, self.controller))
         clear.setEnabled(bool(self.session.state.uploaded_files))
         return menu
 
@@ -1761,12 +1802,15 @@ class FileBrowser(QWidget):
         targets = [i for i in (state.selected_indices or [state.selected_file_idx]) if 0 <= i < len(state.uploaded_files)]
         n = len(targets)
         if multi:
-            menu.addAction(f"Reset {count_of(n, 'frame')}").triggered.connect(lambda: _reset_selected(self, self.controller))
+            menu.addAction(f"Reset {count_of(n, 'frame').title()}…").triggered.connect(lambda: _reset_selected(self, self.controller))
         else:
             menu.addAction("Reset Settings").triggered.connect(self.session.reset_settings)
             act_roll = menu.addAction(label_with_shortcut("Reset to Roll Settings", "reset_to_roll"))
             act_roll.triggered.connect(self.controller.revert_frame_to_roll)
             act_roll.setEnabled(self.controller.can_revert_frame_to_roll())
+            menu.addAction(label_with_shortcut(SIDECAR_LABEL, "load_sidecar")).triggered.connect(
+                lambda: load_edit_from_sidecar(self, self.controller)
+            )
         menu.addSeparator()
         act_keep = menu.addAction(f"Keep {count_of(n, 'frame')}" if multi else "Keep")
         act_keep.setCheckable(True)
@@ -1794,9 +1838,11 @@ class FileBrowser(QWidget):
             menu.addSeparator()
             menu.addAction("Stitch Selected Frames").triggered.connect(lambda: self.controller.request_stitch_selected())
             self._add_hdr_merge_action(menu, state)
+            self._add_merge_to_tiff_action(menu, state, SCOPE_SELECTION)
         else:
             menu.addSeparator()
             menu.addAction("Edit RGB Triplet…").triggered.connect(self._on_edit_triplet)
+            self._add_merge_to_tiff_action(menu, state, SCOPE_FRAME)
             active = state.uploaded_files[state.selected_file_idx] if 0 <= state.selected_file_idx < len(state.uploaded_files) else {}
             if active.get("stitch_paths"):
                 menu.addAction("Unstitch").triggered.connect(lambda: self.controller.request_unstitch())
@@ -1804,7 +1850,7 @@ class FileBrowser(QWidget):
                 self._add_hdr_anchor_menu(menu, active)
                 menu.addAction("Unmerge Exposures").triggered.connect(lambda: self.controller.request_unmerge_hdr())
             if active.get("diptych"):
-                menu.addAction("Unsplit Diptych").triggered.connect(self.prompt_undiptych)
+                menu.addAction("Unsplit Diptych…").triggered.connect(self.prompt_undiptych)
             if active.get("half"):
                 from negpy.services.assets.half_frame import base_hash
 
@@ -1815,7 +1861,7 @@ class FileBrowser(QWidget):
                 if base and self.controller.half_frame_override(base) is not None:
                     menu.addAction("Reset Split to Roll Default").triggered.connect(lambda: self._on_reset_half_frame_split(base))
             if state.active_roll_id and active.get("path"):
-                if rolls.is_forked(self.session.repo, state.active_roll_id, active.get("hash") or ""):
+                if rolls.is_forked(self.session.repo, state.active_roll_id, rolls.unforked_hash(active.get("hash") or "")):
                     menu.addAction("Use the Shared Edit Again…").triggered.connect(self.prompt_unfork_edit)
                 elif len(rolls.rolls_containing_path(self.session.repo, active["path"])) >= 2:
                     menu.addAction("Edit Independently in This Roll").triggered.connect(
@@ -1898,6 +1944,14 @@ class FileBrowser(QWidget):
             act.setToolTip("Merging is for transparencies; black-and-white reversal film is not supported yet")
             return
         act.triggered.connect(lambda: self.controller.request_hdr_merge_selected())
+
+    def _add_merge_to_tiff_action(self, menu, state, scope: str) -> None:
+        """Hidden when nothing in scope can merge; the confirm dialog explains a refused frame."""
+        if not mergeable_in(state, scope):
+            return
+        menu.addAction(label_with_shortcut(LABELS[scope], ACTION_IDS[scope])).triggered.connect(
+            lambda: merge_to_tiff(self, self.controller, scope)
+        )
 
     def _add_hdr_anchor_menu(self, menu, asset: dict) -> None:
         """ "Render exposure": which frame of the bracket the merged result opens at.

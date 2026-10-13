@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import threading
+from typing import Any
 
 import pytest
 
@@ -340,6 +342,66 @@ def test_cancel_during_write_does_not_hide_write_failure() -> None:
     assert worker._scanning is False
 
 
+class _PowerAssertion:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def release(self) -> None:
+        self._events.append("release")
+
+
+def _record_power_assertions(monkeypatch: pytest.MonkeyPatch, service: Any) -> list[str]:
+    """Events in order: each acquire, each scan the service runs, each release."""
+    events: list[str] = []
+
+    def acquire(reason: str) -> _PowerAssertion:
+        events.append(f"acquire:{reason}")
+        return _PowerAssertion(events)
+
+    monkeypatch.setattr("negpy.desktop.workers.scan_worker.acquire_unattended_power_assertion", acquire)
+    run_scan = service.run_scan
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        events.append("scan")
+        return run_scan(*args, **kwargs)
+
+    service.run_scan = spy
+    return events
+
+
+def test_run_scan_holds_a_power_assertion_for_the_whole_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = ScanWorker()
+    service = _ScanService()
+    worker._service = service  # type: ignore[assignment]
+    events = _record_power_assertions(monkeypatch, service)
+
+    worker.run_scan(_scan_request())
+
+    assert events == ["acquire:NegPy film scan", "scan", "release"]
+
+
+def test_run_scan_releases_the_power_assertion_after_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = ScanWorker()
+    service = _ScanService(write_error=OSError("scratch disk full"))
+    worker._service = service  # type: ignore[assignment]
+    events = _record_power_assertions(monkeypatch, service)
+
+    worker.run_scan(_scan_request())
+
+    assert events == ["acquire:NegPy film scan", "scan", "release"]
+
+
+def test_run_batch_holds_a_power_assertion_for_the_whole_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+    events = _record_power_assertions(monkeypatch, service)
+
+    worker.run_batch(_batch_request((2, 3)))
+
+    assert events == ["acquire:NegPy film scan batch", "scan", "scan", "release"]
+
+
 def test_run_batch_scans_each_frame_and_reports_paths() -> None:
     worker = ScanWorker()
     service = _BatchService()
@@ -403,6 +465,50 @@ def test_run_batch_auto_returns_film_after_a_clean_batch() -> None:
     worker.run_batch(_batch_request((2, 3, 4)))
 
     assert service.eject_calls == ["coolscan3:test"]
+
+
+def test_run_batch_keeps_film_loaded_when_asked() -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(dataclasses.replace(_batch_request((2, 3, 4)), eject_when_done=False))
+
+    assert service.eject_calls == []
+
+
+class _ReturnedService(_BatchService):
+    def run_scan(self, device_id, params, progress, cancel):
+        from negpy.infrastructure.scanners.base import StripReturned
+
+        self.frames.append(params.frame)
+        raise StripReturned(loaded=False)
+
+
+def test_run_batch_reports_a_returned_strip_after_its_error_and_scans_nothing_more() -> None:
+    worker = ScanWorker()
+    service = _ReturnedService()
+    worker._service = service  # type: ignore[assignment]
+    events: list[str] = []
+    worker.error.connect(lambda _msg: events.append("error"))
+    worker.strip_returned.connect(lambda loaded: events.append(f"returned loaded={loaded}"))
+
+    worker.run_batch(_batch_request((2, 3, 4)))
+
+    assert events == ["error", "returned loaded=False"]
+    assert service.frames == [2]
+    assert service.eject_calls == []
+
+
+def test_run_batch_failure_is_not_a_returned_strip() -> None:
+    worker = ScanWorker()
+    worker._service = _BatchService(fail_on=3)  # type: ignore[assignment]
+    returned: list[None] = []
+    worker.strip_returned.connect(lambda _loaded: returned.append(None))
+
+    worker.run_batch(_batch_request((2, 3, 4)))
+
+    assert returned == []
 
 
 def test_run_batch_does_not_eject_when_stopped() -> None:
@@ -709,3 +815,12 @@ def test_run_meter_cancelled_mid_run_keeps_nothing() -> None:
     worker.run_meter(MeterRequest(device_id="nk:1", params=ScanParams(dpi=4000, depth=16, capture_ir=False, frame=2)))
 
     assert (metered, errors, cancelled) == ([], [], [None])
+
+
+def test_a_refused_prescan_does_not_leave_a_request_prepared() -> None:
+    from negpy.desktop.workers.scan_worker import PrescanRequest
+
+    worker = ScanWorker()
+    worker.prepare_scan()
+    worker.run_prescan(PrescanRequest(device_id="dev", prescan_dpi=0))
+    worker.prepare_scan()  # raises while a stale request is still prepared

@@ -3,7 +3,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 import numpy as np
 from negpy.domain.models import ExportPreset, WorkspaceConfig
 from negpy.domain.interfaces import IRepository
@@ -21,6 +21,7 @@ class StorageRepository(IRepository):
         # global_settings, so write-through keeps it exact; values parse per read, so a
         # caller that mutates its result cannot reach the cache.
         self._global_json: Optional[dict[str, str]] = None
+        self._global_parsed: dict[str, tuple[str, Any]] = {}
         # History panel refreshes re-read every step; WorkspaceConfig is frozen, so a parse keyed
         # by its JSON text is safe to share and needs no invalidation.
         self._history_parse: dict[str, WorkspaceConfig] = {}
@@ -170,6 +171,15 @@ class StorageRepository(IRepository):
                 return WorkspaceConfig.from_flat_dict(data)
         return None
 
+    def path_for_file_hash(self, file_hash: str) -> Optional[str]:
+        """The file this hash's edit was last saved against, or None."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute(
+                "SELECT file_path FROM file_settings WHERE file_hash = ? AND file_path IS NOT NULL AND file_path != ''",
+                (file_hash,),
+            ).fetchone()
+        return str(row[0]) if row else None
+
     def delete_file_settings(self, file_hash: str) -> None:
         """Delete this hash's saved edit, its undo history and its work prints.
 
@@ -240,6 +250,17 @@ class StorageRepository(IRepository):
                     out[str(file_hash)] = WorkspaceConfig.from_flat_dict(json.loads(settings_json))
         return out
 
+    def saved_hashes(self, hashes: List[str]) -> set[str]:
+        """The hashes among *hashes* that hold a saved edit, without parsing any of them."""
+        out: set[str] = set()
+        with self._connect(self.edits_db_path) as conn:
+            for start in range(0, len(hashes), 500):
+                chunk = hashes[start : start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(f"SELECT file_hash FROM file_settings WHERE file_hash IN ({placeholders})", chunk)
+                out.update(str(row[0]) for row in cursor.fetchall())
+        return out
+
     def load_settings_by_path(self) -> dict[str, WorkspaceConfig]:
         """Every saved edit that knows its file path, as {file_path: config}.
 
@@ -295,6 +316,55 @@ class StorageRepository(IRepository):
             conn.execute("UPDATE OR REPLACE work_prints SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
             conn.execute("UPDATE OR REPLACE file_marks SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
 
+    def copy_file_edits(
+        self,
+        old_hash: str,
+        new_hash: str,
+        file_path: str,
+        transform: Callable[[WorkspaceConfig], WorkspaceConfig],
+    ) -> bool:
+        """Copy settings, undo history, work prints and triage mark from old_hash to new_hash,
+        each edit passed through *transform*. The old rows stay. Returns False, copying
+        nothing, when new_hash already holds an edit."""
+        if old_hash == new_hash:
+            return False
+
+        def rewrite(settings_json: str) -> str:
+            config = transform(WorkspaceConfig.from_flat_dict(json.loads(settings_json)))
+            return json.dumps(config.to_dict(), default=str)
+
+        with self._connect(self.edits_db_path) as conn:
+            if conn.execute("SELECT 1 FROM file_settings WHERE file_hash = ?", (new_hash,)).fetchone():
+                return False
+            row = conn.execute("SELECT settings_json FROM file_settings WHERE file_hash = ?", (old_hash,)).fetchone()
+            if row:
+                conn.execute(
+                    "INSERT INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
+                    (new_hash, rewrite(row[0]), file_path),
+                )
+            conn.execute("DELETE FROM edit_history WHERE file_hash = ?", (new_hash,))
+            for step, settings_json in conn.execute(
+                "SELECT step_index, settings_json FROM edit_history WHERE file_hash = ?", (old_hash,)
+            ).fetchall():
+                conn.execute(
+                    "INSERT INTO edit_history (file_hash, step_index, settings_json) VALUES (?, ?, ?)",
+                    (new_hash, step, rewrite(settings_json)),
+                )
+            for name, created_at, settings_json in conn.execute(
+                "SELECT name, created_at, settings_json FROM work_prints WHERE file_hash = ?", (old_hash,)
+            ).fetchall():
+                conn.execute(
+                    "INSERT OR REPLACE INTO work_prints (file_hash, name, created_at, settings_json) VALUES (?, ?, ?, ?)",
+                    (new_hash, name, created_at, rewrite(settings_json)),
+                )
+            mark = conn.execute("SELECT mark FROM file_marks WHERE file_hash = ?", (old_hash,)).fetchone()
+            if mark:
+                conn.execute(
+                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path) VALUES (?, ?, ?)",
+                    (new_hash, mark[0], file_path),
+                )
+        return True
+
     def save_work_print(self, file_hash: str, name: str, settings: WorkspaceConfig) -> None:
         """Store (or replace) a named version of this frame's edit."""
         with self._connect(self.edits_db_path) as conn:
@@ -323,7 +393,7 @@ class StorageRepository(IRepository):
     def rename_work_print(self, file_hash: str, name: str, new_name: str) -> None:
         with self._connect(self.edits_db_path) as conn:
             conn.execute(
-                "UPDATE OR REPLACE work_prints SET name = ? WHERE file_hash = ? AND name = ?",
+                "UPDATE work_prints SET name = ? WHERE file_hash = ? AND name = ?",
                 (new_name, file_hash, name),
             )
 
@@ -367,6 +437,16 @@ class StorageRepository(IRepository):
                 config = self._history_parse[js] = WorkspaceConfig.from_flat_dict(json.loads(js))
             out.append((int(idx), config))
         return out
+
+    def rehome_path_prefix(self, old_prefix: str, new_prefix: str) -> None:
+        """Repoint every path-keyed row under the folder *old_prefix* to *new_prefix*."""
+        under = old_prefix + os.sep
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "file_marks", "image_embeddings"):
+                conn.execute(
+                    f"UPDATE {table} SET file_path = ? || substr(file_path, ?) WHERE file_path = ? OR substr(file_path, 1, ?) = ?",
+                    (new_prefix, len(old_prefix) + 1, old_prefix, len(under), under),
+                )
 
     def get_max_history_index(self, file_hash: str) -> int:
         with self._connect(self.edits_db_path) as conn:
@@ -412,12 +492,26 @@ class StorageRepository(IRepository):
         if self._global_json is not None:
             self._global_json.update(rows)
 
-    def get_global_setting(self, key: str, default: Any = None) -> Any:
+    def _global_raw(self, key: str) -> Optional[str]:
         if self._global_json is None:
             with self._connect(self.settings_db_path) as conn:
                 self._global_json = dict(conn.execute("SELECT key, value_json FROM global_settings").fetchall())
-        raw = self._global_json.get(key)
+        return self._global_json.get(key)
+
+    def get_global_setting(self, key: str, default: Any = None) -> Any:
+        raw = self._global_raw(key)
         return default if raw is None else json.loads(raw)
+
+    def read_global_setting(self, key: str, default: Any = None) -> Any:
+        """get_global_setting parsed once per stored value and shared between calls: never mutate it."""
+        raw = self._global_raw(key)
+        if raw is None:
+            return default
+        hit = self._global_parsed.get(key)
+        if hit is None or hit[0] is not raw:
+            hit = (raw, json.loads(raw))
+            self._global_parsed[key] = hit
+        return hit[1]
 
     def save_export_presets(self, presets: List[ExportPreset]) -> None:
         self.save_global_setting("export_presets", [p.to_dict() for p in presets])

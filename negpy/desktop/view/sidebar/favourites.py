@@ -114,6 +114,8 @@ class FavouritesSidebar(BaseSidebar):
         # Not controller.config_updated: sidebar syncing is debounced and this signal fires at the
         # end of it, so the originals already hold the fresh values.
         self.controls.modified_synced.connect(self.sync_ui)
+        # The Auto-driven Tone sliders also move when a render lands with new meters.
+        self.controller.image_updated.connect(self.sync_ui)
 
     def _choices(self) -> list[tuple[str, str, str]]:
         """Sliders, then combos, then actions, stably grouped by category so
@@ -131,7 +133,7 @@ class FavouritesSidebar(BaseSidebar):
 
     def _open_editor(self) -> None:
         repo = self.controller.session.repo
-        dlg = FavouritesDialog(self, self._choices(), load_favourites(repo))
+        dlg = FavouritesDialog(self, self._choices(), load_favourites(repo), repo=repo)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             repo.save_global_setting(_SETTING_KEY, dlg.selected_ids())
             self._rebuild()
@@ -178,6 +180,8 @@ class FavouritesSidebar(BaseSidebar):
     def sync_ui(self) -> None:
         for container, clone, src, kind in self._mirrors:
             if kind == "slider":
+                if clone.default_value() != src.default_value():
+                    clone.set_default(src.default_value())
                 clone.setValue(src.value())
             elif kind == "combo":
                 _sync_combo(clone, src)
