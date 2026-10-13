@@ -373,6 +373,7 @@ class ShortcutManager:
             "toggle_clipping_overlay": controller.toggle_clipping_overlay,
             "toggle_zone_hover_highlight": controller.toggle_zone_hover_highlight,
             "toggle_parade_overlay": lambda: right.parade_overlay_btn.toggle(),
+            "toggle_scope_neutrals": lambda: right.scope_neutrals_btn.toggle(),
             "toggle_test_strip": controller.toggle_test_strip,
             "toggle_ring_around": controller.toggle_ring_around,
             "toggle_grain_focuser": controller.toggle_grain_focuser,

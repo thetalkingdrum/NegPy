@@ -654,10 +654,9 @@ _CROSSOVER_MAX_EDGE = 512
 _CROSSOVER_MIN_VAL = 2.0 / OUTPUT_HIST_BINS  # below this a ratio is noise; at either end, a clip
 
 
-def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] = None) -> Optional[dict]:
-    """Per print-tone bin of an encoded H×W×3 frame's near-neutral pixels: log10(R/G) and log10(B/G)
-    of the bin's summed linear light, so 0 is neutral. Keys: tone (bin centers, encoded luma), rg, bg (NaN where
-    a bin holds too few neutrals), count, and neutral_fraction (the frame's share of neutrals)."""
+def _neutral_pixels(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] = None) -> Optional[dict]:
+    """The near-neutral pixels of an encoded H×W×3 frame, through the crossover gates: lin (linear
+    RGB), lab, bins (tone bin per pixel) and total (the sampled frame's pixel count)."""
     rgb = np.asarray(rgb)
     if rgb.ndim != 3 or rgb.shape[-1] < 3:
         return None
@@ -675,8 +674,7 @@ def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] 
     lin = np.asarray(working_oetf_decode(enc), dtype=np.float64)
     lab = rgb_to_lab_working(lin.astype(np.float32))
     neutral = np.hypot(lab[:, 1], lab[:, 2]) < CROSSOVER_CHROMA_GATE
-    total = small.shape[0] * small.shape[1]
-    enc, lin = enc[neutral], np.maximum(lin[neutral], 1e-6)
+    enc, lin, lab = enc[neutral], np.maximum(lin[neutral], 1e-6), lab[neutral]
     tone = enc @ np.array([0.2126, 0.7152, 0.0722])
     bins = np.clip((tone * CROSSOVER_BINS).astype(int), 0, CROSSOVER_BINS - 1)
     ratios = np.log10(lin[:, [0, 2]] / lin[:, 1:2])
@@ -685,12 +683,33 @@ def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] 
         sel = np.flatnonzero(bins == b)
         center = np.median(ratios[sel], axis=0)
         keep[sel[np.hypot(*(ratios[sel] - center).T) < CROSSOVER_CLUSTER_RADIUS]] = True
-    enc, lin, tone, bins = enc[keep], lin[keep], tone[keep], bins[keep]
+    return {"lin": lin[keep], "lab": lab[keep], "bins": bins[keep], "total": small.shape[0] * small.shape[1]}
+
+
+def neutral_vectorscope(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
+    """vectorscope_histogram() over the frame's near-neutral pixels only, so a cast reads as one
+    off-center cluster instead of hiding among the scene's colors."""
+    px = _neutral_pixels(rgb, content_rect)
+    if px is None or len(px["lab"]) == 0:
+        return None
+    lab = px["lab"].astype(np.float64)
+    counts = np.bincount(_scope_bins(lab[:, 1], lab[:, 2]), minlength=SCOPE_HUE_BINS * SCOPE_CHROMA_BINS)
+    return counts.reshape(SCOPE_HUE_BINS, SCOPE_CHROMA_BINS).astype(float)
+
+
+def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] = None) -> Optional[dict]:
+    """Per print-tone bin of an encoded H×W×3 frame's near-neutral pixels: log10(R/G) and log10(B/G)
+    of the bin's summed linear light, so 0 is neutral. Keys: tone (bin centers, encoded luma), rg, bg (NaN where
+    a bin holds too few neutrals), count, and neutral_fraction (the frame's share of neutrals)."""
+    px = _neutral_pixels(rgb, content_rect)
+    if px is None:
+        return None
+    lin, bins, total = px["lin"], px["bins"], px["total"]
     # Ratio of the bin's summed light, not a median of per-pixel ratios: in the shadows each pixel's
     # ratio divides two grainy near-zero values, and the sum averages the grain out first.
     count = np.bincount(bins, minlength=CROSSOVER_BINS)
     sums = np.stack([np.bincount(bins, weights=lin[:, c], minlength=CROSSOVER_BINS) for c in range(3)])
-    plotted = count >= max(8, int(CROSSOVER_MIN_FRACTION * max(1, len(tone))))
+    plotted = count >= max(8, int(CROSSOVER_MIN_FRACTION * max(1, len(bins))))
     with np.errstate(divide="ignore", invalid="ignore"):
         rg = np.where(plotted, np.log10(sums[0] / sums[1]), np.nan)
         bg = np.where(plotted, np.log10(sums[2] / sums[1]), np.nan)
@@ -699,7 +718,7 @@ def crossover_curve(rgb: Any, content_rect: Optional[Tuple[int, int, int, int]] 
         "rg": rg,
         "bg": bg,
         "count": count.astype(float),
-        "neutral_fraction": float(keep.sum()) / float(total),
+        "neutral_fraction": len(bins) / float(total),
     }
 
 

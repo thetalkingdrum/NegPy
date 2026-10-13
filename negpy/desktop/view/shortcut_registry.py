@@ -81,6 +81,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "toggle_zones": ShortcutEntry("Shift+Z", "Adams zone overlay", "Tools"),
     "toggle_clipping_overlay": ShortcutEntry("", "Clipping Overlay: paper black and paper white on the frame", "Tools"),
     "toggle_zone_hover_highlight": ShortcutEntry("", "Zone Highlight: light up the zone strip's hovered zone on the frame", "Tools"),
+    "toggle_scope_neutrals": ShortcutEntry("", "Neutrals Only: the Vectorscope counts only near-neutral pixels", "Tools"),
     "toggle_parade_overlay": ShortcutEntry("", "Parade Overlay: R, G and B on one plot, white where they agree", "Tools"),
     "toggle_hq": ShortcutEntry("", "Toggle high-quality (full-resolution) preview", "View"),
     "toggle_optical_removal": ShortcutEntry("", "Toggle Optical Removal", "Retouch"),
