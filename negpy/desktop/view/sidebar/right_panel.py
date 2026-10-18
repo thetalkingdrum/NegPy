@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from negpy.desktop.controller import AppController
+from negpy.desktop.session import ToolMode
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
 from negpy.desktop.view.sidebar.export import ExportSidebar
@@ -41,6 +42,11 @@ _SCAN_BASE_TIP = (
     "Base Relative: each channel's density above its clear film base (the Film Base set on the roll, "
     "else the base read from the rebate, else the stretch's thin end), so the mask's offset is gone "
     "and the channels compare at one height"
+)
+
+_BASE_CHECK_TIP = (
+    "Measure Base: shows the whole scan; click the clear rebate to read this frame's film base on the "
+    "Parade. A check: nothing is saved, and it ends with Peek Negative"
 )
 
 # The Roll tab's cards that own settings, for its header's Apply picker.
@@ -281,7 +287,6 @@ class RightPanel(QWidget):
         self.parade_widget.set_base_relative(self.scan_base_btn.isChecked())
         self._sync_parade_overlay()
         self.controller.session.color_vision_changed.connect(self._sync_parade_overlay)
-        self._sync_parade_tools()
 
         chart_row = QHBoxLayout()
         chart_row.setContentsMargins(0, 0, 0, 0)
@@ -310,6 +315,13 @@ class RightPanel(QWidget):
         self.zone_highlight_btn = self.analysis_section.add_header_toggle("fa5s.highlighter", "Zone Highlight")
         self.zone_highlight_btn.setChecked(self.controller.state.zone_hover_highlight)
         self.zone_highlight_btn.toggled.connect(self.controller.toggle_zone_hover_highlight)
+        # Takes Zone Highlight's place in the header while the scan Parade shows: Peek Negative
+        # draws no print overlay, so Zone Highlight does nothing there.
+        self.base_check_btn = self.analysis_section.add_header_toggle("fa5s.bullseye", _BASE_CHECK_TIP)
+        self.base_check_btn.toggled.connect(lambda on: self.controller.set_active_tool(ToolMode.BASE_CHECK if on else ToolMode.NONE))
+        self.controller.tool_sync_requested.connect(self._sync_base_check_btn)
+        self.controller.measured_film_base_changed.connect(lambda: self._push_scan_domain(bool(self.controller.state.negative_peek)))
+        self._sync_parade_tools()
         self._refresh_zone_strip_hint()
 
         # Tab content widgets
@@ -577,6 +589,7 @@ class RightPanel(QWidget):
         self._refresh_zone_strip_hint()
         self._sync_parade_overlay()
         self.scan_base_btn.setToolTip(tooltip_with_shortcut(_SCAN_BASE_TIP, "toggle_scan_parade_base"))
+        self.base_check_btn.setToolTip(tooltip_with_shortcut(_BASE_CHECK_TIP, "scan_base_check"))
         self.metadata_sidebar.apply_shortcut_tooltips()
         self.export_sidebar.apply_shortcut_tooltips()
         self.gear_panel.apply_shortcut_tooltips()
@@ -626,6 +639,14 @@ class RightPanel(QWidget):
         parade = self.view_btn.currentData() == "parade"
         self.parade_overlay_btn.setVisible(parade)
         self.scan_base_btn.setVisible(parade and bool(self.controller.state.negative_peek))
+        scan = parade and bool(self.controller.state.negative_peek)
+        self.base_check_btn.setVisible(scan)
+        self.zone_highlight_btn.setVisible(not scan)
+
+    def _sync_base_check_btn(self) -> None:
+        self.base_check_btn.blockSignals(True)
+        self.base_check_btn.setChecked(self.controller.state.active_tool == ToolMode.BASE_CHECK)
+        self.base_check_btn.blockSignals(False)
 
     def _on_scan_base(self, on: bool) -> None:
         self.controller.session.repo.save_global_setting("scan_parade_base_relative", on)
@@ -895,10 +916,11 @@ class RightPanel(QWidget):
         unmixed = effective_crosstalk_matrix(config.process, config.process.process_mode) is not None
         caption = "Scan density"
         if self.scan_base_btn.isChecked():
-            if self._scan_base_density is None:
+            density, source = self._scan_base()
+            if density is None:
                 caption += " above thin end"
             else:
-                caption += " above film base" if self._scan_base_source == "picked" else " above rebate base"
+                caption += {"measured": " above measured base", "picked": " above film base"}.get(source, " above rebate base")
         if unmixed:
             caption += ", unmixed"
         bounds = self._scan_bounds
@@ -907,11 +929,20 @@ class RightPanel(QWidget):
         ends = np.stack([-np.asarray(bounds.floors, dtype=float)[:3], -np.asarray(bounds.ceils, dtype=float)[:3]], axis=-1)
         return scan_density_axis(ends), caption
 
+    def _scan_base(self) -> tuple:
+        """The base the scan Parade reads above, and its source: a Measure Base click on this peek
+        wins over the render's (the Film Base set on the roll, else the rebate read)."""
+        measured = self.controller.state.measured_film_base
+        if measured is not None:
+            return np.asarray(measured, dtype=float), "measured"
+        return self._scan_base_density, self._scan_base_source
+
     def _push_scan_domain(self, negative: bool) -> None:
         from negpy.features.exposure.analysis import scan_density_axis
 
         marks, caption = self._scan_marks_and_caption()
-        base = None if self._scan_base_density is None else scan_density_axis(self._scan_base_density)
+        density, _source = self._scan_base()
+        base = None if density is None else scan_density_axis(density)
         self.parade_widget.set_scan_domain(negative, marks, caption, full_scale=self._scan_full_scale, base=base)
 
     def _update_histograms(self, metrics: Dict[str, Any]) -> None:

@@ -399,6 +399,8 @@ def test_peek_negative_marks_each_channels_stretch_ends() -> None:
     panel.controller.state = AppState(negative_peek=True)
     panel.scan_base_btn.isChecked.return_value = False
     panel._scan_marks_and_caption = lambda: RightPanel._scan_marks_and_caption(panel)
+    panel._scan_base = lambda: RightPanel._scan_base(panel)
+    panel._scan_base_density, panel._scan_base_source = None, ""
     panel._push_scan_domain = lambda negative: RightPanel._push_scan_domain(panel, negative)
     bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
 
@@ -559,6 +561,8 @@ def test_base_relative_persists_and_renames_the_caption() -> None:
     panel._scan_bounds = LogNegativeBounds(floors=(-2.0, -2.2, -2.6), ceils=(-0.4, -0.7, -1.1))
     panel.scan_base_btn.isChecked.return_value = True
     panel._scan_marks_and_caption = lambda: RightPanel._scan_marks_and_caption(panel)
+    panel._scan_base = lambda: RightPanel._scan_base(panel)
+    panel._scan_base_density, panel._scan_base_source = None, ""
     panel._push_scan_domain = lambda negative: RightPanel._push_scan_domain(panel, negative)
     panel._scan_base_density = None
 
@@ -706,6 +710,11 @@ def test_the_panel_builds_with_a_saved_view_past_the_curve(qapp) -> None:
         raise AssertionError(f"restoring the saved view reached an unbuilt widget: {exc}")
     assert panel.view_btn.currentData() == "parade"
     assert panel.chart_stack.currentWidget() is panel.parade_widget
+    # A parentless panel left for PyQt's exit walk can crash the process at exit.
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    panel.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_the_scan_parade_reads_out_each_channels_range() -> None:

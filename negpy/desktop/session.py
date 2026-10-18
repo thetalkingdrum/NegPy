@@ -67,11 +67,14 @@ class ToolMode(Enum):
     KEYSTONE_LINES = auto()
     ZONE_PLACE = auto()
     FILM_BASE = auto()
+    BASE_CHECK = auto()
 
 
 # These tools' renders carry crop_preview_full, which skips the crop, the border and the filed carrier.
 # Film Base shows the whole scan too: the rebate it reads lies outside the crop.
-UNCROPPED_PREVIEW_TOOLS = frozenset({ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW, ToolMode.KEYSTONE_LINES, ToolMode.FILM_BASE})
+UNCROPPED_PREVIEW_TOOLS = frozenset(
+    {ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW, ToolMode.KEYSTONE_LINES, ToolMode.FILM_BASE, ToolMode.BASE_CHECK}
+)
 
 # Zone Overlay looks, by stored key and menu label.
 ZONE_STYLES = {"false_color": "Color", "zone_map": "Grayscale", "grid": "Grid"}
@@ -345,6 +348,9 @@ class AppState:
     # A painted peek's canvas keys (negative, embedded, Check Flat Field), apart from last_metrics,
     # which holds the print. Stays until the print is painted again, not until the peek flag drops.
     peek_frame: Optional[Dict[str, Any]] = None
+    # Transient: the clear base clicked from the scan Parade (Measure Base), as per-channel scan
+    # density after the unmix. A check: never saved, and dropped when Peek Negative closes.
+    measured_film_base: Optional[Tuple[float, float, float]] = None
 
     # Linear Output: export the loader's raw decoded buffer as an untagged 16-bit TIFF.
     linear_output: bool = False

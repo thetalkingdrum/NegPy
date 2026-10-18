@@ -317,6 +317,7 @@ The selector under the chart picks the chart. **Curve** is the paper curve and h
 
 *   **Parade Overlay** (layers icon): R, G and B on one plot, white where they agree. Grayed out under any Color vision choice but Standard (§15), and on the scan unless Base Relative is on.
 *   **Base Relative** (ruler icon, Peek Negative): moves each channel so its film base, else its thin line, sits at the top, so the channels and the hover line compare at one height. The caption names the zero.
+*   **Measure Base** (bullseye icon, Peek Negative): shows the whole scan; click the clear rebate to read this frame's film base on the Parade, as its dotted line and the zero for Base Relative. A check for a frame with no base: it is not saved, and it ends with the peek.
 
 #### Lin / Log
 

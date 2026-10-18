@@ -83,6 +83,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "toggle_clipping_overlay": ShortcutEntry("", "Clipping Overlay: paper black and paper white on the frame", "Tools"),
     "toggle_zone_hover_highlight": ShortcutEntry("", "Zone Highlight: show the zone strip's hovered zone alone on the frame", "Tools"),
     "toggle_parade_overlay": ShortcutEntry("", "Parade Overlay: R, G and B on one plot, white where they agree", "Tools"),
+    "scan_base_check": ShortcutEntry("", "Measure Base: click the clear rebate to read this frame's base on the scan Parade", "Tools"),
     "toggle_scan_parade_base": ShortcutEntry("", "Base Relative: the scan Parade's density above each channel's film base", "Tools"),
     "toggle_hq": ShortcutEntry("", "Toggle high-quality (full-resolution) preview", "View"),
     "toggle_optical_removal": ShortcutEntry("", "Toggle Optical Removal", "Retouch"),

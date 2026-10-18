@@ -539,6 +539,7 @@ class AppController(QObject):
     bake_on_export_changed = pyqtSignal(bool)
     flat_peek_changed = pyqtSignal(bool)
     negative_peek_changed = pyqtSignal(bool)
+    measured_film_base_changed = pyqtSignal()
     embedded_peek_changed = pyqtSignal(bool)
     flatfield_peek_changed = pyqtSignal(bool)
     zoom_requested = pyqtSignal(float)
@@ -815,6 +816,7 @@ class AppController(QObject):
         self._render_debounce.setSingleShot(True)
         self._render_debounce.setInterval(50)
         self._render_debounce.timeout.connect(self.request_render)
+        self.negative_peek_changed.connect(self._on_negative_peek_changed)
         self._dispatched_render_state: Optional[tuple] = None  # _render_state() of the last plain render
 
         self._crop_bounds_dirty = False
@@ -3127,6 +3129,8 @@ class AppController(QObject):
             self._handle_zone_pin(nx, ny)
         elif self.state.active_tool == ToolMode.FILM_BASE:
             self._handle_film_base_pick(nx, ny)
+        elif self.state.active_tool == ToolMode.BASE_CHECK:
+            self._handle_base_check(nx, ny)
 
     def set_active_tool(self, mode: ToolMode) -> None:
         if mode != ToolMode.NONE and self._diptych_blocks_canvas():
@@ -3367,6 +3371,36 @@ class AppController(QObject):
         else:
             self.set_status("Film Base: this frame's roll is not in the library", 4000, "warning")
         self.set_active_tool(ToolMode.NONE)  # leaving the uncropped tool view re-renders
+
+    def _handle_base_check(self, nx: float, ny: float) -> None:
+        """Measure Base: read the clear base under the click for the scan Parade only. The patch
+        is read through the frame's window into the unmixed log the Parade plots; nothing is
+        saved, and the tool stays armed so the next click measures again."""
+        from negpy.features.exposure.normalization import log_from_val
+
+        bounds = self.state.last_metrics.get("final_bounds") or self.state.last_metrics.get("log_bounds")
+        patch = self._sample_normalized_patch(nx, ny, radius=4)
+        if bounds is None or patch is None:
+            self.set_status("Measure Base: click the clear rebate once the frame has rendered", 3000, "warning")
+            return
+        logs = np.asarray([log_from_val(tuple(px), bounds) for px in patch], dtype=np.float64)
+        if float(logs.mean(axis=1).std()) > _FILM_BASE_FLAT_DECADES:
+            self.set_status("Measure Base: that spot is not flat film; click the clear rebate", 4000, "warning")
+            return
+        r, g, b = (float(-v) for v in logs.mean(axis=0))
+        self.state.measured_film_base = (r, g, b)
+        self.measured_film_base_changed.emit()
+        self.set_status(f"Base measured: R {r:.2f} · G {g:.2f} · B {b:.2f} D (a check, not saved)", 4000)
+
+    def _on_negative_peek_changed(self, on: bool) -> None:
+        """The measured base belongs to the peek it was taken in."""
+        if on:
+            return
+        if self.state.active_tool == ToolMode.BASE_CHECK:
+            self.set_active_tool(ToolMode.NONE)
+        if self.state.measured_film_base is not None:
+            self.state.measured_film_base = None
+            self.measured_film_base_changed.emit()
 
     def roll_film_base(self) -> Optional[tuple]:
         """The active frame's roll's clear film base, or None."""

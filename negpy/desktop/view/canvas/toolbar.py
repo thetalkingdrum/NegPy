@@ -199,6 +199,7 @@ _TOOL_ROWS: dict[ToolMode, tuple[str, str, str]] = {
     ToolMode.LOCAL_GRADIENT: ("Card Edge", "Drag from the full-exposure edge to where it fades out", ""),
     ToolMode.ANALYSIS_DRAW: ("Draw Region", "Drag the area the meters read", ""),
     ToolMode.FILM_BASE: ("Film Base", "Click the clear rebate to set the roll's film base", ""),
+    ToolMode.BASE_CHECK: ("Measure Base", "Click the clear rebate; the scan Parade reads above it. Nothing is saved", ""),
     ToolMode.STRAIGHTEN: ("Straighten", "Draw a line along a horizon or an edge to level the frame", _FINE_ROTATION),
     ToolMode.KEYSTONE_LINES: (
         "Keystone Lines",
@@ -210,7 +211,8 @@ _TOOL_ROWS: dict[ToolMode, tuple[str, str, str]] = {
 _CLONE_SOURCE_HINT = "Click the photo to pick the area to copy from"
 
 # The Tools menu, in panel order: a panel section's title, then its tools as (tool, action id, sidebar button
-# path from MainWindow). Zone Placement has no entry: it arms only with a zone picked on the zone strip.
+# path from MainWindow). Zone Placement and Measure Base have no entry: they arm only from the zone strip and
+# from the scan Parade in Peek Negative.
 _CANVAS_TOOLS: tuple[tuple[ToolMode, str, str] | str, ...] = (
     "Geometry",
     (ToolMode.CROP_MANUAL, "manual_crop", "controls_panel.geometry_sidebar.manual_crop_btn"),

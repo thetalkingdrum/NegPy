@@ -735,7 +735,7 @@ class TestToolsMenu(unittest.TestCase):
         from negpy.desktop.view.shortcut_registry import REGISTRY
 
         tools = [spec for spec in _CANVAS_TOOLS if not isinstance(spec, str)]
-        self.assertEqual({mode for mode, _a, _p in tools}, set(_TOOL_ROWS) - {ToolMode.ZONE_PLACE})
+        self.assertEqual({mode for mode, _a, _p in tools}, set(_TOOL_ROWS) - {ToolMode.ZONE_PLACE, ToolMode.BASE_CHECK})
         for _mode, action_id, _path in tools:
             self.assertIn(action_id, REGISTRY)
         self.assertIn("open_tools_menu", REGISTRY)

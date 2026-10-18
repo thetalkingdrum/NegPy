@@ -953,20 +953,24 @@ class WaveformWidget(QWidget):
                 painter, QRect(THEME.space_xs, y - 12, 40, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, label
             )
         ranges = self._scan_ranges()
-        if self._split():
-            # Channel letters, so the panel order reads without telling the traces apart by hue.
-            for i, (rect, letter) in enumerate(zip(rects, "RGB")):
-                text = letter if ranges is None else f"{letter} {ranges[i]:.2f}"
-                _draw_plated_text(
-                    painter,
-                    rect.adjusted(0, THEME.space_xs, -THEME.space_xs, 0),
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
-                    text,
-                )
+        caption = ""
         if self._scan:
             caption = self._scan_caption
             if ranges is not None and not self._split():
                 caption += " · range " + "  ".join(f"{letter} {r:.2f}" for letter, r in zip("RGB", ranges))
+        if self._split():
+            letters = [letter if ranges is None else f"{letter} {ranges[i]:.2f}" for i, letter in enumerate("RGB")]
+            fm = painter.fontMetrics()
+            # A caption that would run into the first panel's letter puts the letters on the next line.
+            caption_end = THEME.space_xs + fm.horizontalAdvance(caption) + THEME.space_xs
+            clash = bool(caption) and caption_end > rects[0].right() - THEME.space_xs - fm.horizontalAdvance(letters[0])
+            top = THEME.space_xs + (fm.height() if clash else 0)
+            # Channel letters, so the panel order reads without telling the traces apart by hue.
+            for rect, text in zip(rects, letters):
+                _draw_plated_text(
+                    painter, rect.adjusted(0, top, -THEME.space_xs, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, text
+                )
+        if caption:
             _draw_plated_text(
                 painter, QRect(THEME.space_xs, THEME.space_xs, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, caption
             )
