@@ -373,6 +373,7 @@ def apply_transfer_curve(
     cast_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     positive_source: bool = False,
     baseline_ev: Optional[float] = None,
+    rolloff: float = 0.0,
     separation: float = 1.0,
     separation_trims: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     damping: float = 0.0,
@@ -446,6 +447,7 @@ def apply_transfer_curve(
         "damping_on": damping > 0.0,
         "ref_spread": float(EXPOSURE_CONSTANTS["separation_damping_ref_spread"]),
         "positive_source": bool(positive_source),
+        "rolloff": float(rolloff),
         "gain": 2.0 ** float(c["transfer_baseline_ev"] if baseline_ev is None else baseline_ev),
     }
     return ensure_image(negpy_core.apply_transfer_curve(np.ascontiguousarray(img_norm, dtype=np.float32), params))

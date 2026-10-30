@@ -153,6 +153,11 @@ class ProcessSidebar(BaseSidebar):
         self.baseline_ev_slider.valueChanged.connect(lambda v: self._on_baseline_ev(float(v)))
         self.baseline_ev_slider.setVisible(False)
         mode_col.addWidget(self.baseline_ev_slider)
+        self.rolloff_slider = CompactSlider(tr("Highlight Roll-off"), 0.0, 1.0, 0.0, step=0.05)
+        self.rolloff_slider.setToolTip(wrap_tooltip(tr("EXPERIMENT: soft shoulder for the brightest values, so they do not clip.")))
+        self.rolloff_slider.valueChanged.connect(lambda v: self._on_rolloff(float(v)))
+        self.rolloff_slider.setVisible(False)
+        mode_col.addWidget(self.rolloff_slider)
         self.source_encoding_row = QWidget()
         self.source_encoding_row.setLayout(field_row(tr("Encoding"), self.source_encoding_btn))
         self.source_encoding_row.layout().setContentsMargins(0, 0, 0, 0)
@@ -361,6 +366,12 @@ class ProcessSidebar(BaseSidebar):
         cfg = self.state.config
         self.controller.apply_config(_replace(cfg, process=_replace(cfg.process, transfer_baseline_ev=val)), persist=True)
 
+    def _on_rolloff(self, val: float) -> None:
+        from dataclasses import replace as _replace
+
+        cfg = self.state.config
+        self.controller.apply_config(_replace(cfg, process=_replace(cfg.process, highlight_rolloff=val)), persist=True)
+
     def _on_source_encoding_changed(self, _index: int) -> None:
         self.controller.set_source_encoding(str(self.source_encoding_btn.currentData()))
 
@@ -498,6 +509,10 @@ class ProcessSidebar(BaseSidebar):
             encodes = os.path.splitext(path)[1].lower() in _ENCODED_EXTENSIONS
             self.source_encoding_row.setVisible(is_e6 and conf.positive_source and encodes)
             self.baseline_ev_slider.setVisible(is_e6 and not conf.positive_source)
+            self.rolloff_slider.setVisible(is_e6 and conf.positive_source)
+            self.rolloff_slider.blockSignals(True)
+            self.rolloff_slider.setValue(conf.highlight_rolloff)
+            self.rolloff_slider.blockSignals(False)
             self.baseline_ev_slider.blockSignals(True)
             self.baseline_ev_slider.setValue(conf.transfer_baseline_ev)
             self.baseline_ev_slider.blockSignals(False)

@@ -47,6 +47,7 @@ pub struct Transfer {
     pub ref_spread: f32,
     pub positive_source: bool,
     pub gain: f32,
+    pub rolloff: f32,
 }
 
 /// `np.maximum(a, b)` with b not NaN: NaN in `a` propagates.
@@ -195,7 +196,13 @@ fn transfer_block(t: &Transfer, src: &[[f32; 3]], dst: &mut [[f32; 3]]) {
             for i in 0..n {
                 let v = exp10_f64(-(dens[ch][i] as f64)) as f32;
                 o[i][ch] = if t.positive_source {
-                    v.clamp(0.0, 1.0)
+                    let knee = 1.0f32 - 0.75f32 * t.rolloff;
+                    if t.rolloff > 0.0 && v > knee {
+                        let u = (v - knee) / (1.0f32 - knee);
+                        (knee + (1.0f32 - knee) * (u / (1.0f32 + u))).clamp(0.0, 1.0)
+                    } else {
+                        v.clamp(0.0, 1.0)
+                    }
                 } else {
                     let x = np_max(v * t.gain, 0.0);
                     let num = x * (2.51f32 * x + 0.03f32);

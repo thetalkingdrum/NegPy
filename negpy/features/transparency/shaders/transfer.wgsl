@@ -26,7 +26,7 @@ struct TransferUniforms {
     // Shadows/Highlights WB: xyz = highlight CMY density offset, w = split sharpness.
     highlight_cmy: vec4<f32>,
     // x = width of the black taper, in density. y = positive_source (nonzero skips
-    // display_rendering below). z = Hue Trim in radians. w unused.
+    // display_rendering below). z = Hue Trim in radians. w = Positive highlight roll-off.
     zone_taper: vec4<f32>,
     // Cast Removal affine on density: per-channel gain and offset (w lane unused).
     cast_gain: vec4<f32>,
@@ -219,7 +219,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // logic.py::apply_transfer_curve.
         let scene = pow(10.0, -dens[ch]) * params.baseline_gain;
         if (params.zone_taper.y != 0.0) {
-            lin[ch] = clamp(scene, 0.0, 1.0);
+            let ro = params.zone_taper.w;
+            let knee = 1.0 - 0.75 * ro;
+            if (ro > 0.0 && scene > knee) {
+                let u = (scene - knee) / (1.0 - knee);
+                lin[ch] = clamp(knee + (1.0 - knee) * (u / (1.0 + u)), 0.0, 1.0);
+            } else {
+                lin[ch] = clamp(scene, 0.0, 1.0);
+            }
         } else {
             lin[ch] = display_rendering(scene);
         }

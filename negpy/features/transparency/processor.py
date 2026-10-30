@@ -132,10 +132,11 @@ class TransparencyBaseProcessor:
 class TransferProcessor:
     """Normalized log density -> scene-linear positive through the transfer curve."""
 
-    def __init__(self, config: ExposureConfig, positive_source: bool = False, baseline_ev: float = 0.7):
+    def __init__(self, config: ExposureConfig, positive_source: bool = False, baseline_ev: float = 0.7, rolloff: float = 0.0):
         self.config = config
         self.positive_source = positive_source
         self.baseline_ev = baseline_ev
+        self.rolloff = rolloff
 
     def process(self, image: ImageBuffer, context: PipelineContext) -> ImageBuffer:
         """
@@ -201,6 +202,7 @@ class TransferProcessor:
             cast_offset=cast_offset,
             positive_source=self.positive_source,
             baseline_ev=self.baseline_ev,
+            rolloff=self.rolloff,
             separation=self.config.dye_separation,
             separation_trims=(
                 self.config.dye_separation_trim_red,

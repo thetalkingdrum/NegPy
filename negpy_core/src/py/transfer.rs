@@ -76,6 +76,7 @@ fn apply_transfer_curve<'py>(
         ref_spread: f1(p, "ref_spread")?,
         positive_source: get(p, "positive_source")?,
         gain: f1(p, "gain")?,
+        rolloff: f1(p, "rolloff")?,
     };
     let src = img
         .as_slice()
