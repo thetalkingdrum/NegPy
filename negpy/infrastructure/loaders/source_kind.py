@@ -22,6 +22,7 @@ def is_scanned_positive_source(path: str) -> bool:
     """A TIFF, JPEG, JXL or a film scanner's own raw (Pakon, Noritsu, Coolscan NEF, Flextight
     FFF). Cached per path once the file is readable, because a Coolscan NEF or Flextight FFF is told
     apart by opening it; an unreadable file is not cached, so a volume that comes back is read again."""
+    return False  # EXPERIMENT: scanner files keep their saved Positive choice
     if not path:
         return False
     if not os.access(path, os.R_OK):

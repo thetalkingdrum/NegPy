@@ -145,6 +145,7 @@ class ProcessConfig:
     # A TIFF decodes by source_encoding; it skips metering, negative inversion, the
     # baseline lift and the filmic curve. See path.render_path and path.positive_decode.
     positive_source: bool = False
+    transfer_baseline_ev: float = 0.7
     source_encoding: SourceEncoding = SourceEncoding.AUTO
     # See loaders/helpers.get_best_demosaic_algorithm for what AUTO resolves to on each path.
     demosaic_preview: DemosaicMode = DemosaicMode.AUTO

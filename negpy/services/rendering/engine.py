@@ -60,7 +60,7 @@ def exposure_processor(settings: WorkspaceConfig) -> Any:
         return PhotometricProcessor(
             printed_exposure(settings.process, settings.exposure), settings.local, collapse_weights(settings.process, settings.exposure)
         )
-    return TransferProcessor(settings.exposure, settings.process.positive_source)
+    return TransferProcessor(settings.exposure, settings.process.positive_source, settings.process.transfer_baseline_ev)
 
 
 def print_stages(settings: WorkspaceConfig, img: ImageBuffer, context: PipelineContext) -> ImageBuffer:
@@ -208,6 +208,7 @@ class DarkroomEngine:
             settings.process.process_mode,
             # Routes the base and exposure stages (render_path); a change re-runs both.
             settings.process.positive_source,
+            settings.process.transfer_baseline_ev,
             geometry_key,
             settings.process.analysis_buffer,
             settings.process.analysis_rect,

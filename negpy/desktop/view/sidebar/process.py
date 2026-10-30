@@ -148,6 +148,11 @@ class ProcessSidebar(BaseSidebar):
         )
         for i, enc in enumerate(SourceEncoding):
             self.source_encoding_btn.set_item_tooltip(i, _SOURCE_ENCODING_TIPS[enc])
+        self.baseline_ev_slider = CompactSlider(tr("Baseline"), -1.0, 2.0, 0.7, step=0.05, unit=" st")
+        self.baseline_ev_slider.setToolTip(wrap_tooltip(tr("EXPERIMENT: brightness lift of the transfer path, in stops.")))
+        self.baseline_ev_slider.valueChanged.connect(lambda v: self._on_baseline_ev(float(v)))
+        self.baseline_ev_slider.setVisible(False)
+        mode_col.addWidget(self.baseline_ev_slider)
         self.source_encoding_row = QWidget()
         self.source_encoding_row.setLayout(field_row(tr("Encoding"), self.source_encoding_btn))
         self.source_encoding_row.layout().setContentsMargins(0, 0, 0, 0)
@@ -350,6 +355,12 @@ class ProcessSidebar(BaseSidebar):
     def _on_positive_source_toggled(self, checked: bool) -> None:
         self.controller.set_positive_source(checked)
 
+    def _on_baseline_ev(self, val: float) -> None:
+        from dataclasses import replace as _replace
+
+        cfg = self.state.config
+        self.controller.apply_config(_replace(cfg, process=_replace(cfg.process, transfer_baseline_ev=val)), persist=True)
+
     def _on_source_encoding_changed(self, _index: int) -> None:
         self.controller.set_source_encoding(str(self.source_encoding_btn.currentData()))
 
@@ -486,6 +497,10 @@ class ProcessSidebar(BaseSidebar):
             self.positive_source_hint.setVisible(is_e6 and scanned)
             encodes = os.path.splitext(path)[1].lower() in _ENCODED_EXTENSIONS
             self.source_encoding_row.setVisible(is_e6 and conf.positive_source and encodes)
+            self.baseline_ev_slider.setVisible(is_e6 and not conf.positive_source)
+            self.baseline_ev_slider.blockSignals(True)
+            self.baseline_ev_slider.setValue(conf.transfer_baseline_ev)
+            self.baseline_ev_slider.blockSignals(False)
             self.source_encoding_btn.setCurrentIndex(self.source_encoding_btn.findData(SourceEncoding(conf.source_encoding).value))
 
             # Only a merge has a render exposure to choose, and only the transfer path uses a fixed

@@ -263,6 +263,7 @@ def _analysis_cache_key(settings: WorkspaceConfig, analysis_source_hash: str, fi
         p.fade_ratio_r,
         p.fade_ratio_g,
         p.fade_ratio_b,
+        p.transfer_baseline_ev,
         g.rotation,
         g.flip_horizontal,
         g.flip_vertical,
@@ -1977,7 +1978,7 @@ class GPUEngine:
         # A finished positive skips the baseline gain, and the zone_taper.y lane below tells
         # the shader to skip display_rendering too. Matches transparency/logic.py.
         t_positive_source = bool(settings.process.positive_source)
-        t_baseline_gain = 1.0 if t_positive_source else 2.0 ** float(tc["transfer_baseline_ev"])
+        t_baseline_gain = 1.0 if t_positive_source else 2.0 ** float(settings.process.transfer_baseline_ev)
         # Dye Separation on the transfer curve: same per-channel k3 as the print path,
         # applied directly since there is no paper matrix here (see
         # transparency/logic.py::apply_transfer_curve).
