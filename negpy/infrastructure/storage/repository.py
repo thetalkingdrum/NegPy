@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, List, Optional
 import numpy as np
 from negpy.domain.models import ExportPreset, WorkspaceConfig
+from negpy.infrastructure.loaders.source_kind import with_source_positive
 from negpy.domain.interfaces import IRepository
 
 
@@ -159,6 +160,7 @@ class StorageRepository(IRepository):
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
 
     def save_file_settings(self, file_hash: str, settings: WorkspaceConfig, file_path: str = "") -> None:
+        settings = with_source_positive(settings, file_path)
         with self._connect(self.edits_db_path) as conn:
             settings_json = json.dumps(settings.to_dict(), default=str)
             conn.execute(
@@ -169,13 +171,13 @@ class StorageRepository(IRepository):
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
         with self._connect(self.edits_db_path) as conn:
             cursor = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+                "SELECT settings_json, file_path FROM file_settings WHERE file_hash = ?",
                 (file_hash,),
             )
             row = cursor.fetchone()
             if row:
                 data = json.loads(row[0])
-                return WorkspaceConfig.from_flat_dict(data)
+                return with_source_positive(WorkspaceConfig.from_flat_dict(data), row[1] or "")
         return None
 
     def path_for_file_hash(self, file_hash: str) -> Optional[str]:
@@ -250,11 +252,11 @@ class StorageRepository(IRepository):
                 chunk = hashes[start : start + 500]
                 placeholders = ",".join("?" * len(chunk))
                 cursor = conn.execute(
-                    f"SELECT file_hash, settings_json FROM file_settings WHERE file_hash IN ({placeholders})",
+                    f"SELECT file_hash, settings_json, file_path FROM file_settings WHERE file_hash IN ({placeholders})",
                     chunk,
                 )
-                for file_hash, settings_json in cursor.fetchall():
-                    out[str(file_hash)] = WorkspaceConfig.from_flat_dict(json.loads(settings_json))
+                for file_hash, settings_json, file_path in cursor.fetchall():
+                    out[str(file_hash)] = with_source_positive(WorkspaceConfig.from_flat_dict(json.loads(settings_json)), file_path or "")
         return out
 
     def saved_hashes(self, hashes: List[str]) -> set[str]:
@@ -279,7 +281,7 @@ class StorageRepository(IRepository):
         with self._connect(self.edits_db_path) as conn:
             cursor = conn.execute("SELECT file_path, settings_json FROM file_settings WHERE file_path IS NOT NULL AND file_path != ''")
             for file_path, settings_json in cursor.fetchall():
-                out[str(file_path)] = WorkspaceConfig.from_flat_dict(json.loads(settings_json))
+                out[str(file_path)] = with_source_positive(WorkspaceConfig.from_flat_dict(json.loads(settings_json)), str(file_path))
         return out
 
     def load_file_settings_by_path(self, file_path: str) -> Optional[tuple[str, WorkspaceConfig]]:
@@ -296,7 +298,7 @@ class StorageRepository(IRepository):
             )
             row = cursor.fetchone()
             if row:
-                return str(row[0]), WorkspaceConfig.from_flat_dict(json.loads(row[1]))
+                return str(row[0]), with_source_positive(WorkspaceConfig.from_flat_dict(json.loads(row[1])), file_path)
         return None
 
     def rehome_file_settings(self, old_hash: str, new_hash: str, file_path: str) -> None:

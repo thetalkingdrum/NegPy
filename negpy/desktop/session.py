@@ -33,6 +33,7 @@ from negpy.domain.models import PROOF_INTENT_LABELS, ExportPreset, ProofIntent, 
 from negpy.features.exposure.models import apply_targets
 from negpy.features.geometry.logic import flip_geometry_and_analysis, has_manual_crop, rotate_geometry_and_analysis
 from negpy.features.process.models import invalidate_local_bounds, mode_aware_exposure_reset, with_process_mode
+from negpy.infrastructure.loaders.source_kind import with_source_positive, with_source_positive_defaults
 from negpy.features.rgbscan.models import RgbScanConfig, is_rgb_triplet
 from negpy.features.hdr.logic import resolve_anchor, seed_shadow_density
 from negpy.features.hdr.models import ANCHOR_EV_UNSET, HdrConfig, hdr_frame_paths
@@ -1444,14 +1445,19 @@ class DesktopSessionManager(QObject):
             # A saved edit keeps its own process mode and shadow lift, which are the user's
             # now, so only the wiring overlays apply.
             config = self._overlay_roll_defaults(self._apply_sticky_settings(saved_config, only_global=True), asset)
-            return resolve_asset_hdr(resolve_asset_stitch(resolve_asset_rgbscan(config, asset), asset), asset)
+            config = resolve_asset_hdr(resolve_asset_stitch(resolve_asset_rgbscan(config, asset), asset), asset)
+            return with_source_positive(config, asset["path"])
         # Sticky settings include the global process mode, which a composite must not take over
         # the mode of the frames it was built from. _asset_defaults applies after.
         #
         # Not a bare WorkspaceConfig(): only this config holds the shipped autocrop fields, and the
         # print/transfer curves are an identity at it (transfer_grade_ref, test_transparency_transfer.py).
         config = self._overlay_roll_defaults(self._apply_sticky_settings(DEFAULT_WORKSPACE_CONFIG, only_global=False), asset, fresh=True)
-        return self._asset_defaults(config, asset)
+        return with_source_positive(self._asset_defaults(config, asset), asset["path"])
+
+    def hold_source_rules(self, config: WorkspaceConfig) -> WorkspaceConfig:
+        """*config* for the open frame, with the rules its file decides (with_source_positive)."""
+        return with_source_positive(config, self.state.current_file_path or "")
 
     def config_for_asset(self, asset: dict) -> WorkspaceConfig:
         """Return an asset's hydrated config without changing the active session state.
@@ -1950,6 +1956,7 @@ class DesktopSessionManager(QObject):
         Updates global config and optionally saves to disk.
         """
         history_requested = record_history
+        config = self.hold_source_rules(config)
         before = self.state.config
         if self._preview_history is not None:
             if self._preview_history[0] == self.state.current_file_hash:
@@ -2058,7 +2065,7 @@ class DesktopSessionManager(QObject):
         roll_id = rolls.frame_roll(self.repo, self.state.active_roll_id, asset)
         if roll_id is None:
             return
-        defaults = rolls.roll_defaults(self.repo, roll_id)
+        defaults = with_source_positive_defaults(rolls.roll_defaults(self.repo, roll_id), asset.get("path", ""))
         base = unforked_hash(asset["hash"])
         locked = rolls.frame_override_cards(self.repo, roll_id, base)
         for card_key, (section, names) in rolls.ROLL_DEFAULT_FIELDS.items():
@@ -2075,7 +2082,7 @@ class DesktopSessionManager(QObject):
             self.state.undo_index -= 1
             prev_config = self.repo.load_history_step(self.state.current_file_hash, self.state.undo_index)
             if prev_config:
-                self.state.config = prev_config
+                self.state.config = self.hold_source_rules(prev_config)
                 self._config_dirty = True
                 self.relock_diverged_cards()
                 self.state_changed.emit()
@@ -2087,7 +2094,7 @@ class DesktopSessionManager(QObject):
             self.state.undo_index += 1
             next_config = self.repo.load_history_step(self.state.current_file_hash, self.state.undo_index)
             if next_config:
-                self.state.config = next_config
+                self.state.config = self.hold_source_rules(next_config)
                 self._config_dirty = True
                 self.relock_diverged_cards()
                 self.state_changed.emit()
@@ -2168,7 +2175,7 @@ class DesktopSessionManager(QObject):
         if config is None:
             return
         self.state.undo_index = index
-        self.state.config = config
+        self.state.config = self.hold_source_rules(config)
         self._config_dirty = True
         self.relock_diverged_cards()
         self.state_changed.emit()

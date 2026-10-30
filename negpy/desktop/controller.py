@@ -190,7 +190,7 @@ from negpy.features.geometry.processor import CropProcessor, GeometryProcessor
 from negpy.domain.interfaces import PipelineContext
 from negpy.features.lab.models import LabConfig
 from negpy.features.local.models import LocalAdjustmentsConfig
-from negpy.features.process.path import RenderPath, render_path
+from negpy.features.process.path import RenderPath, positive_decode, render_path
 from negpy.features.process.models import (
     SCAN_SETUP_PAPERS,
     ProcessConfig,
@@ -199,8 +199,14 @@ from negpy.features.process.models import (
     mode_aware_exposure_reset,
     scan_setup_values,
     with_film_fields,
+    with_source_encoding,
     with_positive_source,
     with_process_mode,
+)
+from negpy.infrastructure.loaders.source_kind import (
+    is_scanned_positive_source,
+    with_source_positive,
+    with_source_positive_defaults,
 )
 from negpy.desktop.settings_catalog import (
     BOUNDS_INPUT_FIELDS,
@@ -3212,7 +3218,7 @@ class AppController(QObject):
                 workspace_color_space=self.state.workspace_color_space,
                 use_camera_wb=not effective_linear_raw(self.state.config.process),
                 generation=self._prefetch_gen,
-                positive_source=self.state.config.process.positive_source,
+                positive_decode=positive_decode(self.state.config.process),
                 highlight_mode=effective_highlight_reconstruction(self.state.config.process),
                 bake_camera_wb=highlight_reconstruction_bakes_wb(self.state.config.process),
                 full_resolution=self.state.hq_preview,
@@ -3417,7 +3423,7 @@ class AppController(QObject):
             workspace_color_space=self.state.workspace_color_space,
             use_camera_wb=not linear_raw,
             generation=generation,
-            positive_source=saved.process.positive_source if saved else False,
+            positive_decode=positive_decode(saved.process) if saved else "",
             highlight_mode=effective_highlight_reconstruction(saved.process) if saved else 0,
             bake_camera_wb=(highlight_reconstruction_bakes_wb(saved.process) if saved else False),
             full_resolution=False,
@@ -3461,8 +3467,17 @@ class AppController(QObject):
         """
         if not detected_mode or detected_mode == self.state.config.process.process_mode:
             return
-        self.state.config = with_process_mode(self.state.config, detected_mode)
+        path = self.state.current_file_path or ""
+        self.state.config = with_source_positive(with_process_mode(self.state.config, detected_mode), path)
         self.state.is_dirty = True
+        if positive_decode(self.state.config.process) and path:
+            # The buffer was decoded for the transfer; a finished image's Positive decodes by its encoding.
+            QTimer.singleShot(0, lambda: self._reload_if_open(path))
+
+    def _reload_if_open(self, path: str) -> None:
+        """A deferred reload that a frame change since has made stale does nothing."""
+        if self.state.current_file_path == path:
+            self.load_file(path, preserve_zoom=True)
 
     def _store_source_color(self, source_color: Optional[bool]) -> None:
         """Store the measured film fact once; it never changes the saved mode."""
@@ -6489,7 +6504,7 @@ class AppController(QObject):
         roll_id = rolls.frame_roll(self.session.repo, self.state.active_roll_id, asset)
         if roll_id is None:
             return
-        defaults = rolls.roll_defaults(self.session.repo, roll_id)
+        defaults = with_source_positive_defaults(rolls.roll_defaults(self.session.repo, roll_id), asset.get("path", ""))
         # A field the roll has never set at all cannot "match" -- there is nothing yet
         # to differ from, and treating that as a match would hide a card's first-ever
         # edit from Apply until every one of its fields happened to get a roll default.
@@ -6515,7 +6530,17 @@ class AppController(QObject):
         if self.state.config.process.process_mode != ProcessMode.E6:
             # The shortcut still reaches the hidden button.
             return
+        if not checked and is_scanned_positive_source(self.state.current_file_path or ""):
+            return
         self.apply_config(with_positive_source(self.state.config, checked), persist=True)
+        self._lock_roll_card("film")
+
+    def set_source_encoding(self, encoding: str) -> None:
+        """Sets the active frame's Source Encoding, locking the "film" card away from the roll
+        like Positive: one scanner and one workflow usually make a whole roll."""
+        if str(self.state.config.process.source_encoding) == encoding:
+            return
+        self.apply_config(with_source_encoding(self.state.config, encoding), persist=True)
         self._lock_roll_card("film")
 
     def set_roll_default(self, card_key: str, persist: bool = True, readback_metrics: bool = True, **changes) -> None:
@@ -7349,6 +7374,7 @@ class AppController(QObject):
         The alternative is every such control remembering to reload for itself, which is
         how the HDR render exposure shipped writing a value that never reached the canvas.
         """
+        config = with_source_positive(config, self.state.current_file_path or "")
         needs_decode = source_token(config) != source_token(self.state.config)
         # render=False on the decode branch: state_changed would analyse bounds against
         # the stale pre-reload buffer.

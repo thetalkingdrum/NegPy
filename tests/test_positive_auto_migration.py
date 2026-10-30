@@ -40,7 +40,8 @@ def test_turns_off_both_toggles_on_an_untouched_positive_frame(repo):
 
 
 def test_leaves_a_negative_frame_alone(repo):
-    repo.save_file_settings("h1", _config(positive_source=False), file_path="/a.tif")
+    # A camera RAW: a Slide of a finished image is always Positive.
+    repo.save_file_settings("h1", _config(positive_source=False), file_path="/a.nef")
 
     migrate_auto_meter_for_positive_frames(repo)
 
@@ -79,7 +80,7 @@ def test_corrects_a_frame_that_only_inherits_positive_from_its_roll(repo):
 def test_leaves_a_frame_outside_any_positive_roll_alone(repo):
     roll_id = rolls.recognize_folder(repo, "/roll")
     rolls.set_roll_defaults(repo, roll_id, positive_source=True)
-    repo.save_file_settings("h1", _config(positive_source=False), file_path="/elsewhere/a.tif")
+    repo.save_file_settings("h1", _config(positive_source=False), file_path="/elsewhere/a.nef")
 
     migrate_auto_meter_for_positive_frames(repo)
 
