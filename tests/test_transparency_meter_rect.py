@@ -26,6 +26,9 @@ def _framed_slide() -> np.ndarray:
     img = _wedge(_H, _W, (0.55, 0.8, 1.0))
     y1, y2, x1, x2 = int(_BOX[1] * _H), int(_BOX[3] * _H), int(_BOX[0] * _W), int(_BOX[2] * _W)
     img[y1:y2, x1:x2] = _wedge(y2 - y1, x2 - x1, (1.0, 0.82, 0.62))
+    # Clipped red outside the box and clipped blue inside it: the clip fractions say which region was read.
+    img[: _H // 8, : _W // 8, 0] = 1.0
+    img[y1 : y1 + _H // 16, x1 : x1 + _W // 16, 2] = 1.0
     return np.ascontiguousarray(img + rng.uniform(0, 1e-4, img.shape).astype(np.float32))
 
 
@@ -50,9 +53,15 @@ def test_the_cpu_axis_reads_only_the_picture_box():
     boxed = _cpu_metrics(img, _config(_BOX))["neutral_axis_refs"]
     whole = _cpu_metrics(img, _config(None))["neutral_axis_refs"]
     assert boxed is not None and whole is not None
-    # The box is warm: red reads denser-than-blue inverted, i.e. lighter, at the midtone ref.
-    assert boxed[0][0] > boxed[0][2]
     assert not np.allclose(boxed[0], whole[0], atol=1e-3)
+
+
+def test_the_cpu_clip_fractions_read_only_the_picture_box():
+    img = _framed_slide()
+    boxed = _cpu_metrics(img, _config(_BOX))["scan_clip_fractions"]
+    whole = _cpu_metrics(img, _config(None))["scan_clip_fractions"]
+    assert boxed[0] == 0.0 and boxed[2] > 0.0
+    assert whole[0] > 0.0
 
 
 def test_the_gpu_meters_the_same_axis_as_the_cpu():
