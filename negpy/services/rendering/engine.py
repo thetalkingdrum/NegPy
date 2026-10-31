@@ -25,6 +25,7 @@ from negpy.features.exposure.normalization import (
     diffusion_plane,
     base_scan_density,
     effective_crosstalk_matrix,
+    fade_white_anchored,
     geometry_kwargs,
     normalized_roi,
 )
@@ -60,7 +61,11 @@ def exposure_processor(settings: WorkspaceConfig) -> Any:
         return PhotometricProcessor(
             printed_exposure(settings.process, settings.exposure), settings.local, collapse_weights(settings.process, settings.exposure)
         )
-    return TransferProcessor(settings.exposure, settings.process.positive_source)
+    return TransferProcessor(
+        settings.exposure,
+        settings.process.positive_source,
+        fade_white_anchored(settings.process, settings.process.process_mode),
+    )
 
 
 def print_stages(settings: WorkspaceConfig, img: ImageBuffer, context: PipelineContext) -> ImageBuffer:

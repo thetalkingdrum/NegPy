@@ -42,7 +42,10 @@ from negpy.domain.types import LUMA_R, LUMA_G, LUMA_B, ImageBuffer
 from negpy.features.exposure.logic import (
     _fast_sigmoid,
     effective_grade_range,
+    cast_solve_inputs,
     grade_to_slope,
+    neutral_axis_affine,
+    normalize_refs,
     per_channel_dye_separation,
     per_channel_toe_shoulder,
     per_channel_widths,
@@ -456,6 +459,18 @@ def apply_transfer_curve(
         "gain": 2.0 ** float(c["transfer_baseline_ev"]),
     }
     return ensure_image(negpy_core.apply_transfer_curve(np.ascontiguousarray(img_norm, dtype=np.float32), params))
+
+
+def transfer_cast_affine(
+    bounds: Any, neutral_axis_refs: Any, slider_strength: float, white_anchored: bool
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Cast Removal's per-channel (gain, offset) on normalized density; one source for the CPU and the GPU.
+    With Remove Stain on, the anchored white is neutral by construction, so the line runs through the
+    midtone and that white. A line through the shadow ref would tilt the white the stain fix placed."""
+    strength, axis = cast_solve_inputs(bounds, neutral_axis_refs, slider_strength)
+    if axis is not None and white_anchored:
+        axis = (axis[0], normalize_refs((0.0, 0.0, 0.0), bounds.floors, bounds.ceils), axis[2])
+    return neutral_axis_affine(axis, strength)
 
 
 def transfer_point_offsets(process: ProcessConfig) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:

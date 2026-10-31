@@ -8,7 +8,12 @@ import pytest
 
 from negpy.domain.interfaces import PipelineContext
 from negpy.domain.models import WorkspaceConfig
-from negpy.features.exposure.normalization import effective_crosstalk_matrix, prefilter_log_grid, unmix_log_image
+from negpy.features.exposure.normalization import (
+    LogNegativeBounds,
+    effective_crosstalk_matrix,
+    prefilter_log_grid,
+    unmix_log_image,
+)
 from negpy.features.process.fade import (
     STAIN_BLUE_MIN,
     STAIN_FULL_SCALE_TOLERANCE,
@@ -18,6 +23,7 @@ from negpy.features.process.fade import (
     stain_suggested,
 )
 from negpy.features.process.models import ProcessConfig, ProcessMode
+from negpy.features.transparency.logic import transfer_bounds, transfer_cast_affine
 from negpy.infrastructure.gpu.device import GPUDevice
 from negpy.services.rendering.engine import base_processor, exposure_processor
 from tests.test_fade_fixtures import make_fixture
@@ -124,6 +130,43 @@ def test_cast_removal_meters_the_anchored_film():
     grid = unmix_log_image(prefilter_log_grid(faded, None, 0.0), effective_crosstalk_matrix(process, ProcessMode.E6))
     top = np.percentile(grid.reshape(-1, 3), 99.9, axis=0)
     np.testing.assert_allclose(top, 0.0, atol=0.02)
+
+
+# Log refs (mid, shadow, highlight, confidence): neutral at the midtone, blue lighter in the shadows.
+_AXIS_SHADOW_OFF = ((-1.5, -1.5, -1.5), (-2.3, -2.3, -2.1), None, 1.0)
+
+
+def _normalized_white(bounds) -> tuple:
+    return tuple((0.0 - f) / (c - f) for f, c in zip(bounds.floors, bounds.ceils))
+
+
+def test_cast_removal_keeps_the_anchored_white_neutral():
+    """With Remove Stain on, a shadow ref off the midtone's line must not tilt the white."""
+    bounds = LogNegativeBounds(*transfer_bounds())
+    gain, offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_anchored=True)
+    w = _normalized_white(bounds)
+    landed = [gain[ch] * w[ch] + offset[ch] for ch in range(3)]
+    np.testing.assert_allclose(landed, landed[1], atol=1e-9)
+    np.testing.assert_allclose(gain, 1.0, atol=1e-9)
+
+
+def test_cast_removal_without_the_anchor_fits_the_shadow_ref():
+    bounds = LogNegativeBounds(*transfer_bounds())
+    gain, _offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_anchored=False)
+    assert gain[2] > 1.2
+
+
+@pytest.mark.parametrize(
+    "process, anchored",
+    [
+        ({"fade_white_anchor": True, **_WHITE}, True),
+        ({"fade_white_anchor": False, **_WHITE}, False),
+        ({"fade_white_anchor": True}, False),
+    ],
+)
+def test_the_transfer_stage_knows_when_the_white_is_anchored(process, anchored):
+    cfg = _config(positive_source=True, **process)
+    assert exposure_processor(cfg).white_anchored is anchored
 
 
 def test_estimate_measures_the_stain_as_the_white():

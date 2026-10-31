@@ -38,6 +38,7 @@ from negpy.features.exposure.normalization import (
     measure_clip_fractions,
     measure_neutral_axis_from_log,
     effective_crosstalk_matrix,
+    fade_white_anchored,
     unmix_log_image,
     measure_highlight_point_from_log,
     measure_shadow_point_from_log,
@@ -86,6 +87,7 @@ from negpy.features.transparency.logic import (
     transfer_assumed_anchor,
     transfer_auto_terms,
     transfer_bounds,
+    transfer_cast_affine,
     transfer_point_offsets,
     transfer_curve_params,
     transfer_widths,
@@ -1942,7 +1944,6 @@ class GPUEngine:
             cast_solve_inputs,
             contrast_mask_coeffs,
             filtration_offsets,
-            neutral_axis_affine,
             per_channel_dye_separation,
             per_channel_toe_shoulder,
             grade_coupled_shape,
@@ -1979,12 +1980,12 @@ class GPUEngine:
         t_cmy_m = EXPOSURE_CONSTANTS["cmy_max_density"]
         # Cast Removal on the transparency curve: a per-channel affine on density, since
         # this curve has no per-channel slope to re-solve. Identity when there is no axis.
-        t_strength, t_axis = cast_solve_inputs(
+        t_cast_gain, t_cast_off = transfer_cast_affine(
             LogNegativeBounds(adj_floors, adj_ceils),
             neutral_axis_refs,
             settings.exposure.cast_removal_strength,
+            fade_white_anchored(settings.process, settings.process.process_mode),
         )
-        t_cast_gain, t_cast_off = neutral_axis_affine(t_axis, t_strength)
         # A finished positive skips the baseline gain, and the zone_taper.y lane below tells
         # the shader to skip display_rendering too. Matches transparency/logic.py.
         t_positive_source = bool(settings.process.positive_source)

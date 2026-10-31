@@ -188,6 +188,11 @@ def _fade_white(process: "ProcessConfig", process_mode: Optional[str]) -> Option
     return white if bool(np.any(white != 0.0)) else None
 
 
+def fade_white_anchored(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
+    """Whether Remove Stain maps a stored white to full scale in this render."""
+    return _fade_white(process, process_mode) is not None
+
+
 def _fade_applies(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
     """Whether a non-neutral fade factor is requested: slides only, and not at unit survival."""
     if process_mode is not None and str(process_mode) != str(ProcessMode.E6):
