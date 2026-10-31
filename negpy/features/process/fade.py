@@ -29,10 +29,14 @@ AGREEMENT_TOLERANCE = 0.05
 RATIO_BOUNDS = (0.2, 5.0)
 #: Bound on `fade_ratio_r`, a fraction of the original density, so it cannot exceed 1.0.
 RED_SURVIVAL_BOUNDS = (0.05, 1.0)
-#: Below this neutral-axis confidence the grays are too mixed with colored content to estimate from.
-MIN_CONFIDENCE = 0.4
-#: Percentile of each channel's extremes for the frame's own bounds: a few clipped cells must not set them.
-COLOR_EXTREME_PCT = 0.1
+#: Percentile of each channel's extremes for the frame's own bounds, read first.
+COLOR_EXTREME_PCT = 0.00001
+#: Below this confidence the first reading holds colored content, not grays.
+MIN_CONFIDENCE = 0.2
+#: The fallback bounds' percentile: a scan whose extreme cells are noise or scanner zeros sets no bounds.
+ROBUST_EXTREME_PCT = 0.1
+#: The fallback's own gate, stricter because its sector-free pass reads more colored content.
+ROBUST_MIN_CONFIDENCE = 0.4
 #: A cell at or below this log transmittance holds a decoded zero, not a density.
 CLIPPED_LOG = -5.0
 #: Percentile of the analysis grid that White Anchor reads as each channel's white.
@@ -56,17 +60,20 @@ def measure_neutral_axis_ratios(image: ImageBuffer, roi: Optional[tuple], analys
 
 def neutral_axis_from_grid(grid: ImageBuffer) -> tuple[Optional[NeutralAxisRefs], str]:
     """`measure_neutral_axis_ratios` on a prefiltered log grid."""
-    bounds = _measured_slide_bounds(grid)
+    refs = measure_neutral_axis_from_log(grid, _measured_slide_bounds(grid, COLOR_EXTREME_PCT), None, 0.0)
+    if refs is not None and refs[3] >= MIN_CONFIDENCE:
+        return refs, ""
     # A faded slide's grays carry the fade's cast, which can put them in the foliage or sky
-    # sector; the unfiltered set is the fallback, gated by the same confidence.
+    # sector; the unfiltered set is the last try.
+    bounds = _measured_slide_bounds(grid, ROBUST_EXTREME_PCT)
     for exclude in (True, False):
         refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0, exclude_subjects=exclude)
-        if refs is not None and refs[3] >= MIN_CONFIDENCE:
+        if refs is not None and refs[3] >= ROBUST_MIN_CONFIDENCE:
             return refs, ""
     return None, tr("No reliable grays found on this frame.")
 
 
-def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
+def _measured_slide_bounds(grid: ImageBuffer, extreme_pct: float = COLOR_EXTREME_PCT) -> LogNegativeBounds:
     """This frame's own bounds in the slide orientation (floor above ceiling): the luma span
     from the base clip, each channel's offset from its extreme percentiles. The negative
     analyzer does not fit, since its dense end is chroma-gated for an orange mask."""
@@ -82,7 +89,7 @@ def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
 
     base = float(EXPOSURE_CONSTANTS["base_luma_clip"])
     luma_f, luma_c = _pct(100.0 - base), _pct(base)
-    color_f, color_c = _pct(100.0 - COLOR_EXTREME_PCT), _pct(COLOR_EXTREME_PCT)
+    color_f, color_c = _pct(100.0 - extreme_pct), _pct(extreme_pct)
     mean_f, mean_c = sum(luma_f) / 3.0, sum(luma_c) / 3.0
     mid_f, mid_c = sorted(color_f)[1], sorted(color_c)[1]
     floors = tuple(mean_f + (color_f[ch] - mid_f) for ch in range(3))
