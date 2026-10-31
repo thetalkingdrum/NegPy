@@ -250,6 +250,7 @@ def _fade_sidebar(**process):
     ctrl.state.config = replace(cfg, process=replace(cfg.process, process_mode=ProcessMode.E6, **process))
     ctrl.session.repo.get_global_setting.return_value = "midtone"
     ctrl.camera_working_matrix.return_value = None
+    ctrl.state.current_file_hash = "frame-a"
     w = SensorSidebar(ctrl)
     w.state = ctrl.state
     return w, ctrl
@@ -298,6 +299,38 @@ def test_an_estimate_with_remove_stain_on_stores_the_white_with_the_survivals():
     assert stored["fade_white_b"] == pytest.approx(-0.4, abs=0.02)
     assert stored["fade_ratio_b"] == pytest.approx(0.6, abs=0.03)
     assert "Remove Stain" not in w.fade_estimate_hint.text()
+
+
+def test_a_failed_estimate_with_remove_stain_on_stores_no_white_off_clear_film():
+    w, ctrl = _fade_sidebar(fade_white_anchor=True)
+    ctrl.state.preview_raw = np.full((32, 32, 3), 0.5, dtype=np.float32)  # no grays, and no white near full scale
+
+    w._on_estimate_fade()
+
+    ctrl.set_roll_default.assert_not_called()
+
+
+def test_turning_remove_stain_off_clears_its_hint():
+    w, ctrl = _fade_sidebar()
+    w.fade_white_anchor_btn.setChecked(True)
+    assert "Estimate" in w.fade_estimate_hint.text()
+
+    w.fade_white_anchor_btn.setChecked(False)
+
+    assert w.fade_estimate_hint.text() == ""
+
+
+def test_the_estimate_hint_stays_with_its_frame():
+    w, ctrl = _fade_sidebar(analysis_buffer=0.0)
+    ctrl.state.preview_raw = _stained_slide()
+    w._on_estimate_fade()
+    w.sync_ui()
+    assert "Remove Stain" in w.fade_estimate_hint.text()
+
+    ctrl.state.current_file_hash = "frame-b"
+    w.sync_ui()
+
+    assert w.fade_estimate_hint.text() == ""
 
 
 def test_remove_stain_is_a_fade_roll_default():

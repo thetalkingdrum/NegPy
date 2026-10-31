@@ -1629,6 +1629,7 @@
   "No average for this frame yet": "このフレームにはまだ平均がありません",
   "No baseline yet: this frame uses its own analysis until Roll Analysis runs": "まだベースラインがありません: このフレームは、ロール解析が実行されるまで独自の解析を使用します。",
   "No cards edited": "編集されたカードはありません",
+  "No clear area to measure the stain on this frame.": "このフレームには、しみを測定できる透明な部分がありません。",
   "No corner pills": "角の表示なし",
   "No favorites yet. Use Edit Favorites to pick the sliders you use most.": "まだお気に入りはありません。[お気に入りの編集] を使用して、最も頻繁に使用するスライダーを選択してください。",
   "No files support Linear Output": "リニア出力をサポートするファイルはありません",

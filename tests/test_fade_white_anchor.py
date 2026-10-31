@@ -25,7 +25,7 @@ from negpy.features.process.fade import (
     stain_suggested,
 )
 from negpy.features.process.models import ProcessConfig, ProcessMode
-from negpy.features.transparency.logic import transfer_bounds, transfer_cast_affine
+from negpy.features.transparency.logic import STAIN_PIVOT_MIN_ARM, transfer_bounds, transfer_cast_affine
 from negpy.infrastructure.gpu.device import GPUDevice
 from negpy.services.rendering.engine import base_processor, exposure_processor
 from tests.test_fade_fixtures import make_fixture
@@ -167,6 +167,39 @@ def test_cast_removal_without_the_anchor_fits_the_shadow_ref():
     bounds = LogNegativeBounds(*transfer_bounds())
     gain, _offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_target=None)
     assert gain[2] > 1.2
+
+
+def test_cast_removal_keeps_the_shadow_line_when_the_midtone_is_near_the_white():
+    """A short midtone-to-white arm would turn a small cast into a large gain on every darker tone."""
+    bounds = LogNegativeBounds(*transfer_bounds())
+    near = ((-0.40, -0.48, -0.52), (-1.78, -1.78, -1.78), None, 1.0)
+    anchored = transfer_cast_affine(bounds, near, 1.0, white_target=-FADE_WHITE_HEADROOM)
+    np.testing.assert_allclose(anchored, transfer_cast_affine(bounds, near, 1.0, white_target=None))
+    assert max(abs(g - 1.0) for g in anchored[0]) < 0.1
+
+
+def test_the_pivot_arm_is_the_documented_one():
+    assert STAIN_PIVOT_MIN_ARM == 0.5
+
+
+def test_the_white_skips_cells_clipped_in_every_channel():
+    _clean, faded = _stained_slide()
+    grid = prefilter_log_grid(faded, None, 0.0)
+    leak = grid.copy()
+    leak[: max(1, leak.shape[0] // 20)] = 0.0  # a mount gap at full scale in all three channels
+    np.testing.assert_allclose(measure_white(leak), measure_white(grid), atol=0.03)
+    assert measure_white(leak) != (0.0, 0.0, 0.0)
+
+
+def test_no_white_without_a_film_cell():
+    assert measure_white(np.zeros((8, 8, 3), np.float32)) is None
+    assert measure_white(np.full((8, 8, 3), -6.0, np.float32)) is None
+
+
+def test_an_anchored_estimate_with_no_film_cell_says_so():
+    est = estimate_fade(np.ones((32, 32, 3), np.float32), ProcessMode.E6, None, 0.0, white_anchor=True)[EstimateMethod.MIDTONE]
+    assert est.white is None and est.reason
+    assert (est.green, est.blue) == (1.0, 1.0)
 
 
 @pytest.mark.parametrize(

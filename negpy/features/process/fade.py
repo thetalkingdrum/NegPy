@@ -39,12 +39,11 @@ ROBUST_EXTREME_PCT = 0.1
 ROBUST_MIN_CONFIDENCE = 0.4
 #: A cell at or below this log transmittance holds a decoded zero, not a density.
 CLIPPED_LOG = -5.0
-#: Percentile of the analysis grid that White Anchor reads as each channel's white.
+#: Percentile of the analysis grid that Remove Stain reads as each channel's white.
 WHITE_PCT = 99.9
-#: To suggest White Anchor, the brightest channel's white is within this density of full scale.
+#: To suggest Remove Stain, the brightest channel's white is within this density of full scale.
 STAIN_FULL_SCALE_TOLERANCE = 0.1
-#: To suggest White Anchor, blue is the darkest channel at the white, by at least this density.
-#: Fitted with the tolerance above on three sets of scans only (NORAD, SilverFast, Nikon Scan).
+#: To suggest Remove Stain, blue is the darkest channel at the white, by at least this density.
 STAIN_BLUE_MIN = 0.2
 
 #: The return shape of `measure_neutral_axis_from_log`: midtone, shadow, highlight or None, confidence.
@@ -97,14 +96,20 @@ def _measured_slide_bounds(grid: ImageBuffer, extreme_pct: float = COLOR_EXTREME
     return LogNegativeBounds(floors, ceils)
 
 
-def measure_white(grid: ImageBuffer) -> tuple[float, float, float]:
-    """Each channel's white: the log transmittance of its brightest cells in the analysis grid."""
-    r, g, b = (float(v) for v in np.percentile(grid.reshape(-1, 3), WHITE_PCT, axis=0))
+def measure_white(grid: ImageBuffer) -> Optional[tuple[float, float, float]]:
+    """Each channel's white: the log transmittance of its brightest cells in the analysis grid, or
+    None with no cell left. A cell at full scale in every channel is light past the film (a mount gap,
+    a leak or a blown specular), and a decoded zero is no reading, so neither counts."""
+    cells = grid.reshape(-1, 3)
+    cells = cells[(cells > CLIPPED_LOG).all(axis=1) & (cells < 0.0).any(axis=1)]
+    if not len(cells):
+        return None
+    r, g, b = (float(v) for v in np.percentile(cells, WHITE_PCT, axis=0))
     return r, g, b
 
 
 def white_anchored_grid(grid: ImageBuffer, white: tuple[float, float, float]) -> np.ndarray:
-    """The grid as density above each channel's white, the space White Anchor renders in.
+    """The grid as density above each channel's white, the space Remove Stain renders in.
     A cell brighter than the white stops at full scale, as a decode of the divided scan would."""
     return np.minimum(grid - np.asarray(white, dtype=np.float32), 0.0).astype(np.float32)
 
@@ -128,7 +133,7 @@ class EstimateMethod(StrEnum):
 class FadeEstimate:
     """Survivals from one Estimate. red is None when the method leaves Red Survival as it is;
     reason is "" for a real estimate (see fade_ratios_from_neutral_axis). white is the frame's
-    measured white, None when the frame is not a slide."""
+    measured white, None when the frame is not a slide or has no cell to read it from."""
 
     red: Optional[float]
     green: float
@@ -204,7 +209,7 @@ def estimate_fade(
     """Both methods' estimates from one measurement of the grays. MIDTONE also sets Red Survival so
     the best-kept layer lands at 1.0; a ratio above 1 says red faded most. `cam_matrix` takes a
     camera buffer into the working space the render applies the fade in. With `white_anchor`, the
-    grays are read as density above the frame's white, as White Anchor renders them."""
+    grays are read as density above the frame's white, as Remove Stain renders them."""
     if process_mode is not None and str(process_mode) != str(ProcessMode.E6):
         reason = tr("This frame is not a slide.")
         return {m: FadeEstimate(None, 1.0, 1.0, reason) for m in EstimateMethod}
@@ -212,6 +217,8 @@ def estimate_fade(
         image = apply_camera_matrix(negpy_core.nan_to_num(np.ascontiguousarray(image, dtype=np.float32), 1e-6, 1.0, 1e-6), cam_matrix)
     grid = prefilter_log_grid(image, roi, analysis_buffer)
     white = measure_white(grid)
+    if white_anchor and white is None:
+        return {m: FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame.")) for m in EstimateMethod}
     refs, reason = neutral_axis_from_grid(white_anchored_grid(grid, white) if white_anchor else grid)
     out = {}
     for method in EstimateMethod:

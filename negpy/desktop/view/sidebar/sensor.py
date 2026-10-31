@@ -198,6 +198,7 @@ class SensorSidebar(BaseSidebar):
         # The estimate, or which fail-closed condition fired.
         self.fade_estimate_hint = hint_label("")
         self.fade_estimate_hint.setVisible(False)
+        self._fade_hint_hash: Optional[str] = None
 
         fade_header, self.fade_fold = group_fold(
             "sensor_fade",
@@ -509,11 +510,17 @@ class SensorSidebar(BaseSidebar):
             **invalidate_local_bounds(self.state.config.process),
         )
 
+    def _show_fade_hint(self, text: str) -> None:
+        """The hint belongs to the frame it was written on; sync_ui clears it on another frame."""
+        self._fade_hint_hash = self.state.current_file_hash
+        self.fade_estimate_hint.setText(text)
+        self.fade_estimate_hint.setVisible(bool(text))
+
     def _on_fade_white_anchor_toggled(self, checked: bool) -> None:
         conf = self.state.config.process
-        if checked and (conf.fade_white_r, conf.fade_white_g, conf.fade_white_b) == (0.0, 0.0, 0.0):
-            self.fade_estimate_hint.setText(tr("Click Estimate to measure the stain."))
-            self.fade_estimate_hint.setVisible(True)
+        no_white = (conf.fade_white_r, conf.fade_white_g, conf.fade_white_b) == (0.0, 0.0, 0.0)
+        # An earlier Estimate's hint was read with the other setting.
+        self._show_fade_hint(tr("Click Estimate to measure the stain.") if checked and no_white else "")
         self.controller.set_roll_default("fade", fade_white_anchor=checked, **invalidate_local_bounds(conf))
 
     def _on_estimate_fade(self) -> None:
@@ -522,8 +529,7 @@ class SensorSidebar(BaseSidebar):
 
         image = self.state.preview_raw
         if image is None:
-            self.fade_estimate_hint.setText(tr("No image loaded to estimate from."))
-            self.fade_estimate_hint.setVisible(True)
+            self._show_fade_hint(tr("No image loaded to estimate from."))
             return
         conf = self.state.config.process
         roi, buffer = resolve_analysis_region(image.shape, None, conf.analysis_buffer, conf.analysis_rect)
@@ -534,14 +540,14 @@ class SensorSidebar(BaseSidebar):
         hint = _estimate_hint(method, chosen, other)
         if not anchor and chosen.white is not None and stain_suggested(chosen.white):
             hint += " " + tr("The clear areas have a yellow stain: turn on Remove Stain, then click Estimate again.")
-        self.fade_estimate_hint.setText(hint)
-        self.fade_estimate_hint.setVisible(True)
+        self._show_fade_hint(hint)
         # The white is stored with the survivals and never measured per render.
         white = {}
         if anchor and chosen.white is not None:
             white = dict(zip(("fade_white_r", "fade_white_g", "fade_white_b"), chosen.white))
         if chosen.reason and chosen.green == 1.0 and chosen.blue == 1.0:
-            if white:
+            # A failed reading writes the roll's white only where it is plainly a stain on clear film.
+            if white and stain_suggested(chosen.white):
                 self.controller.set_roll_default("fade", **white, **invalidate_local_bounds(conf))
             return
         red = chosen.red if chosen.red is not None else conf.fade_ratio_r
@@ -606,6 +612,8 @@ class SensorSidebar(BaseSidebar):
             e6 = conf.process_mode == ProcessMode.E6
             # The content, never the fold: the fold's visibility is its open state.
             self.fade_fold.content.setVisible(e6)
+            if self._fade_hint_hash != self.state.current_file_hash:
+                self.fade_estimate_hint.setText("")
             self.fade_estimate_hint.setVisible(e6 and bool(self.fade_estimate_hint.text()))
 
             self.hue_trim_slider.setValue(conf.hue_trim)

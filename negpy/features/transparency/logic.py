@@ -67,6 +67,9 @@ POSITIVE_AXIS_PERCENTILES = (1.0, 99.0)
 POSITIVE_AXIS_MIN_RANGE = 1e-3
 #: Decades above the window's dark end that a cell must clear to count in the retry window.
 POSITIVE_AXIS_FLOOR_MARGIN = 0.1
+# Cast Removal pivots on the anchored white only when the midtone sits at least this far under it:
+# a shorter lever arm turns a small midtone cast into a large gain on every darker tone.
+STAIN_PIVOT_MIN_ARM = 0.5
 
 #: Dye Separation's channel cap: a soft ceiling at the higher of this density and the
 #: pixel's lightest channel plus the spread below. Mirrored in transfer.wgsl.
@@ -466,9 +469,9 @@ def transfer_cast_affine(
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """Cast Removal's per-channel (gain, offset) on normalized density; one source for the CPU and the GPU.
     With Remove Stain on, the anchored white (log `white_target` on every channel) is neutral by construction,
-    so the line runs through the midtone and that white. A line through the shadow ref would tilt it."""
+    so the line runs through the midtone and that white, unless the midtone is within STAIN_PIVOT_MIN_ARM of it."""
     strength, axis = cast_solve_inputs(bounds, neutral_axis_refs, slider_strength)
-    if axis is not None and white_target is not None:
+    if axis is not None and white_target is not None and white_target - float(neutral_axis_refs[0][1]) >= STAIN_PIVOT_MIN_ARM:
         axis = (axis[0], normalize_refs((white_target,) * 3, bounds.floors, bounds.ceils), axis[2])
     return neutral_axis_affine(axis, strength)
 

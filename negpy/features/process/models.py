@@ -214,7 +214,7 @@ class ProcessConfig:
     fade_ratio_r: float = 1.0
     fade_ratio_g: float = 1.0
     fade_ratio_b: float = 1.0
-    # White Anchor: restore density above each channel's own white, (D - w) / a, for a slide whose
+    # Remove Stain (White Anchor): restore density above each channel's own white, (D - w) / a, for a slide whose
     # clear areas carry a per-channel stain. The whites are log transmittance (<= 0) of the
     # brightest cells, measured by the Estimate and never per render.
     fade_white_anchor: bool = False

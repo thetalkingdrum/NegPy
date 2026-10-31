@@ -1629,6 +1629,7 @@
   "No average for this frame yet": "此帧还没有平均值",
   "No baseline yet: this frame uses its own analysis until Roll Analysis runs": "尚无基准：胶卷分析运行前，此画面使用自身分析结果",
   "No cards edited": "没有已编辑卡片",
+  "No clear area to measure the stain on this frame.": "此帧没有可用于测量污渍的透明区域。",
   "No corner pills": "不显示角标",
   "No favorites yet. Use Edit Favorites to pick the sliders you use most.": "尚无收藏，请使用编辑收藏选择常用滑块。",
   "No files support Linear Output": "没有支持线性输出的文件",
