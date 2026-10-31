@@ -266,3 +266,42 @@ def test_a_failed_estimate_keeps_the_survivals_and_shows_why():
     assert w.fade_ratio_b_slider.value() == pytest.approx(0.7)
     assert w.fade_estimate_hint.text()
     assert not w.fade_estimate_hint.isHidden()
+
+
+def _stained_slide():
+    from tests.test_fade_fixtures import make_fixture
+
+    fx = make_fixture("stained", 0.8, 0.6, (0.0, -0.05, -0.4), seed=3)
+    return np.power(10.0, fx.faded_log).astype(np.float32)
+
+
+def test_an_estimate_on_a_stained_slide_suggests_remove_stain_and_stores_no_white():
+    # No analysis border: the fixture's clear end is its left edge.
+    w, ctrl = _fade_sidebar(analysis_buffer=0.0)
+    ctrl.state.preview_raw = _stained_slide()
+
+    w._on_estimate_fade()
+
+    assert "Remove Stain" in w.fade_estimate_hint.text()
+    stored = ctrl.set_roll_default.call_args.kwargs
+    assert "fade_white_b" not in stored
+    assert not w.fade_white_anchor_btn.isChecked()
+
+
+def test_an_estimate_with_remove_stain_on_stores_the_white_with_the_survivals():
+    w, ctrl = _fade_sidebar(fade_white_anchor=True, analysis_buffer=0.0)
+    ctrl.state.preview_raw = _stained_slide()
+
+    w._on_estimate_fade()
+
+    stored = ctrl.set_roll_default.call_args.kwargs
+    assert stored["fade_white_b"] == pytest.approx(-0.4, abs=0.02)
+    assert stored["fade_ratio_b"] == pytest.approx(0.6, abs=0.03)
+    assert "Remove Stain" not in w.fade_estimate_hint.text()
+
+
+def test_remove_stain_is_a_fade_roll_default():
+    w, ctrl = _fade_sidebar()
+    w.fade_white_anchor_btn.setChecked(True)
+    args = ctrl.set_roll_default.call_args
+    assert args.args[0] == "fade" and args.kwargs["fade_white_anchor"] is True

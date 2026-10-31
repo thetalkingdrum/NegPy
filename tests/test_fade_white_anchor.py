@@ -1,0 +1,197 @@
+"""Remove Stain (White Anchor): Fade Restoration above each channel's own white, (D - w) / a."""
+
+import unittest
+from dataclasses import replace
+
+import numpy as np
+import pytest
+
+from negpy.domain.interfaces import PipelineContext
+from negpy.domain.models import WorkspaceConfig
+from negpy.features.exposure.normalization import effective_crosstalk_matrix, prefilter_log_grid, unmix_log_image
+from negpy.features.process.fade import (
+    STAIN_BLUE_MIN,
+    STAIN_FULL_SCALE_TOLERANCE,
+    EstimateMethod,
+    estimate_fade,
+    measure_white,
+    stain_suggested,
+)
+from negpy.features.process.models import ProcessConfig, ProcessMode
+from negpy.infrastructure.gpu.device import GPUDevice
+from negpy.services.rendering.engine import base_processor, exposure_processor
+from tests.test_fade_fixtures import make_fixture
+
+_RATIO_G, _RATIO_B = 0.8, 0.6
+# A yellow stain on clear film: blue's white sits 0.4 D below red's.
+_STAIN = (0.0, -0.05, -0.4)
+_WHITE = {"fade_white_r": -0.02, "fade_white_g": -0.07, "fade_white_b": -0.4}
+
+
+def _stained_slide(seed: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    fx = make_fixture("stained", _RATIO_G, _RATIO_B, _STAIN, seed=seed)
+    return fx.clean.astype(np.float32), np.power(10.0, fx.faded_log).astype(np.float32)
+
+
+def _config(**process) -> WorkspaceConfig:
+    cfg = WorkspaceConfig()
+    return replace(cfg, process=replace(cfg.process, process_mode=ProcessMode.E6, **process))
+
+
+def _render(image: np.ndarray, cfg: WorkspaceConfig) -> np.ndarray:
+    h, w = image.shape[:2]
+    ctx = PipelineContext(
+        original_size=(h, w),
+        scale_factor=1.0,
+        process_mode=cfg.process.process_mode,
+        cam_xyz=None,
+        camera_wb=None,
+        wants_uv_grid=False,
+    )
+    norm = base_processor(cfg).process(np.ascontiguousarray(image), ctx)
+    return np.asarray(exposure_processor(cfg).process(norm, ctx))[..., :3].astype(np.float64)
+
+
+def _chroma_rms(out: np.ndarray, ref: np.ndarray) -> float:
+    """RMS of the (R-G, B-G) log difference against the reference, on tones away from the clips."""
+    log_o, log_r = (np.log10(np.clip(x, 1e-4, None)) for x in (out, ref))
+    diff = (log_o - log_o[..., 1:2]) - (log_r - log_r[..., 1:2])
+    ok = (ref.min(axis=-1) > 0.01) & (ref.max(axis=-1) < 0.97)
+    return float(np.sqrt(np.mean(diff[ok][:, [0, 2]] ** 2)))
+
+
+def test_off_keeps_the_square_matrix_whatever_white_is_stored():
+    stored = ProcessConfig(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, **_WHITE)
+    bare = ProcessConfig(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B)
+    np.testing.assert_array_equal(effective_crosstalk_matrix(stored, ProcessMode.E6), effective_crosstalk_matrix(bare, ProcessMode.E6))
+    assert effective_crosstalk_matrix(ProcessConfig(**_WHITE), ProcessMode.E6) is None
+
+
+def test_off_renders_bit_identical_with_a_stored_white():
+    _clean, faded = _stained_slide()
+    a = _render(faded, _config(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B))
+    b = _render(faded, _config(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, **_WHITE))
+    np.testing.assert_array_equal(a, b)
+
+
+def test_on_maps_the_white_to_full_scale_before_the_fade():
+    process = ProcessConfig(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, fade_white_anchor=True, **_WHITE)
+    matrix = effective_crosstalk_matrix(process, ProcessMode.E6)
+    assert matrix.shape == (3, 4)
+    white = np.array([[[_WHITE["fade_white_r"], _WHITE["fade_white_g"], _WHITE["fade_white_b"]]]], dtype=np.float32)
+    np.testing.assert_allclose(unmix_log_image(white, matrix), 0.0, atol=1e-6)
+    # One decade above the white restores as one decade over each layer's survival.
+    darker = unmix_log_image(white - 1.0, matrix).reshape(3)
+    np.testing.assert_allclose(darker, [-1.0, -1.0 / _RATIO_G, -1.0 / _RATIO_B], rtol=1e-5)
+
+
+def test_on_with_no_white_measured_changes_nothing():
+    process = ProcessConfig(fade_ratio_g=_RATIO_G, fade_white_anchor=True)
+    np.testing.assert_array_equal(
+        effective_crosstalk_matrix(process, ProcessMode.E6),
+        effective_crosstalk_matrix(ProcessConfig(fade_ratio_g=_RATIO_G), ProcessMode.E6),
+    )
+
+
+def test_white_anchor_applies_to_slides_only():
+    process = ProcessConfig(fade_white_anchor=True, **_WHITE)
+    assert effective_crosstalk_matrix(process, ProcessMode.C41) is None
+
+
+def test_a_stained_slide_restores_closer_to_the_clean_one_with_the_anchor_on():
+    clean, faded = _stained_slide()
+    reference = _render(clean, _config())
+    white = measure_white(prefilter_log_grid(faded, None, 0.0))
+    fade = {"fade_ratio_g": _RATIO_G, "fade_ratio_b": _RATIO_B}
+    off = _render(faded, _config(**fade))
+    on = _render(faded, _config(**fade, fade_white_anchor=True, fade_white_r=white[0], fade_white_g=white[1], fade_white_b=white[2]))
+    err_off, err_on = _chroma_rms(off, reference), _chroma_rms(on, reference)
+    assert err_on < 0.5 * err_off, (err_on, err_off)
+
+
+def test_cast_removal_meters_the_anchored_film():
+    """Cast Removal's neutral axis reads the grid after the affine, so the stain is gone from it."""
+    _clean, faded = _stained_slide()
+    white = measure_white(prefilter_log_grid(faded, None, 0.0))
+    process = ProcessConfig(
+        fade_ratio_g=_RATIO_G,
+        fade_ratio_b=_RATIO_B,
+        fade_white_anchor=True,
+        fade_white_r=white[0],
+        fade_white_g=white[1],
+        fade_white_b=white[2],
+    )
+    grid = unmix_log_image(prefilter_log_grid(faded, None, 0.0), effective_crosstalk_matrix(process, ProcessMode.E6))
+    top = np.percentile(grid.reshape(-1, 3), 99.9, axis=0)
+    np.testing.assert_allclose(top, 0.0, atol=0.02)
+
+
+def test_estimate_measures_the_stain_as_the_white():
+    _clean, faded = _stained_slide()
+    est = estimate_fade(faded, ProcessMode.E6, None, 0.0)[EstimateMethod.MIDTONE]
+    np.testing.assert_allclose(est.white, _STAIN, atol=0.02)
+
+
+def test_the_anchored_estimate_reads_the_true_survivals_through_a_stain():
+    _clean, faded = _stained_slide()
+    plain = estimate_fade(faded, ProcessMode.E6, None, 0.0)[EstimateMethod.MIDTONE]
+    anchored = estimate_fade(faded, ProcessMode.E6, None, 0.0, white_anchor=True)[EstimateMethod.MIDTONE]
+    assert anchored.reason == ""
+    assert anchored.green == pytest.approx(_RATIO_G, abs=0.03)
+    assert anchored.blue == pytest.approx(_RATIO_B, abs=0.03)
+    assert abs(plain.blue - _RATIO_B) > 0.15  # the stain inflates blue without the anchor
+
+
+@pytest.mark.parametrize(
+    ("white", "expected"),
+    [
+        ((-0.05, -0.18, -0.73), True),  # NORAD 106-25: bright, heavy yellow stain
+        ((-0.04, -0.16, -0.28), True),  # NORAD 106-5: blue below red by more than the minimum
+        ((-0.76, -1.05, -1.05), False),  # SilverFast at gamma 2.2: no white near full scale
+        ((-2.9, -3.4, -3.25), False),  # a scan with no white object
+        ((-0.25, -0.12, -0.01), False),  # bluish whites: a snow or sky frame
+        ((0.0, -0.05, -0.15), False),  # a stain under the minimum
+        ((0.0, -0.4, -0.3), False),  # green, not blue, is darkest
+    ],
+)
+def test_stain_suggestion_rule(white, expected):
+    assert stain_suggested(white) is expected
+
+
+def test_stain_suggestion_thresholds_are_the_documented_ones():
+    assert (STAIN_FULL_SCALE_TOLERANCE, STAIN_BLUE_MIN) == (0.1, 0.2)
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+class TestWhiteAnchorGpuParity(unittest.TestCase):
+    def _render(self, processor, settings, img, prefer_gpu):
+        result, _ = processor.run_pipeline(
+            img, settings, "white-anchor-parity", render_size_ref=float(max(img.shape[:2])), prefer_gpu=prefer_gpu, readback_metrics=False
+        )
+        arr = result.readback() if hasattr(result, "readback") else result
+        return np.asarray(arr)[:, :, :3].astype(np.float64)
+
+    def _assert_parity(self, settings):
+        from negpy.services.rendering.image_processor import ImageProcessor
+
+        processor = ImageProcessor()
+        if processor.engine_gpu is None:
+            self.skipTest("GPU engine not initialised")
+        _clean, faded = _stained_slide()
+        cpu = self._render(processor, settings, faded[:128, :128].copy(), prefer_gpu=False)
+        gpu = self._render(processor, settings, faded[:128, :128].copy(), prefer_gpu=True)
+        self.assertEqual(cpu.shape, gpu.shape)
+        mad = float(np.mean(np.abs(cpu - gpu)))
+        mx = float(np.max(np.abs(cpu - gpu)))
+        self.assertLess(mad, 0.005, f"mean abs diff {mad:.5f}")
+        self.assertLess(mx, 0.04, f"max abs diff {mx:.5f}")
+
+    def test_fade_off(self):
+        self._assert_parity(_config(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, **_WHITE))
+
+    def test_fade_on(self):
+        self._assert_parity(_config(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, fade_white_anchor=True, **_WHITE))
+
+    def test_fade_on_with_cast_removal(self):
+        cfg = _config(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, fade_white_anchor=True, **_WHITE)
+        self._assert_parity(replace(cfg, exposure=replace(cfg.exposure, cast_removal_strength=1.0)))

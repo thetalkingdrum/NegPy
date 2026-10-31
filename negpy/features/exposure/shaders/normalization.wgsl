@@ -9,7 +9,8 @@ struct NormUniforms {
     bp_offset: f32,
     // Capture-side dye-unmix rows (effective blended+row-normalized matrix,
     // computed CPU-side); identity rows when the unmix is off. Applied to the
-    // raw negative log densities before the stretch — mirrors the CPU path.
+    // raw negative log densities before the stretch — mirrors the CPU path. The w lanes
+    // carry White Anchor's log offset, added after the 3x3; 0.0 when it is off.
     unmix0: vec4<f32>,
     unmix1: vec4<f32>,
     unmix2: vec4<f32>,
@@ -58,9 +59,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // does not apply, so there is nothing to branch on here (and branching here is
     // exactly how this silently stopped working on the GPU once before).
     log_color = vec3<f32>(
-        dot(params.unmix0.xyz, log_color),
-        dot(params.unmix1.xyz, log_color),
-        dot(params.unmix2.xyz, log_color),
+        dot(params.unmix0.xyz, log_color) + params.unmix0.w,
+        dot(params.unmix1.xyz, log_color) + params.unmix1.w,
+        dot(params.unmix2.xyz, log_color) + params.unmix2.w,
     );
 
     var res: vec3<f32>;

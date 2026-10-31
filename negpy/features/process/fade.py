@@ -35,6 +35,13 @@ MIN_CONFIDENCE = 0.4
 COLOR_EXTREME_PCT = 0.1
 #: A cell at or below this log transmittance holds a decoded zero, not a density.
 CLIPPED_LOG = -5.0
+#: Percentile of the analysis grid that White Anchor reads as each channel's white.
+WHITE_PCT = 99.9
+#: To suggest White Anchor, the brightest channel's white is within this density of full scale.
+STAIN_FULL_SCALE_TOLERANCE = 0.1
+#: To suggest White Anchor, blue is the darkest channel at the white, by at least this density.
+#: Fitted with the tolerance above on three sets of scans only (NORAD, SilverFast, Nikon Scan).
+STAIN_BLUE_MIN = 0.2
 
 #: The return shape of `measure_neutral_axis_from_log`: midtone, shadow, highlight or None, confidence.
 NeutralAxisRefs = tuple[tuple[float, float, float], tuple[float, float, float], object, float]
@@ -44,7 +51,11 @@ def measure_neutral_axis_ratios(image: ImageBuffer, roi: Optional[tuple], analys
     """(refs, reason) from the raw capture, metered against this frame's own bounds: the fixed
     transfer window finds no grays in a faded slide. `refs` is None, with a reason, when no
     trustworthy neutral axis exists."""
-    grid = prefilter_log_grid(image, roi, analysis_buffer)
+    return neutral_axis_from_grid(prefilter_log_grid(image, roi, analysis_buffer))
+
+
+def neutral_axis_from_grid(grid: ImageBuffer) -> tuple[Optional[NeutralAxisRefs], str]:
+    """`measure_neutral_axis_ratios` on a prefiltered log grid."""
     bounds = _measured_slide_bounds(grid)
     # A faded slide's grays carry the fade's cast, which can put them in the foliage or sky
     # sector; the unfiltered set is the fallback, gated by the same confidence.
@@ -79,6 +90,25 @@ def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
     return LogNegativeBounds(floors, ceils)
 
 
+def measure_white(grid: ImageBuffer) -> tuple[float, float, float]:
+    """Each channel's white: the log transmittance of its brightest cells in the analysis grid."""
+    r, g, b = (float(v) for v in np.percentile(grid.reshape(-1, 3), WHITE_PCT, axis=0))
+    return r, g, b
+
+
+def white_anchored_grid(grid: ImageBuffer, white: tuple[float, float, float]) -> np.ndarray:
+    """The grid as density above each channel's white, the space White Anchor renders in.
+    A cell brighter than the white stops at full scale, as a decode of the divided scan would."""
+    return np.minimum(grid - np.asarray(white, dtype=np.float32), 0.0).astype(np.float32)
+
+
+def stain_suggested(white: tuple[float, float, float]) -> bool:
+    """Whether the white reads as a yellow stain on clear film: the brightest channel near full
+    scale, and blue clearly the darkest. A dim scan with no white object never qualifies."""
+    brightest = max(white)
+    return brightest >= -STAIN_FULL_SCALE_TOLERANCE and white[2] <= min(white[0], white[1]) and brightest - white[2] >= STAIN_BLUE_MIN
+
+
 class EstimateMethod(StrEnum):
     """MIDTONE reads the midtone grays' own densities. SPREAD reads each channel's midtone-to-shadow
     spread, which cancels a per-channel density offset but follows a flat, noisy shadow."""
@@ -90,12 +120,14 @@ class EstimateMethod(StrEnum):
 @dataclass(frozen=True)
 class FadeEstimate:
     """Survivals from one Estimate. red is None when the method leaves Red Survival as it is;
-    reason is "" for a real estimate (see fade_ratios_from_neutral_axis)."""
+    reason is "" for a real estimate (see fade_ratios_from_neutral_axis). white is the frame's
+    measured white, None when the frame is not a slide."""
 
     red: Optional[float]
     green: float
     blue: float
     reason: str
+    white: Optional[tuple[float, float, float]] = None
 
 
 def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], method: str = EstimateMethod.SPREAD) -> tuple[float, float, str]:
@@ -160,27 +192,31 @@ def estimate_fade(
     roi: Optional[tuple],
     analysis_buffer: float,
     cam_matrix: Optional[np.ndarray] = None,
+    white_anchor: bool = False,
 ) -> dict[EstimateMethod, FadeEstimate]:
     """Both methods' estimates from one measurement of the grays. MIDTONE also sets Red Survival so
     the best-kept layer lands at 1.0; a ratio above 1 says red faded most. `cam_matrix` takes a
-    camera buffer into the working space the render applies the fade in."""
+    camera buffer into the working space the render applies the fade in. With `white_anchor`, the
+    grays are read as density above the frame's white, as White Anchor renders them."""
     if process_mode is not None and str(process_mode) != str(ProcessMode.E6):
         reason = tr("This frame is not a slide.")
         return {m: FadeEstimate(None, 1.0, 1.0, reason) for m in EstimateMethod}
     if cam_matrix is not None:
         image = apply_camera_matrix(negpy_core.nan_to_num(np.ascontiguousarray(image, dtype=np.float32), 1e-6, 1.0, 1e-6), cam_matrix)
-    refs, reason = measure_neutral_axis_ratios(image, roi, analysis_buffer)
+    grid = prefilter_log_grid(image, roi, analysis_buffer)
+    white = measure_white(grid)
+    refs, reason = neutral_axis_from_grid(white_anchored_grid(grid, white) if white_anchor else grid)
     out = {}
     for method in EstimateMethod:
         if refs is None:
-            out[method] = FadeEstimate(None, 1.0, 1.0, reason)
+            out[method] = FadeEstimate(None, 1.0, 1.0, reason, white)
             continue
         g, b, why = fade_ratios_from_neutral_axis(refs, method)
         red = None
         if method == EstimateMethod.MIDTONE and not (why and g == 1.0 and b == 1.0):
             lo, hi = RED_SURVIVAL_BOUNDS
             red = min(max(1.0 / max(g, b, 1.0), lo), hi)
-        out[method] = FadeEstimate(red, g, b, why)
+        out[method] = FadeEstimate(red, g, b, why, white)
     return out
 
 

@@ -73,6 +73,10 @@ class NormalizationProcessor:
             c.fade_ratio_r,
             c.fade_ratio_g,
             c.fade_ratio_b,
+            c.fade_white_anchor,
+            c.fade_white_r,
+            c.fade_white_g,
+            c.fade_white_b,
         )
 
     def process(self, image: ImageBuffer, context: PipelineContext) -> ImageBuffer:

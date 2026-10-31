@@ -158,7 +158,8 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
 
     Also composes in fade restoration for slides. Fade restores
     the densities the unmix recovered as faded, so it applies after: `fade @ unmix`. Either
-    factor, both or neither can be None.
+    factor, both or neither can be None. With White Anchor on, the result is a (3, 4) affine
+    `M (L - w)`: the last column is the log offset `-M w` that `unmix_log_image` adds.
     """
 
     profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
@@ -171,9 +172,20 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
         if _fade_applies(process, process_mode)
         else None
     )
-    if fade is None:
-        return unmix
-    return fade if unmix is None else fade @ unmix
+    matrix = unmix if fade is None else (fade if unmix is None else fade @ unmix)
+    white = _fade_white(process, process_mode)
+    if white is None:
+        return matrix
+    linear = np.eye(3) if matrix is None else matrix
+    return np.hstack([linear, -(linear @ white)[:, None]])
+
+
+def _fade_white(process: "ProcessConfig", process_mode: Optional[str]) -> Optional[np.ndarray]:
+    """The stored per-channel white (log transmittance) when White Anchor acts, else None."""
+    if not process.fade_white_anchor or (process_mode is not None and str(process_mode) != str(ProcessMode.E6)):
+        return None
+    white = np.array([process.fade_white_r, process.fade_white_g, process.fade_white_b], dtype=np.float64)
+    return white if bool(np.any(white != 0.0)) else None
 
 
 def _fade_applies(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
@@ -221,10 +233,13 @@ def resolve_fade_matrix(ratio_r: float, ratio_g: float, ratio_b: float) -> np.nd
 
 
 def unmix_log_image(img_log: ImageBuffer, matrix: Optional[np.ndarray]) -> ImageBuffer:
-    """Apply the unmix matrix to a (H, W, 3) log-density image; identity when None."""
+    """Apply the unmix matrix to a (H, W, 3) log-density image; identity when None. A (3, 4)
+    matrix is an affine: its last column is added after the 3x3, as normalization.wgsl does."""
     if matrix is None:
         return img_log
-    return np.einsum("hwc,kc->hwk", img_log.astype(np.float32, copy=False), matrix.astype(np.float32))
+    m = matrix.astype(np.float32)
+    out = np.einsum("hwc,kc->hwk", img_log.astype(np.float32, copy=False), m[:, :3])
+    return out + m[:, 3] if m.shape[1] == 4 else out
 
 
 def sorted_channel_grid(img_log: ImageBuffer) -> np.ndarray:
