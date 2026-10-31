@@ -29,6 +29,12 @@ AGREEMENT_TOLERANCE = 0.05
 RATIO_BOUNDS = (0.2, 5.0)
 #: Bound on `fade_ratio_r`, a fraction of the original density, so it cannot exceed 1.0.
 RED_SURVIVAL_BOUNDS = (0.05, 1.0)
+#: Below this neutral-axis confidence the grays are too mixed with colored content to estimate from.
+MIN_CONFIDENCE = 0.4
+#: Percentile of each channel's extremes for the frame's own bounds: a few clipped cells must not set them.
+COLOR_EXTREME_PCT = 0.1
+#: A cell at or below this log transmittance holds a decoded zero, not a density.
+CLIPPED_LOG = -5.0
 
 #: The return shape of `measure_neutral_axis_from_log`: midtone, shadow, highlight or None, confidence.
 NeutralAxisRefs = tuple[tuple[float, float, float], tuple[float, float, float], object, float]
@@ -40,10 +46,13 @@ def measure_neutral_axis_ratios(image: ImageBuffer, roi: Optional[tuple], analys
     trustworthy neutral axis exists."""
     grid = prefilter_log_grid(image, roi, analysis_buffer)
     bounds = _measured_slide_bounds(grid)
-    refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0)
-    if refs is None:
-        return None, tr("No reliable grays found on this frame.")
-    return refs, ""
+    # A faded slide's grays carry the fade's cast, which can put them in the foliage or sky
+    # sector; the unfiltered set is the fallback, gated by the same confidence.
+    for exclude in (True, False):
+        refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0, exclude_subjects=exclude)
+        if refs is not None and refs[3] >= MIN_CONFIDENCE:
+            return refs, ""
+    return None, tr("No reliable grays found on this frame.")
 
 
 def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
@@ -52,12 +61,17 @@ def _measured_slide_bounds(grid: ImageBuffer) -> LogNegativeBounds:
     analyzer does not fit, since its dense end is chroma-gated for an orange mask."""
     from negpy.features.exposure.models import EXPOSURE_CONSTANTS
 
+    cells = grid.reshape(-1, 3)
+    unclipped = cells[(cells > CLIPPED_LOG).all(axis=1)]
+    if len(unclipped):
+        cells = unclipped
+
     def _pct(p: float) -> list:
-        return [float(np.percentile(grid[:, :, ch], p)) for ch in range(3)]
+        return [float(np.percentile(cells[:, ch], p)) for ch in range(3)]
 
     base = float(EXPOSURE_CONSTANTS["base_luma_clip"])
     luma_f, luma_c = _pct(100.0 - base), _pct(base)
-    color_f, color_c = _pct(100.0 - 0.00001), _pct(0.00001)
+    color_f, color_c = _pct(100.0 - COLOR_EXTREME_PCT), _pct(COLOR_EXTREME_PCT)
     mean_f, mean_c = sum(luma_f) / 3.0, sum(luma_c) / 3.0
     mid_f, mid_c = sorted(color_f)[1], sorted(color_c)[1]
     floors = tuple(mean_f + (color_f[ch] - mid_f) for ch in range(3))
