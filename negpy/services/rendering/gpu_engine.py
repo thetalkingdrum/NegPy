@@ -38,7 +38,7 @@ from negpy.features.exposure.normalization import (
     measure_clip_fractions,
     measure_neutral_axis_from_log,
     effective_crosstalk_matrix,
-    fade_white_anchored,
+    fade_white_target,
     unmix_log_image,
     measure_highlight_point_from_log,
     measure_shadow_point_from_log,
@@ -1984,7 +1984,7 @@ class GPUEngine:
             LogNegativeBounds(adj_floors, adj_ceils),
             neutral_axis_refs,
             settings.exposure.cast_removal_strength,
-            fade_white_anchored(settings.process, settings.process.process_mode),
+            fade_white_target(settings.process, settings.process.process_mode),
         )
         # A finished positive skips the baseline gain, and the zone_taper.y lane below tells
         # the shader to skip display_rendering too. Matches transparency/logic.py.

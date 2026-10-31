@@ -1,6 +1,8 @@
 """The slide renders: a Slide as captured and a Positive frame. The engine routes here by
 process.path.render_path."""
 
+from typing import Optional
+
 import negpy_core
 import numpy as np
 
@@ -133,10 +135,10 @@ class TransparencyBaseProcessor:
 class TransferProcessor:
     """Normalized log density -> scene-linear positive through the transfer curve."""
 
-    def __init__(self, config: ExposureConfig, positive_source: bool = False, white_anchored: bool = False):
+    def __init__(self, config: ExposureConfig, positive_source: bool = False, white_target: Optional[float] = None):
         self.config = config
         self.positive_source = positive_source
-        self.white_anchored = white_anchored
+        self.white_target = white_target
 
     def process(self, image: ImageBuffer, context: PipelineContext) -> ImageBuffer:
         """
@@ -180,7 +182,7 @@ class TransferProcessor:
             final_bounds,
             context.metrics.get("neutral_axis_refs"),
             self.config.cast_removal_strength,
-            self.white_anchored,
+            self.white_target,
         )
         cast_offset = tuple(o * TRANSFER_DENSITY_RANGE for o in cast_offset_norm)
 

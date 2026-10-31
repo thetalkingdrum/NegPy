@@ -9,8 +9,10 @@ import pytest
 from negpy.domain.interfaces import PipelineContext
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.exposure.normalization import (
+    FADE_WHITE_HEADROOM,
     LogNegativeBounds,
     effective_crosstalk_matrix,
+    fade_white_target,
     prefilter_log_grid,
     unmix_log_image,
 )
@@ -80,15 +82,26 @@ def test_off_renders_bit_identical_with_a_stored_white():
     np.testing.assert_array_equal(a, b)
 
 
-def test_on_maps_the_white_to_full_scale_before_the_fade():
+def test_on_maps_a_bright_white_just_under_full_scale_before_the_fade():
     process = ProcessConfig(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, fade_white_anchor=True, **_WHITE)
     matrix = effective_crosstalk_matrix(process, ProcessMode.E6)
     assert matrix.shape == (3, 4)
     white = np.array([[[_WHITE["fade_white_r"], _WHITE["fade_white_g"], _WHITE["fade_white_b"]]]], dtype=np.float32)
-    np.testing.assert_allclose(unmix_log_image(white, matrix), 0.0, atol=1e-6)
+    np.testing.assert_allclose(unmix_log_image(white, matrix), -FADE_WHITE_HEADROOM, atol=1e-6)
     # One decade above the white restores as one decade over each layer's survival.
-    darker = unmix_log_image(white - 1.0, matrix).reshape(3)
+    darker = unmix_log_image(white - 1.0, matrix).reshape(3) + FADE_WHITE_HEADROOM
     np.testing.assert_allclose(darker, [-1.0, -1.0 / _RATIO_G, -1.0 / _RATIO_B], rtol=1e-5)
+
+
+def test_on_keeps_a_dim_white_at_its_cleanest_channel():
+    dim = {"fade_white_r": -0.8, "fade_white_g": -1.0, "fade_white_b": -1.1}
+    process = ProcessConfig(fade_ratio_g=_RATIO_G, fade_ratio_b=_RATIO_B, fade_white_anchor=True, **dim)
+    white = np.array([[list(dim.values())]], dtype=np.float32)
+    np.testing.assert_allclose(unmix_log_image(white, effective_crosstalk_matrix(process, ProcessMode.E6)), -0.8, atol=1e-6)
+
+
+def test_white_headroom_is_the_documented_one():
+    assert FADE_WHITE_HEADROOM == 0.1
 
 
 def test_on_with_no_white_measured_changes_nothing():
@@ -129,22 +142,22 @@ def test_cast_removal_meters_the_anchored_film():
     )
     grid = unmix_log_image(prefilter_log_grid(faded, None, 0.0), effective_crosstalk_matrix(process, ProcessMode.E6))
     top = np.percentile(grid.reshape(-1, 3), 99.9, axis=0)
-    np.testing.assert_allclose(top, 0.0, atol=0.02)
+    np.testing.assert_allclose(top, -FADE_WHITE_HEADROOM, atol=0.02)
 
 
 # Log refs (mid, shadow, highlight, confidence): neutral at the midtone, blue lighter in the shadows.
 _AXIS_SHADOW_OFF = ((-1.5, -1.5, -1.5), (-2.3, -2.3, -2.1), None, 1.0)
 
 
-def _normalized_white(bounds) -> tuple:
-    return tuple((0.0 - f) / (c - f) for f, c in zip(bounds.floors, bounds.ceils))
+def _normalized_white(bounds, target: float) -> tuple:
+    return tuple((target - f) / (c - f) for f, c in zip(bounds.floors, bounds.ceils))
 
 
 def test_cast_removal_keeps_the_anchored_white_neutral():
     """With Remove Stain on, a shadow ref off the midtone's line must not tilt the white."""
     bounds = LogNegativeBounds(*transfer_bounds())
-    gain, offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_anchored=True)
-    w = _normalized_white(bounds)
+    gain, offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_target=-FADE_WHITE_HEADROOM)
+    w = _normalized_white(bounds, -FADE_WHITE_HEADROOM)
     landed = [gain[ch] * w[ch] + offset[ch] for ch in range(3)]
     np.testing.assert_allclose(landed, landed[1], atol=1e-9)
     np.testing.assert_allclose(gain, 1.0, atol=1e-9)
@@ -152,21 +165,23 @@ def test_cast_removal_keeps_the_anchored_white_neutral():
 
 def test_cast_removal_without_the_anchor_fits_the_shadow_ref():
     bounds = LogNegativeBounds(*transfer_bounds())
-    gain, _offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_anchored=False)
+    gain, _offset = transfer_cast_affine(bounds, _AXIS_SHADOW_OFF, 1.0, white_target=None)
     assert gain[2] > 1.2
 
 
 @pytest.mark.parametrize(
-    "process, anchored",
+    "process, target",
     [
-        ({"fade_white_anchor": True, **_WHITE}, True),
-        ({"fade_white_anchor": False, **_WHITE}, False),
-        ({"fade_white_anchor": True}, False),
+        ({"fade_white_anchor": True, **_WHITE}, -FADE_WHITE_HEADROOM),
+        ({"fade_white_anchor": True, "fade_white_r": -0.8, "fade_white_g": -1.0, "fade_white_b": -1.1}, -0.8),
+        ({"fade_white_anchor": False, **_WHITE}, None),
+        ({"fade_white_anchor": True}, None),
     ],
 )
-def test_the_transfer_stage_knows_when_the_white_is_anchored(process, anchored):
+def test_the_transfer_stage_knows_where_the_white_is_anchored(process, target):
     cfg = _config(positive_source=True, **process)
-    assert exposure_processor(cfg).white_anchored is anchored
+    assert exposure_processor(cfg).white_target == target
+    assert fade_white_target(cfg.process, cfg.process.process_mode) == target
 
 
 def test_estimate_measures_the_stain_as_the_white():

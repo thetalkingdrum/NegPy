@@ -25,7 +25,7 @@ from negpy.features.exposure.normalization import (
     diffusion_plane,
     base_scan_density,
     effective_crosstalk_matrix,
-    fade_white_anchored,
+    fade_white_target,
     geometry_kwargs,
     normalized_roi,
 )
@@ -64,7 +64,7 @@ def exposure_processor(settings: WorkspaceConfig) -> Any:
     return TransferProcessor(
         settings.exposure,
         settings.process.positive_source,
-        fade_white_anchored(settings.process, settings.process.process_mode),
+        fade_white_target(settings.process, settings.process.process_mode),
     )
 
 

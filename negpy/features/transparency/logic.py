@@ -462,14 +462,14 @@ def apply_transfer_curve(
 
 
 def transfer_cast_affine(
-    bounds: Any, neutral_axis_refs: Any, slider_strength: float, white_anchored: bool
+    bounds: Any, neutral_axis_refs: Any, slider_strength: float, white_target: Optional[float]
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """Cast Removal's per-channel (gain, offset) on normalized density; one source for the CPU and the GPU.
-    With Remove Stain on, the anchored white is neutral by construction, so the line runs through the
-    midtone and that white. A line through the shadow ref would tilt the white the stain fix placed."""
+    With Remove Stain on, the anchored white (log `white_target` on every channel) is neutral by construction,
+    so the line runs through the midtone and that white. A line through the shadow ref would tilt it."""
     strength, axis = cast_solve_inputs(bounds, neutral_axis_refs, slider_strength)
-    if axis is not None and white_anchored:
-        axis = (axis[0], normalize_refs((0.0, 0.0, 0.0), bounds.floors, bounds.ceils), axis[2])
+    if axis is not None and white_target is not None:
+        axis = (axis[0], normalize_refs((white_target,) * 3, bounds.floors, bounds.ceils), axis[2])
     return neutral_axis_affine(axis, strength)
 
 

@@ -24,6 +24,8 @@ MASK_BLUR_PERCENT = 4.0
 # (weight, sigma in per-cent of the printed frame's short side) Gaussians that fit a sum of
 # radial exponentials, a halo and a bloom with a power-law tail. The weights sum to 1.
 DIFFUSION_PSF = ((0.0421, 0.213), (0.1576, 0.449), (0.2723, 0.926), (0.3540, 2.017), (0.1740, 5.48))
+# Remove Stain puts the white at least this log density below full scale, so clear areas do not clip.
+FADE_WHITE_HEADROOM = 0.1
 
 
 class LogNegativeBounds:
@@ -159,7 +161,9 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     Also composes in fade restoration for slides. Fade restores
     the densities the unmix recovered as faded, so it applies after: `fade @ unmix`. Either
     factor, both or neither can be None. With White Anchor on, the result is a (3, 4) affine
-    `M (L - w)`: the last column is the log offset `-M w` that `unmix_log_image` adds.
+    `M (L - w) + t`: the last column is the log offset `-M w + t` that `unmix_log_image` adds.
+    The neutral target t is the cleanest channel's white, capped at FADE_WHITE_HEADROOM below
+    full scale, so a dim scan keeps its exposure.
     """
 
     profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
@@ -177,7 +181,8 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
     if white is None:
         return matrix
     linear = np.eye(3) if matrix is None else matrix
-    return np.hstack([linear, -(linear @ white)[:, None]])
+    target = _white_target(white)
+    return np.hstack([linear, (target - linear @ white)[:, None]])
 
 
 def _fade_white(process: "ProcessConfig", process_mode: Optional[str]) -> Optional[np.ndarray]:
@@ -188,9 +193,14 @@ def _fade_white(process: "ProcessConfig", process_mode: Optional[str]) -> Option
     return white if bool(np.any(white != 0.0)) else None
 
 
-def fade_white_anchored(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
-    """Whether Remove Stain maps a stored white to full scale in this render."""
-    return _fade_white(process, process_mode) is not None
+def _white_target(white: np.ndarray) -> float:
+    return min(float(white.max()), -FADE_WHITE_HEADROOM)
+
+
+def fade_white_target(process: "ProcessConfig", process_mode: Optional[str]) -> Optional[float]:
+    """The neutral log level Remove Stain maps the stored white to in this render, else None."""
+    white = _fade_white(process, process_mode)
+    return None if white is None else _white_target(white)
 
 
 def _fade_applies(process: "ProcessConfig", process_mode: Optional[str]) -> bool:
