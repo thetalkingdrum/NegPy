@@ -25,7 +25,7 @@ from negpy.features.exposure.normalization import (
     resolve_analysis_region,
     unmix_log_image,
 )
-from negpy.features.process.fade import unmix_with_fade
+from negpy.features.process.fade import fade_white_space, unmix_with_fade
 from negpy.features.process.capture_color import apply_camera_matrix, camera_to_working_matrix
 from negpy.features.process.logic import should_fold_camera_wb
 from negpy.features.process.models import ProcessConfig
@@ -78,7 +78,7 @@ class TransparencyBaseProcessor:
         # Honoured here too: a rig-calibrated matrix is a capture correction like Hue Trim, and
         # the mode gate keeps a negative's profile from touching a slide. Inert at the shipped
         # default, so the as-captured render is unperturbed.
-        unmix = unmix_with_fade(self.config, context.process_mode)
+        unmix = unmix_with_fade(self.config, context.process_mode, fade_white_space(context.cam_xyz, context.camera_wb))
         pre, post = density_stage_matrices(self.config, context.cam_xyz, matrix, unmix)
         linear = image if pre is None else apply_camera_matrix(negpy_core.nan_to_num(image, epsilon, 1.0, epsilon), pre)
         img_log = negpy_core.log_density_open(np.ascontiguousarray(linear, dtype=np.float32))

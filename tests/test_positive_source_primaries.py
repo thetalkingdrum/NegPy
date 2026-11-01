@@ -11,7 +11,7 @@ from negpy.desktop.session import camera_raw_preview
 from negpy.domain.interfaces import PipelineContext
 from negpy.features.exposure.normalization import relog_matrix_image, unmix_log_image
 from negpy.features.process.capture_color import camera_to_working_matrix, is_source_profile, source_cam_xyz
-from negpy.features.process.fade import unmix_with_fade
+from negpy.features.process.fade import fade_white_space, unmix_with_fade
 from negpy.features.process.models import ProcessConfig, ProcessMode
 from negpy.features.transparency.logic import density_stage_matrices
 from negpy.features.transparency.processor import TransparencyBaseProcessor
@@ -129,10 +129,10 @@ def test_a_camera_raw_on_positive_converts_before_the_density_stage():
     fade and the stain offset, which then act on balanced channels."""
     wb = (2.0, 1.0, 1.5)
     img = np.full((40, 60, 3), 0.8, np.float32) / np.asarray(wb, np.float32)
-    config = _slide(
-        positive_source=True, linear_raw=True, fade_white_anchor=True, fade_white_r=-0.3, fade_white_g=-0.1, fade_white_b=-0.2, **_FADE
-    )
+    space = fade_white_space(_CAMERA, list(wb))
+    white = {"fade_white_r": -0.3, "fade_white_g": -0.1, "fade_white_b": -0.2, "fade_white_space": space}
+    config = _slide(positive_source=True, linear_raw=True, fade_white_anchor=True, **white, **_FADE)
     _, ctx = _render(config, img, cam_xyz=_CAMERA, camera_wb=list(wb))
     cam = camera_to_working_matrix(_CAMERA, wb)
-    expected = unmix_log_image(np.log10(img @ cam.T), unmix_with_fade(config, ProcessMode.E6))
+    expected = unmix_log_image(np.log10(img @ cam.T), unmix_with_fade(config, ProcessMode.E6, space))
     np.testing.assert_allclose(_restored_log(ctx), expected, atol=1e-4)
