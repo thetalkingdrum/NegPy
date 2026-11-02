@@ -533,18 +533,32 @@ def crossover_offsets(table: Optional[Sequence[float]], crossover: float, neutra
 
 
 def apply_crossover(img_log: ImageBuffer, offsets: Optional[CrossoverOffsets]) -> ImageBuffer:
-    """*img_log* plus the offset row its own mean log selects, linear between bins."""
+    """*img_log* plus the offset row its own mean log selects, linear between bins. Float32 in the
+    shader's order (normalization.wgsl), so the engines agree."""
     if offsets is None:
         return img_log
-    img = np.asarray(img_log, dtype=np.float32)
-    m = _mean_log(img.reshape(-1, 3).astype(np.float64))
-    span = offsets.hi - offsets.lo
-    pos = np.zeros_like(m) if span <= 0.0 else np.clip((m - offsets.lo) / span, 0.0, 1.0) * (CROSSOVER_BINS - 1)
-    i0 = np.floor(pos).astype(np.intp)
+    img = np.ascontiguousarray(img_log, dtype=np.float32)
+    cells = img.reshape(-1, 3)
+    m = (cells[:, 0] + cells[:, 1] + cells[:, 2]) * np.float32(1.0 / 3.0)
+    lo, span = np.float32(offsets.lo), np.float32(offsets.hi - offsets.lo)
+    if span > 0.0:
+        pos = np.clip((m - lo) / span, np.float32(0.0), np.float32(1.0)) * np.float32(CROSSOVER_BINS - 1)
+    else:
+        pos = np.zeros_like(m)
+    i0 = np.minimum(pos.astype(np.intp), CROSSOVER_BINS - 1)
     i1 = np.minimum(i0 + 1, CROSSOVER_BINS - 1)
-    f = (pos - i0)[:, None].astype(np.float32)
-    delta = offsets.bins[i0] * (1.0 - f) + offsets.bins[i1] * f
-    return (img.reshape(-1, 3) + delta).reshape(img.shape).astype(np.float32)
+    f = (pos - i0.astype(np.float32))[:, None]
+    delta = offsets.bins[i0] * (np.float32(1.0) - f) + offsets.bins[i1] * f
+    return (cells + delta).reshape(img.shape)
+
+
+def crossover_uniform(offsets: Optional[CrossoverOffsets]) -> bytes:
+    """The shader's table: (lo, hi, on, 0) then CROSSOVER_BINS rows of vec4, zeros when off."""
+    if offsets is None:
+        return bytes(16 * (CROSSOVER_BINS + 1))
+    rows = np.zeros((CROSSOVER_BINS, 4), dtype=np.float32)
+    rows[:, :3] = offsets.bins
+    return np.array([offsets.lo, offsets.hi, 1.0, 0.0], dtype=np.float32).tobytes() + rows.tobytes()
 
 
 def crossover_space(density: FadeDensity, white_space: str) -> str:
@@ -561,16 +575,26 @@ MeasuredCrossover = tuple[Optional[tuple[float, ...]], str]
 
 
 def resolve_crossover(
-    process: ProcessConfig, space: str, grid: Callable[[], ImageBuffer]
+    process: ProcessConfig, space: str, grid: Callable[[], ImageBuffer], measure: bool = True
 ) -> tuple[Optional[tuple[float, ...]], Optional[MeasuredCrossover]]:
     """(table, measured): the table a render applies, and the one it measured on the after-fade *grid*
-    when the stored one is stale, else None. Nothing is read with Crossover at 0."""
+    when the stored one is stale, else None. Nothing is read with Crossover at 0. Without *measure*
+    (a tile of an export) a stale table does not apply."""
     if render_path(process) is RenderPath.PRINT or process.fade_crossover == 0.0:
         return None, None
     if process.fade_crossover_space == space:
         return process.fade_crossover_table, None
+    if not measure:
+        return None, None
     table = measure_crossover(grid())
     return table, (table, space)
+
+
+def with_fade_crossover(process: ProcessConfig, measured: Optional[MeasuredCrossover]) -> ProcessConfig:
+    """*process* carrying a table `resolve_crossover` measured; unchanged with none."""
+    if measured is None:
+        return process
+    return replace(process, fade_crossover_table=measured[0], fade_crossover_space=measured[1])
 
 
 def survival_grid(

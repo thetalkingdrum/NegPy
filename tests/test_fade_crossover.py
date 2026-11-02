@@ -172,9 +172,14 @@ def test_the_table_survives_a_flat_round_trip():
     assert back.process.fade_crossover == 0.5 and back.process.fade_crossover_space == "abc"
 
 
-def test_a_frame_with_the_table_on_renders_on_the_cpu():
-    from negpy.services.rendering.image_processor import ImageProcessor
+def test_one_engine_follows_a_strength_change():
+    """The base stage is cached per config: the crossover fields are in its key."""
+    from negpy.services.rendering.engine import DarkroomEngine
 
-    on = replace(WorkspaceConfig(), process=replace(ProcessConfig(), process_mode=ProcessMode.E6, fade_crossover=0.5))
-    assert ImageProcessor._cpu_only(on)
-    assert not ImageProcessor._cpu_only(replace(on, process=replace(on.process, fade_crossover=0.0)))
+    _, image, est = _case("crossover")
+    engine = DarkroomEngine()
+    renders = []
+    for strength in (0.0, 1.0):
+        process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, strength))
+        renders.append(np.asarray(engine.process(image, replace(WorkspaceConfig(), process=process), source_hash="same")))
+    assert np.abs(renders[1] - renders[0]).max() > 0.05

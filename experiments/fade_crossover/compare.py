@@ -40,8 +40,8 @@ def slide_config(path: str) -> WorkspaceConfig:
     return replace(config, exposure=mode_aware_exposure_reset(ProcessMode.E6, config.exposure))
 
 
-def compare(path: Path, long_edge: int, method: EstimateMethod) -> None:
-    processor = ImageProcessor(use_gpu=False)
+def compare(path: Path, long_edge: int, method: EstimateMethod, gpu: bool = False) -> None:
+    processor = ImageProcessor(use_gpu=gpu)
     config = slide_config(str(path))
     buffer, _, _ = processor._load_source_f32(str(path), config)
     buffer = _downsample_to_long_edge(np.ascontiguousarray(buffer, dtype=np.float32), long_edge)
@@ -79,12 +79,14 @@ def compare(path: Path, long_edge: int, method: EstimateMethod) -> None:
             settings,
             source_hash,
             render_size_ref=float(max(buffer.shape[:2])),
-            prefer_gpu=False,
+            prefer_gpu=gpu,
             wants_uv_grid=False,
             cam_xyz=cam_xyz,
             camera_wb=camera_wb,
             cache_stages=False,
         )
+        if hasattr(result, "readback"):
+            result = result.readback()
         rgb = np.clip(np.asarray(result, dtype=np.float32)[..., :3], 0.0, 1.0)
         out = path.with_name(f"{path.stem}.crossover-{strength:g}.png")
         Image.fromarray((rgb * 255.0 + 0.5).astype(np.uint8)).save(out)
@@ -97,9 +99,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("paths", nargs="+", type=Path, help="camera RAW or scanner TIFF files")
     parser.add_argument("--long-edge", type=int, default=2000, help="downsample to this long edge first (default 2000)")
     parser.add_argument("--method", choices=[m.value for m in EstimateMethod], default=EstimateMethod.MIDTONE.value)
+    parser.add_argument("--gpu", action="store_true", help="render on the GPU, as the preview does")
     args = parser.parse_args(argv)
     for path in args.paths:
-        compare(path.resolve(), args.long_edge, EstimateMethod(args.method))
+        compare(path.resolve(), args.long_edge, EstimateMethod(args.method), args.gpu)
     return 0
 
 
