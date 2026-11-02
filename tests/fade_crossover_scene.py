@@ -203,13 +203,17 @@ def survival_changes(est, crossover: float, with_table: bool = True) -> dict:
     from negpy.features.process.models import ProcessConfig, ProcessMode
 
     changes = dict(
-        fade_ratio_r=1.0 if est.red is None else est.red, fade_ratio_g=est.green, fade_ratio_b=est.blue, fade_crossover=crossover
+        fade_ratio_r=1.0 if est.red is None else est.red,
+        fade_ratio_g=est.green,
+        fade_ratio_b=est.blue,
+        fade_crossover=crossover,
+        fade_ab_model="hybrid",
     )
     if with_table and est.crossover is not None:
         process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **changes)
         changes.update(
             fade_crossover_table=est.crossover,
-            fade_crossover_space=crossover_space(fade_density(process, ProcessMode.E6, ""), ""),
+            fade_crossover_space=crossover_space(fade_density(process, ProcessMode.E6, ""), "", process),
         )
     return changes
 

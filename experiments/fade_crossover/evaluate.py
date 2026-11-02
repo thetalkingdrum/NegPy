@@ -70,11 +70,48 @@ def report(title: str, film, **scene_kw) -> None:
         print(f"| {name} | " + " | ".join(cells) + f" | {d0[0]:+.1f} | {d0[1]:+.0f} | {dr[0]:+.1f} | {dr[1]:+.0f} |")
 
 
+#: (label, process fields) of the model comparison: color model, tone and Estimate neutrals.
+VARIANTS = (
+    ("NegPy", dict(fade_ab_model="negpy")),
+    ("Hybrid", dict(fade_ab_model="hybrid")),
+    ("NC model", dict(fade_ab_model="nc")),
+    ("NegPy + NC tone", dict(fade_ab_model="negpy", fade_ab_tone="nc")),
+    ("Hybrid + NC tone", dict(fade_ab_model="hybrid", fade_ab_tone="nc")),
+    ("NC model + NC tone", dict(fade_ab_model="nc", fade_ab_tone="nc")),
+)
+
+
+def models(title: str, film, **scene_kw) -> None:
+    """Every color model and tone at crossover 1: the ramp's C* and the patches' distance from the unfaded film."""
+    from fade_crossover_scene import estimate_grid
+    from negpy.features.process.fade import EstimateMethod, estimate_fade
+
+    scene = build_scene(**scene_kw)
+    image = scan_image(film, scene)
+    grid = estimate_grid(image)
+    ref_lab = to_lab(render(scan_image(REFERENCE, scene), {}))
+    print(f"\n## Models: {title}\n")
+    print("| variant | neutrals | ramp C* max | ramp C* mean | patch dE76 mean | patch dE76 max |\n|---|---|---|---|---|---|")
+    for neutrals in ("negpy", "nc"):
+        est = estimate_fade(grid, neutrals=neutrals)[EstimateMethod.MIDTONE]
+        for label, fields in VARIANTS:
+            if neutrals == "nc" and fields.get("fade_ab_model") == "nc":
+                continue  # the NC model ignores the survivals, so the neutrals do not reach it
+            lab = to_lab(render(image, {**survival_changes(est, 1.0), **fields}))
+            ramp = ramp_chroma(lab, scene)
+            de = [float(np.linalg.norm(region_lab(lab, m) - region_lab(ref_lab, m))) for m in scene.patches.values()]
+            print(
+                f"| {label} | {neutrals} | {max(a for a, _ in ramp):.1f} | {np.mean([b for _, b in ramp]):.1f} | {np.mean(de):.1f} | {max(de):.1f} |"
+            )
+
+
 def main() -> None:
     report("Crossover fade (per-layer curves)", CROSSOVER)
     report("Crossover fade with a large red subject", CROSSOVER, subject=True)
     report("Linear fade only (survivals 1.0 / 0.7 / 0.5)", linear_fade(REFERENCE, (1.0, 0.7, 0.5)))
     report("Two opposite groups at one exposure, on the unfaded film", REFERENCE, opposite_groups=True)
+    models("crossover fade", CROSSOVER)
+    models("linear fade", linear_fade(REFERENCE, (1.0, 0.7, 0.5)))
     np.set_printoptions(precision=3)
 
 

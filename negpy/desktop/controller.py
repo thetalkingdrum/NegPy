@@ -10012,7 +10012,7 @@ class AppController(QObject):
             return {}
         cam_xyz, camera_wb = self._effective_cam_xyz()
         white_space = render_white_space(process, process.process_mode, cam_xyz, camera_wb)
-        if measured[1] != crossover_space(fade_density(process, process.process_mode, white_space), white_space):
+        if measured[1] != crossover_space(fade_density(process, process.process_mode, white_space), white_space, process):
             return {}
         return {"fade_crossover_table": measured[0], "fade_crossover_space": measured[1]}
 

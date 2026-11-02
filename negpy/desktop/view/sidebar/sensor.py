@@ -5,14 +5,22 @@ from negpy.kernel.system.i18n import tr
 from PyQt6.QtWidgets import QDialog, QHBoxLayout
 
 from negpy.desktop.view.sidebar.base import BaseSidebar
-from negpy.desktop.view.styles.templates import field_label, hint_label, labeled_action, set_toggle_suggested, wrap_tooltip
+from negpy.desktop.view.styles.templates import field_label, field_row, hint_label, labeled_action, set_toggle_suggested, wrap_tooltip
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.sidebar.scan_setup import resolved_rig
 from negpy.desktop.view.widgets.fold import group_fold
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
+from negpy.desktop.view.widgets.segmented_choice import SegmentedChoice
 from negpy.desktop.view.widgets.step_combo import StepCombo
 from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS, EstimateMethod, FadeEstimate, stain_suggested
-from negpy.features.process.models import ProcessMode, SensorUnmix, invalidate_local_bounds
+from negpy.features.process.models import (
+    FadeABModel,
+    FadeABNeutrals,
+    FadeABTone,
+    ProcessMode,
+    SensorUnmix,
+    invalidate_local_bounds,
+)
 from negpy.features.process.path import RenderPath, render_path
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.features.rgbscan.models import is_rgb_triplet
@@ -197,6 +205,55 @@ class SensorSidebar(BaseSidebar):
         self.fade_stain_hint.setVisible(False)
         self._fade_hint_hash: Optional[str] = None
 
+        self.fade_crossover_slider = CompactSlider(tr("Crossover"), 0.0, 100.0, conf.fade_crossover * 100.0, step=1.0, unit="%")
+        self.fade_crossover_slider.setToolTip(
+            tr("Removes the color shift that changes from the shadows to the highlights, which the Survival sliders cannot fix.")
+        )
+        # What the frame's crossover table found, or why Crossover is grayed out.
+        self.fade_crossover_hint = hint_label("")
+        self.fade_crossover_hint.setVisible(False)
+
+        # A/B against NegativeConverter's expired-film rescue. The values are the stored enum values.
+        self.fade_ab_neutrals_btn = SegmentedChoice(
+            (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC"))),
+            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
+            data=tuple(m.value for m in FadeABNeutrals),
+        )
+        self.fade_ab_model_btn = SegmentedChoice(
+            (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.layer-group", tr("Hybrid"))),
+            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
+            data=tuple(m.value for m in FadeABModel),
+        )
+        self.fade_ab_tone_btn = SegmentedChoice(
+            (("fa5s.ban", tr("Off")), ("fa5s.adjust", tr("NC"))),
+            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
+            data=tuple(m.value for m in FadeABTone),
+        )
+        for btn, tips in (
+            (self.fade_ab_neutrals_btn, (tr("NegPy: the gray finder Estimate always uses."), tr("NC: NegativeConverter's gray finder."))),
+            (
+                self.fade_ab_model_btn,
+                (
+                    tr("NegPy: the Survival sliders only."),
+                    tr("NC: NegativeConverter's color table on the image, with Survival and Remove Stain off."),
+                    tr("Hybrid: the Survival sliders, then Crossover."),
+                ),
+            ),
+            (self.fade_ab_tone_btn, (tr("Off: no tone change."), tr("NC: NegativeConverter's levels, brightness and contrast."))),
+        ):
+            for i, tip in enumerate(tips):
+                btn.set_choice_tooltip(i, tip)
+        compare_header, self.fade_compare_fold = group_fold(
+            "sensor_fade_compare",
+            tr("Compare"),
+            field_row(tr("Neutrals"), self.fade_ab_neutrals_btn),
+            field_row(tr("Color model"), self.fade_ab_model_btn),
+            field_row(tr("Tone"), self.fade_ab_tone_btn),
+        )
+        self.fade_compare_fold.button.setToolTip(
+            wrap_tooltip(tr("Compare: switches parts of Fade Restoration to NegativeConverter's method, to judge the two side by side."))
+        )
+
         fade_header, self.fade_fold = group_fold(
             "sensor_fade",
             tr("Fade Restoration"),
@@ -206,6 +263,10 @@ class SensorSidebar(BaseSidebar):
             self.fade_estimate_row,
             self.fade_estimate_hint,
             self.fade_stain_hint,
+            self.fade_crossover_slider,
+            self.fade_crossover_hint,
+            compare_header,
+            self.fade_compare_fold,
         )
 
         self.fade_header = self.fade_fold.button
@@ -313,6 +374,14 @@ class SensorSidebar(BaseSidebar):
         self.crosstalk_strength_slider.valueChanged.connect(lambda v: self._on_crosstalk_strength_changed(v, persist=False))
         self.crosstalk_strength_slider.valueCommitted.connect(lambda v: self._on_crosstalk_strength_changed(v, persist=True))
 
+        self.fade_crossover_slider.valueChanged.connect(lambda v: self._on_fade_crossover_changed(v, persist=False))
+        self.fade_crossover_slider.valueCommitted.connect(lambda v: self._on_fade_crossover_changed(v, persist=True))
+        for btn, field in (
+            (self.fade_ab_neutrals_btn, "fade_ab_neutrals"),
+            (self.fade_ab_model_btn, "fade_ab_model"),
+            (self.fade_ab_tone_btn, "fade_ab_tone"),
+        ):
+            btn.currentChanged.connect(lambda _i, b=btn, f=field: self.controller.set_roll_default("fade", **{f: b.currentData()}))
         self.fade_ratio_r_slider.valueChanged.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=False))
         self.fade_ratio_r_slider.valueCommitted.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=True))
         self.fade_ratio_g_slider.valueChanged.connect(
@@ -505,6 +574,37 @@ class SensorSidebar(BaseSidebar):
             fade_ratio_b=ratio_b,
         )
 
+    @staticmethod
+    def cycle_choice(btn: SegmentedChoice) -> None:
+        """The next choice of a Compare control, the action its shortcut runs."""
+        btn.setCurrentIndex((btn.currentIndex() + 1) % btn.count())
+
+    def _on_fade_crossover_changed(self, val: float, persist: bool = True) -> None:
+        self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, fade_crossover=val / 100.0)
+
+    def _sync_crossover(self, conf) -> None:
+        """Crossover acts under the Hybrid color model on a frame with a table; the hint names what the
+        table found, or why the slider is grayed out."""
+        from negpy.features.process.fade import crossover_description
+
+        self.fade_crossover_slider.setValue(conf.fade_crossover * 100.0)
+        hybrid = conf.fade_ab_model == FadeABModel.HYBRID
+        table = conf.fade_crossover_table
+        self.fade_crossover_slider.setEnabled(hybrid and table is not None)
+        if table is None:
+            text = tr("Click Estimate to measure the crossover.")
+        else:
+            text = crossover_description(table)
+            if not hybrid:
+                text += " " + tr("Set Color model to Hybrid to use Crossover.")
+        self.fade_crossover_hint.setText(text)
+        for btn, value in (
+            (self.fade_ab_neutrals_btn, conf.fade_ab_neutrals),
+            (self.fade_ab_model_btn, conf.fade_ab_model),
+            (self.fade_ab_tone_btn, conf.fade_ab_tone),
+        ):
+            btn.setCurrentIndex(max(0, btn.findData(str(value))))
+
     def _show_fade_hint(self, text: str, stain: str = "") -> None:
         """The hints belong to the frame they were written on; sync_ui clears them on another frame.
         `stain` is the suggestion to turn on Remove Stain, "" for none."""
@@ -545,7 +645,7 @@ class SensorSidebar(BaseSidebar):
         method = EstimateMethod(self.estimate_method_combo.currentData())
         anchor = white_anchor
         space = render_white_space(conf, conf.process_mode, source.cam_xyz, source.camera_wb)
-        estimates = estimate_fade(grid, white_anchor=anchor, camera_raw=bool(space))
+        estimates = estimate_fade(grid, white_anchor=anchor, camera_raw=bool(space), neutrals=conf.fade_ab_neutrals)
         chosen, other = estimates[method], estimates[next(m for m in EstimateMethod if m != method)]
         failed = bool(chosen.reason) and chosen.green == 1.0 and chosen.blue == 1.0
         # The white is stored with the survivals; a render measures one only for a stale camera RAW
@@ -581,7 +681,7 @@ class SensorSidebar(BaseSidebar):
         crossover = {}
         if chosen.crossover is not None:
             new_conf = replace(conf, **survivals)
-            tag = crossover_space(fade_density(new_conf, conf.process_mode, space), space)
+            tag = crossover_space(fade_density(new_conf, conf.process_mode, space), space, new_conf)
             crossover = dict(fade_crossover_table=chosen.crossover, fade_crossover_space=tag)
         self.controller.set_roll_default("fade", **survivals, **crossover)
 
@@ -626,6 +726,7 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_g_slider.setValue(conf.fade_ratio_g)
             self.fade_ratio_b_slider.setValue(conf.fade_ratio_b)
             self.fade_white_anchor_btn.setChecked(conf.fade_white_anchor)
+            self._sync_crossover(conf)
             slide = render_path(conf) is not RenderPath.PRINT
             # The content, never the fold: the fold's visibility is its open state.
             self.fade_fold.content.setVisible(slide)
@@ -633,6 +734,7 @@ class SensorSidebar(BaseSidebar):
                 self.fade_estimate_hint.setText("")
                 self._show_stain_suggestion("")
             self.fade_estimate_hint.setVisible(slide and bool(self.fade_estimate_hint.text()))
+            self.fade_crossover_hint.setVisible(slide and bool(self.fade_crossover_hint.text()))
             self.fade_stain_hint.setVisible(slide and bool(self.fade_stain_hint.text()))
 
             self.hue_trim_slider.setValue(conf.hue_trim)
@@ -663,6 +765,10 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_g_slider,
             self.fade_ratio_b_slider,
             self.fade_white_anchor_btn,
+            self.fade_crossover_slider,
+            self.fade_ab_neutrals_btn,
+            self.fade_ab_model_btn,
+            self.fade_ab_tone_btn,
             self.hue_trim_slider,
         ):
             w.blockSignals(blocked)

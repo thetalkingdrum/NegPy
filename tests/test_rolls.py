@@ -1218,3 +1218,16 @@ def test_a_measured_camera_raw_frame_keeps_its_white_over_a_scanner_roll_white()
     assert (resolved.fade_ratio_g, resolved.fade_white_r, resolved.fade_white_space) == (0.8, -0.7, "abc123")
     unmeasured = resolve_roll_config(repo, roll_id, "h2", WorkspaceConfig()).process
     assert (unmeasured.fade_white_r, unmeasured.fade_white_space) == (-0.1, "")
+
+
+def test_a_roll_with_older_fade_defaults_reads_the_new_fade_fields_at_their_defaults():
+    from negpy.features.process.models import ProcessConfig
+    from negpy.services.assets.rolls import LATE_FADE_DEFAULTS, frame_roll_defaults
+
+    process = ProcessConfig()
+    for name, value in LATE_FADE_DEFAULTS.items():
+        assert getattr(process, name) == value, name
+    older = {"fade_ratio_g": 0.8}
+    assert frame_roll_defaults(older, process) == {**LATE_FADE_DEFAULTS, **older}
+    assert frame_roll_defaults({"hue_trim": 2.0}, process) == {"hue_trim": 2.0}
+    assert frame_roll_defaults({"fade_ratio_g": 0.8, "fade_ab_model": "nc"}, process)["fade_ab_model"] == "nc"

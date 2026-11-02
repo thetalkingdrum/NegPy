@@ -496,6 +496,9 @@ class ShortcutManager:
             "assign_sequential_frame": lambda: right.metadata_sidebar.frame_sequence_btn.click(),
             "measure_chart": lambda: controls.sensor_sidebar.measure_chart_btn.click(),
             "estimate_fade": lambda: controls.sensor_sidebar.estimate_fade_btn.click(),
+            "fade_ab_neutrals_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_neutrals_btn),
+            "fade_ab_model_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_model_btn),
+            "fade_ab_tone_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_tone_btn),
             "scan_prescan": (lambda: right.scan_sidebar.prescan_btn.click() if getattr(right, "scan_sidebar", None) is not None else None),
             "scan_meter_frame": (
                 lambda: right.scan_sidebar.exposure_meter_btn.click() if getattr(right, "scan_sidebar", None) is not None else None

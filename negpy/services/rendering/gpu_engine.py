@@ -292,6 +292,7 @@ def _analysis_cache_key(settings: WorkspaceConfig, analysis_source_hash: str, fi
         p.fade_crossover,
         p.fade_crossover_table,
         p.fade_crossover_space,
+        p.fade_ab_model,
         g.rotation,
         g.flip_horizontal,
         g.flip_vertical,
@@ -894,7 +895,7 @@ class GPUEngine:
         measured_crossover = None
         crossover = None
         if slide_stage is not None:
-            space = crossover_space(FadeDensity(unmix_m, fade_anchor_m), white_space)
+            space = crossover_space(FadeDensity(unmix_m, fade_anchor_m), white_space, settings.process)
             crossover_key = None if white_key is None else white_key + (space, proc.fade_crossover_space)
 
             def _faded_grid() -> np.ndarray:
@@ -3061,7 +3062,7 @@ class GPUEngine:
         # auto refs, anchor or textural range need it.
         tile_white_space = render_white_space(settings.process, settings.process.process_mode, cam_xyz, camera_wb)
         unmix_m, fade_anchor_m = fade_density(settings.process, settings.process.process_mode, tile_white_space)
-        tile_space = crossover_space(FadeDensity(unmix_m, fade_anchor_m), tile_white_space)
+        tile_space = crossover_space(FadeDensity(unmix_m, fade_anchor_m), tile_white_space, settings.process)
         tile_crossover = crossover_offsets(
             resolve_crossover(settings.process, tile_space, lambda: np.empty(0), measure=False)[0], settings.process.fade_crossover
         )

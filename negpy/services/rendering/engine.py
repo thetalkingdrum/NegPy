@@ -251,6 +251,7 @@ class DarkroomEngine:
             settings.process.fade_crossover,
             settings.process.fade_crossover_table,
             settings.process.fade_crossover_space,
+            settings.process.fade_ab_model,
             settings.process.lock_bounds,
             settings.process.use_cast_average,
             settings.process.locked_neutral_axis,
@@ -399,7 +400,11 @@ class DarkroomEngine:
         timing.lap("crop")
 
         if not flat_intent:
+            from negpy.features.process.nc_rescue import apply_nc_stage
             from negpy.services.export.print import PrintService
+
+            # NegativeConverter's A/B stages, CPU only: they read the cropped positive as their app does.
+            current_img = apply_nc_stage(current_img, settings.process)
 
             paper = PrintService.effective_paper_linear(settings.finish, settings.toning)
             carrier_live = settings.finish.carrier_width > 0.0 and not context.crop_preview_full

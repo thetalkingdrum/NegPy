@@ -421,3 +421,56 @@ def test_fade_restoration_shows_only_on_a_slide(mode, positive, shown):
     w.sync_ui()
     assert w.fade_fold.content.isHidden() is not shown
     assert w.fade_header.isHidden() is not shown
+
+
+def _slide_sidebar(**process):
+    cfg = WorkspaceConfig()
+    cfg = replace(cfg, process=replace(cfg.process, process_mode=ProcessMode.E6, **process))
+    ctrl = MagicMock()
+    ctrl.state.config = cfg
+    w = SensorSidebar(ctrl)
+    w.sync_ui()
+    return w, ctrl
+
+
+_TABLE = (-1.5, -2.5, 0.2, 0.1, 0.2, -0.3, -1.5, 0.3, 0.0, 0.0, 0.0, -0.5, 0.3, -0.1, -0.1, 0.2)
+
+
+def test_crossover_waits_for_a_table_and_the_hybrid_model():
+    w, _ = _slide_sidebar()
+    assert not w.fade_crossover_slider.isEnabled()
+    assert "Estimate" in w.fade_crossover_hint.text()
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE)
+    assert not w.fade_crossover_slider.isEnabled()
+    assert "Hybrid" in w.fade_crossover_hint.text()
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    assert w.fade_crossover_slider.isEnabled()
+    assert "Crossover" in w.fade_crossover_hint.text()
+
+
+def test_the_hint_names_the_shadow_and_highlight_casts():
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    text = w.fade_crossover_hint.text()
+    assert "Shadows lean" in text and "Highlights lean" in text
+
+
+def test_the_crossover_slider_stores_a_fraction_on_the_fade_card():
+    w, ctrl = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    w.fade_crossover_slider.valueCommitted.emit(40.0)
+    ctrl.set_roll_default.assert_called_with("fade", persist=True, readback_metrics=True, fade_crossover=0.4)
+
+
+def test_each_compare_choice_stores_its_enum_value_on_the_fade_card():
+    w, ctrl = _slide_sidebar()
+    for btn, field, value in (
+        (w.fade_ab_neutrals_btn, "fade_ab_neutrals", "nc"),
+        (w.fade_ab_model_btn, "fade_ab_model", "hybrid"),
+        (w.fade_ab_tone_btn, "fade_ab_tone", "nc"),
+    ):
+        btn.setCurrentIndex(btn.findData(value))
+        ctrl.set_roll_default.assert_called_with("fade", **{field: value})
+
+
+def test_sync_shows_the_frame_s_compare_choices():
+    w, _ = _slide_sidebar(fade_ab_neutrals="nc", fade_ab_model="nc", fade_ab_tone="nc")
+    assert (w.fade_ab_neutrals_btn.currentData(), w.fade_ab_model_btn.currentData(), w.fade_ab_tone_btn.currentData()) == ("nc", "nc", "nc")

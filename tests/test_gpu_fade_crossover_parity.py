@@ -95,3 +95,21 @@ class TestTiledFadeCrossover(unittest.TestCase):
         self.assertEqual(tiled.shape, direct.shape)
         self.assertGreater(float(np.abs(tiled - off).mean()), 0.01, "the table must reach the tiles")
         self.assertLess(float(np.abs(tiled - direct).mean()), 0.002)
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+class TestGpuFollowsCrossover(unittest.TestCase):
+    def test_one_gpu_engine_follows_a_strength_change(self):
+        from negpy.services.rendering.gpu_engine import GPUEngine
+
+        img = scan_image(CROSSOVER, build_scene(192, 144))
+        est = estimate(img)
+        engine = GPUEngine()
+        try:
+            out = []
+            for strength in (0.0, 1.0):
+                tex, _ = engine.process_to_texture(img, _settings(survival_changes(est, strength)), scale_factor=1.0, apply_layout=False)
+                out.append(engine._readback_downsampled(tex))
+        finally:
+            engine.destroy_all()
+        self.assertGreater(float(np.abs(out[1] - out[0]).max()), 0.05)

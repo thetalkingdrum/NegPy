@@ -108,7 +108,7 @@ class TransparencyBaseProcessor:
         log_grid = image_log_grid() if stage.pre is None else prefilter_log_grid(linear, an_roi, an_buffer)
         faded_grid = unmix_log_image(log_grid, stage.unmix, stage.anchor)
         # The crossover table acts in the dye channels after the fade, before the primaries mix them.
-        table, measured_table = resolve_crossover(self.config, crossover_space(density, white_space), lambda: faded_grid)
+        table, measured_table = resolve_crossover(self.config, crossover_space(density, white_space, self.config), lambda: faded_grid)
         if measured_table is not None:
             context.metrics["fade_crossover"] = measured_table
         offsets = crossover_offsets(table, self.config.fade_crossover)

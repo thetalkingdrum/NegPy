@@ -83,6 +83,10 @@ _SENSOR_FIELDS = (
     "fade_white_g",
     "fade_white_b",
     "fade_white_space",
+    "fade_crossover",
+    "fade_ab_neutrals",
+    "fade_ab_model",
+    "fade_ab_tone",
     "hue_trim",
 )
 # ProcessConfig is split across five cards. Each tuple is both the card's reset scope and
@@ -806,6 +810,24 @@ class ControlsPanel(QWidget):
                 "cast_average_toggle",
             )
         )
+        for btn, tip, action_id in (
+            (
+                self.sensor_sidebar.fade_ab_neutrals_btn,
+                tr("Which pixels Estimate reads as gray: NegPy's gray finder, or the one from NegativeConverter."),
+                "fade_ab_neutrals_cycle",
+            ),
+            (
+                self.sensor_sidebar.fade_ab_model_btn,
+                tr("How the fade is corrected: Survival only, NegativeConverter's color table, or Survival with Crossover."),
+                "fade_ab_model_cycle",
+            ),
+            (
+                self.sensor_sidebar.fade_ab_tone_btn,
+                tr("Adds NegativeConverter's automatic levels, brightness and contrast after the color correction."),
+                "fade_ab_tone_cycle",
+            ),
+        ):
+            btn.setToolTip(tooltip_with_shortcut(tip, action_id))
         self.sensor_sidebar.fade_white_anchor_btn.setToolTip(
             tooltip_with_shortcut(
                 tr("Remove Stain: makes the clear areas white again, for a faded slide whose highlights turned yellow."),

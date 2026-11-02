@@ -29,6 +29,30 @@ class ProcessMode(StrEnum):
 _LEGACY_MODES = {"C41": ProcessMode.C41, "B&W": ProcessMode.BW, "E-6": ProcessMode.E6}
 
 
+class FadeABNeutrals(StrEnum):
+    """Which cells Fade Estimate reads as gray: NegPy's neutral-axis meter, or NegativeConverter's
+    soft neutral weight with a mean-shift per density band."""
+
+    NEGPY = "negpy"
+    NC = "nc"
+
+
+class FadeABModel(StrEnum):
+    """The fade color model: the survivals alone, NegativeConverter's display-space color table on the
+    positive (survivals and Remove Stain off), or the survivals with the density-space crossover table."""
+
+    NEGPY = "negpy"
+    NC = "nc"
+    HYBRID = "hybrid"
+
+
+class FadeABTone(StrEnum):
+    """Off, or NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive."""
+
+    OFF = "off"
+    NC = "nc"
+
+
 class SensorUnmix(StrEnum):
     """How the sensor matrix is applied to the linear capture."""
 
@@ -237,6 +261,10 @@ class ProcessConfig:
     fade_crossover: float = 0.0
     fade_crossover_table: Optional[tuple] = None
     fade_crossover_space: str = ""
+    # A/B against NegativeConverter's expired-film rescue (experiment). NegPy's own at the defaults.
+    fade_ab_neutrals: FadeABNeutrals = FadeABNeutrals.NEGPY
+    fade_ab_model: FadeABModel = FadeABModel.NEGPY
+    fade_ab_tone: FadeABTone = FadeABTone.OFF
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
     # per-setup property calibrated from three bare-light R/G/B exposures
@@ -264,6 +292,9 @@ class ProcessConfig:
         object.__setattr__(self, "process_mode", ProcessMode(self.process_mode))
         object.__setattr__(self, "source_encoding", SourceEncoding(self.source_encoding))
         object.__setattr__(self, "sensor_unmix", SensorUnmix(self.sensor_unmix))
+        object.__setattr__(self, "fade_ab_neutrals", FadeABNeutrals(self.fade_ab_neutrals))
+        object.__setattr__(self, "fade_ab_model", FadeABModel(self.fade_ab_model))
+        object.__setattr__(self, "fade_ab_tone", FadeABTone(self.fade_ab_tone))
         # Same reach for renamed crosstalk profiles: roll defaults overlay this field
         # raw through dataclasses.replace, so the rename must run on every build too.
         if isinstance(self.crosstalk_profile, str) and self.crosstalk_profile in CROSSTALK_PROFILE_RENAMES:

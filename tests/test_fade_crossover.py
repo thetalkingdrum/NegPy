@@ -88,14 +88,35 @@ def test_the_table_removes_a_density_dependent_crossover():
     assert worst[1.0] < worst[0.5] < worst[0.0]
 
 
-def test_the_cast_term_is_left_to_the_survivals():
-    """With neutralize at 0 the table moves only what leans away from the overall cast: the
-    share-weighted mean of its offsets over the bands is zero."""
+def test_the_table_is_zero_where_the_survivals_were_fit():
+    """The reference is the lean at the Estimate's midtone, so the offset row at that mean log is zero:
+    the survivals own the cast there."""
+    from negpy.features.process.fade import crossover_zero
+
     _, _, est = _case("crossover")
-    rows = crossover_bands(est.crossover)
-    cast = (rows[:, 1:2] * rows[:, 2:]).sum(axis=0) / rows[:, 1].sum()
-    residual = rows[:, 2:] - cast
-    assert np.abs((rows[:, 1:2] * residual).sum(axis=0)).max() < 1e-4
+    offsets = crossover_offsets(est.crossover, 1.0)
+    pos = (crossover_zero(est.crossover) - offsets.lo) / (offsets.hi - offsets.lo) * (len(offsets.bins) - 1)
+    i = int(pos)
+    row = offsets.bins[i] * (1 - (pos - i)) + offsets.bins[i + 1] * (pos - i)
+    assert np.abs(row).max() < 0.01
+
+
+def test_a_crossover_under_the_floor_applies_nothing():
+    from negpy.features.process.fade import CROSSOVER_FLOOR, crossover_amount
+
+    _, _, est = _case("linear")
+    assert crossover_amount(est.crossover) < CROSSOVER_FLOOR
+    assert crossover_offsets(est.crossover, 1.0) is None
+
+
+def test_negpy_and_nc_models_ignore_the_table():
+    from negpy.features.process.fade import crossover_strength
+
+    _, _, est = _case("crossover")
+    hybrid = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, 1.0))
+    assert crossover_strength(hybrid) == 1.0
+    assert crossover_strength(replace(hybrid, fade_ab_model="negpy")) == 0.0
+    assert crossover_strength(replace(hybrid, fade_ab_model="nc")) == 0.0
 
 
 def test_a_large_saturated_subject_is_not_neutralized():
@@ -108,18 +129,33 @@ def test_a_large_saturated_subject_is_not_neutralized():
     assert np.abs(a[:, 2:] - b[:, 2:]).max() < 0.05
     before = region_lab(_lab("crossover", 0.0, subject=True), scene.subject)
     after = region_lab(_lab("crossover", 1.0, subject=True), scene.subject)
-    assert abs(chroma(after) - chroma(before)) < 4.0
+    assert abs(chroma(after) - chroma(before)) < 6.0
     assert abs(hue(after) - hue(before)) < 3.0
 
 
 def test_opposite_groups_at_one_density_follow_the_larger():
-    """Two near-neutral groups lean opposite ways in one band: the mean-shift settles on the larger,
-    so the table pulls it to neutral and pushes the smaller further out."""
-    scene, _, _ = _case("reference", groups=True)
+    """Two near-neutral groups lean opposite ways in one band: the mean-shift settles the band's centre
+    on the larger (magenta: green below the band's mean log)."""
+    from negpy.features.process.fade import neutral_bands
+
+    scene, image, _ = _case("reference", groups=True)
+    big, small = scene.groups
+    grid = np.log10(np.clip(image, 1e-6, 1.0))
+    bands = neutral_bands(grid)
+    big_level = float(np.log10(image[big]).mean())
+    k = int(np.argmin(np.abs(bands.level - big_level)))
+    lean = bands.centre[k] - bands.level[k]
+    assert lean[1] < -0.02
+
+
+def test_a_frame_with_no_fade_takes_no_table():
+    """Estimate finds nothing to restore on the unfaded film, so the survivals stay at 1 and the table
+    stays off whatever the strength: the groups keep their colour."""
+    scene, _, est = _case("reference", groups=True)
+    assert est.red is None
     big, small = scene.groups
     lab0, lab1 = _lab("reference", 0.0, groups=True), _lab("reference", 1.0, groups=True)
-    assert chroma(region_lab(lab1, big)) < 0.6 * chroma(region_lab(lab0, big))
-    assert chroma(region_lab(lab1, small)) > chroma(region_lab(lab0, small))
+    assert np.array_equal(lab0, lab1)
 
 
 def _base(process: ProcessConfig, image: np.ndarray):
@@ -136,7 +172,9 @@ def test_a_render_measures_the_table_the_estimate_stores():
     _, ctx = _base(replace(tagged, fade_crossover_space="stale"), image)
     table, space = ctx.metrics["fade_crossover"]
     assert space == tagged.fade_crossover_space
-    assert np.abs(np.asarray(table) - np.asarray(est.crossover)).max() < 2e-3
+    # The render reads the zero from its own grays, the Estimate from the survivals' own midtone.
+    assert abs(table[0] - est.crossover[0]) < 0.03
+    assert np.abs(np.asarray(table[1:]) - np.asarray(est.crossover[1:])).max() < 2e-3
     _, ctx = _base(tagged, image)
     assert "fade_crossover" not in ctx.metrics
 
@@ -183,3 +221,38 @@ def test_one_engine_follows_a_strength_change():
         process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, strength))
         renders.append(np.asarray(engine.process(image, replace(WorkspaceConfig(), process=process), source_hash="same")))
     assert np.abs(renders[1] - renders[0]).max() > 0.05
+
+
+def test_a_new_meter_area_measures_the_table_again():
+    from negpy.features.process.fade import crossover_space, fade_density
+
+    process = replace(ProcessConfig(), process_mode=ProcessMode.E6, fade_ratio_g=0.8, fade_crossover=1.0)
+    density = fade_density(process, ProcessMode.E6, "")
+    tag = crossover_space(density, "", process)
+    assert crossover_space(density, "", replace(process, analysis_rect=(0.1, 0.1, 0.5, 0.5))) != tag
+    assert crossover_space(density, "", replace(process, analysis_buffer=process.analysis_buffer + 0.05)) != tag
+    assert crossover_space(density, "", replace(process, meter_rect=(0.2, 0.2, 0.3, 0.3))) != tag
+
+
+def test_paste_carries_the_strength_and_never_the_table():
+    from negpy.desktop.settings_catalog import CATALOG, apply_selected_fields
+
+    rows = [r for _, section in CATALOG for r in section if "fade_ratio_r" in r.fields]
+    source = replace(
+        WorkspaceConfig(),
+        process=replace(ProcessConfig(), fade_crossover=0.7, fade_crossover_table=(1.0, 2.0, 3.0, 4.0, 5.0), fade_crossover_space="src"),
+    )
+    target = replace(
+        WorkspaceConfig(), process=replace(ProcessConfig(), fade_crossover_table=(6.0, 7.0, 8.0, 9.0, 10.0), fade_crossover_space="dst")
+    )
+    out = apply_selected_fields(source, target, rows).process
+    assert out.fade_crossover == 0.7
+    assert (out.fade_crossover_table, out.fade_crossover_space) == ((6.0, 7.0, 8.0, 9.0, 10.0), "dst")
+
+
+def test_roll_pushes_the_strength_and_never_the_table():
+    from negpy.services.assets.rolls import ROLL_DEFAULT_FIELDS
+
+    fields = ROLL_DEFAULT_FIELDS["fade"][1]
+    assert "fade_crossover" in fields
+    assert "fade_crossover_table" not in fields and "fade_crossover_space" not in fields

@@ -171,7 +171,8 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         # Strength, profile, the baked matrix and the process it was baked for copy atomically:
         # strength alone would leave the target on a stale or None matrix.
         _row(mark("Crosstalk"), "process", "crosstalk_strength", "crosstalk_profile", "crosstalk_matrix", "crosstalk_process", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
-        _row(mark("Fade Restoration"), "process", "fade_ratio_r", "fade_ratio_g", "fade_ratio_b", "fade_white_anchor", "fade_white_r", "fade_white_g", "fade_white_b", "fade_white_space", fmt=lambda v: _fmt_scalar(v[0])),
+        # The crossover table and its tag are this frame's own reading, so only the strength travels.
+        _row(mark("Fade Restoration"), "process", "fade_ratio_r", "fade_ratio_g", "fade_ratio_b", "fade_white_anchor", "fade_white_r", "fade_white_g", "fade_white_b", "fade_white_space", "fade_crossover", "fade_ab_neutrals", "fade_ab_model", "fade_ab_tone", fmt=lambda v: _fmt_scalar(v[0])),
         _row(mark("Sensor Crosstalk Profile"), "process", "sensor_profile", "sensor_matrix", "sensor_unmix", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
         # Absent from BOUNDS_INPUT_FIELDS: it acts after inversion, so it never feeds the meters.
         _row(mark("Hue Trim"), "process", "hue_trim", sticky=True),
@@ -391,6 +392,7 @@ BOUNDS_INPUT_FIELDS = frozenset(
         "fade_white_g",
         "fade_white_b",
         "fade_white_space",
+        "fade_crossover",
         "sensor_profile",
         "sensor_matrix",
         "sensor_unmix",
