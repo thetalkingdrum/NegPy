@@ -10002,6 +10002,20 @@ class AppController(QObject):
             return {}
         return dict(zip(("fade_white_r", "fade_white_g", "fade_white_b", "fade_white_space"), measured))
 
+    def _measured_fade_crossover(self, metrics: Dict[str, Any], process: ProcessConfig) -> Dict[str, Any]:
+        """The crossover table a render measured for a stale one (`resolve_crossover`), when it was
+        measured in this config's space. A reading of this frame, so it locks no card."""
+        from negpy.features.process.fade import crossover_space, fade_density, render_white_space
+
+        measured = metrics.get("fade_crossover")
+        if measured is None or process.fade_crossover == 0.0 or measured[1] == process.fade_crossover_space:
+            return {}
+        cam_xyz, camera_wb = self._effective_cam_xyz()
+        white_space = render_white_space(process, process.process_mode, cam_xyz, camera_wb)
+        if measured[1] != crossover_space(fade_density(process, process.process_mode, white_space), white_space):
+            return {}
+        return {"fade_crossover_table": measured[0], "fade_crossover_space": measured[1]}
+
     def _freeze_resolved_auto_crop(self, metrics: Dict[str, Any]) -> None:
         """Store the crop this render detected, so nothing detects it a second time.
 
@@ -10122,6 +10136,7 @@ class AppController(QObject):
         proc = self.state.config.process
         bounds = metrics.get("log_bounds_base") or metrics.get("log_bounds")
         changes = self._measured_fade_white(metrics)
+        changes.update(self._measured_fade_crossover(metrics, replace(proc, **changes)))
         if bounds and not (proc.use_luma_average and proc.use_color_average):
             if not proc.lock_bounds and (bounds.floors != proc.local_floors or bounds.ceils != proc.local_ceils):
                 changes["local_floors"] = bounds.floors

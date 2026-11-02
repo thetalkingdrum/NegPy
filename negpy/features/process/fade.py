@@ -310,6 +310,8 @@ class FadeEstimate:
     blue: float
     reason: str
     white: Optional[tuple[float, float, float]] = None
+    #: The crossover table measured after these survivals (`measure_crossover`), None with none.
+    crossover: Optional[tuple[float, ...]] = None
 
 
 def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], method: str = EstimateMethod.SPREAD) -> tuple[float, float, str]:
@@ -358,7 +360,7 @@ def estimate_fade(grid: ImageBuffer, white_anchor: bool = False, camera_raw: boo
     Both methods set Red Survival so the best-kept layer lands at 1.0; a ratio above 1 says red
     faded most. With `white_anchor`, or on a `camera_raw` whose render scales density above its
     white (`unmix_with_fade`), the grays are read as density above the point the render scales about
-    (`density_anchor`)."""
+    (`density_anchor`). Each estimate carries the crossover table measured after its own survivals."""
     white = measure_white(grid)
     if white_anchor and white is None:
         return {m: FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame.")) for m in EstimateMethod}
@@ -374,5 +376,229 @@ def estimate_fade(grid: ImageBuffer, white_anchor: bool = False, camera_raw: boo
         if not (why and g == 1.0 and b == 1.0):
             lo, hi = RED_SURVIVAL_BOUNDS
             red = min(max(1.0 / max(g, b, 1.0), lo), hi)
-        out[method] = FadeEstimate(red, g, b, why, white)
+        table = None
+        if red is not None:
+            table = measure_crossover(survival_grid(grid, red, g, b, white, white_anchor, camera_raw))
+        out[method] = FadeEstimate(red, g, b, why, white, table)
     return out
+
+
+# Crossover table: the per-density lean of the neutrals that the survivals leave. Ported from
+# NegativeConverter's expired-film rescue (MIT, Copyright (c) 2025 lex; NOTICE.md) and moved from
+# the display-encoded positive to log density after the fade matrix.
+
+#: Band edges over the frame's own density range, dense end first.
+CROSSOVER_BAND_EDGES = (0.0, 0.06, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0)
+#: Percentiles of the weighted mean density that set the frame's own range.
+CROSSOVER_RANGE_PCT = (0.5, 99.5)
+#: Channel weights of the mean density. Equal weights keep each pixel's mean dye density, the
+#: neutral the transfer curve renders; the dye channels carry no luma.
+CROSSOVER_WEIGHTS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+#: Channel spread (D) at half neutral weight: the source's 0.12 display units at a mid gray.
+CROSSOVER_NEUTRAL_SPREAD = 0.25
+#: Mean-shift radius (D, Chebyshev): the source's 0.06 display units at a mid gray.
+CROSSOVER_CLUSTER_RADIUS = 0.12
+#: Largest channel offset (D), about one stop: a larger residual says the survivals are wrong.
+CROSSOVER_LIMIT = 0.3
+#: A band needs this share of the total neutral weight and this much weight to count.
+CROSSOVER_MIN_SHARE = 0.004
+CROSSOVER_MIN_WEIGHT = 8.0
+#: Below this density span the frame has no range to band.
+CROSSOVER_MIN_SPAN = 0.05
+CROSSOVER_MEAN_SHIFT_STEPS = 3
+#: Bins of the per-pixel offset table between the outer band anchors.
+CROSSOVER_BINS = 64
+#: Values per band in a stored table: mean log, share, then the lean of each channel.
+CROSSOVER_BAND_SIZE = 5
+
+
+def _mean_log(cells: np.ndarray) -> np.ndarray:
+    w = np.asarray(CROSSOVER_WEIGHTS, dtype=np.float64)
+    return cells @ w
+
+
+def measure_crossover(grid: ImageBuffer) -> Optional[tuple[float, ...]]:
+    """The lean of the neutrals band by band on a log *grid* after the fade matrix, as a flat tuple of
+    (mean log, share, lean r, g, b) per band, or None with too few cells. A lean is the band's
+    neutral mean minus its mean log, so it sums to zero under CROSSOVER_WEIGHTS."""
+    cells = np.asarray(grid, dtype=np.float64).reshape(-1, 3)
+    cells = cells[(cells > CLIPPED_LOG).all(axis=1) & (cells < 0.0).any(axis=1)]
+    if len(cells) < 64:
+        return None
+    mean = _mean_log(cells)
+    lo, hi = (float(v) for v in np.percentile(mean, CROSSOVER_RANGE_PCT))
+    span = max(hi - lo, CROSSOVER_MIN_SPAN)
+    t = np.clip((mean - lo) / span, 0.0, 1.0)
+    edges = np.asarray(CROSSOVER_BAND_EDGES[1:-1])
+    band = np.searchsorted(edges, t, side="right")
+    spread = (cells.max(axis=1) - cells.min(axis=1)) / CROSSOVER_NEUTRAL_SPREAD
+    neutral = 1.0 / (1.0 + spread * spread)
+    n_bands = len(CROSSOVER_BAND_EDGES) - 1
+    weight = np.bincount(band, neutral, n_bands)
+    total = float(weight.sum())
+    if total <= 0.0:
+        return None
+    centre = np.full((n_bands, 3), np.nan)
+    band_mean = np.full(n_bands, np.nan)
+    for k in range(n_bands):
+        if weight[k] > 0.0:
+            sel = band == k
+            centre[k] = (neutral[sel, None] * cells[sel]).sum(axis=0) / weight[k]
+            band_mean[k] = float((neutral[sel] * mean[sel]).sum() / weight[k])
+    for _ in range(CROSSOVER_MEAN_SHIFT_STEPS):
+        live = ~np.isnan(centre[:, 0])
+        d = np.abs(cells - np.where(live[band, None], centre[band], 0.0)).max(axis=1) / CROSSOVER_CLUSTER_RADIUS
+        w = neutral / (1.0 + d * d)
+        w = np.where(live[band], w, 0.0)
+        shift_w = np.bincount(band, w, n_bands)
+        for k in range(n_bands):
+            if not live[k] or shift_w[k] < CROSSOVER_MIN_WEIGHT:
+                continue
+            sel = band == k
+            centre[k] = (w[sel, None] * cells[sel]).sum(axis=0) / shift_w[k]
+            band_mean[k] = float((w[sel] * mean[sel]).sum() / shift_w[k])
+            weight[k] = shift_w[k]
+    out: list[float] = []
+    for k in range(n_bands):
+        share = float(weight[k]) / total
+        if np.isnan(centre[k, 0]) or share < CROSSOVER_MIN_SHARE or weight[k] < CROSSOVER_MIN_WEIGHT:
+            continue
+        # The band's mean log is the weighted mean of its centre, so the lean sums to zero exactly.
+        level = float(_mean_log(centre[k][None, :])[0])
+        lean = centre[k] - level
+        out.extend(round(v, 5) for v in (level, share, *lean))
+    return tuple(out) if out else None
+
+
+def crossover_bands(table: Sequence[float]) -> np.ndarray:
+    """A stored table as rows of (mean log, share, lean r, g, b), dense end first."""
+    return np.asarray(table, dtype=np.float64).reshape(-1, CROSSOVER_BAND_SIZE)
+
+
+def crossover_cast(table: Sequence[float]) -> np.ndarray:
+    """The share-weighted mean lean of the bands: the overall cast."""
+    rows = crossover_bands(table)
+    return (rows[:, 1:2] * rows[:, 2:]).sum(axis=0) / max(float(rows[:, 1].sum()), 1e-12)
+
+
+def _shape_cubic(xs: np.ndarray, ys: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Fritsch-Carlson monotone cubic through (xs, ys), flat beyond the ends."""
+    n = len(xs)
+    if n == 1:
+        return np.full_like(x, ys[0])
+    h = np.diff(xs)
+    delta = np.diff(ys) / h
+    d = np.zeros(n)
+    d[0], d[-1] = delta[0], delta[-1]
+    for i in range(1, n - 1):
+        if delta[i - 1] * delta[i] > 0.0:
+            w1 = 2.0 * h[i] + h[i - 1]
+            w2 = h[i] + 2.0 * h[i - 1]
+            d[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i])
+    xc = np.clip(x, xs[0], xs[-1])
+    i = np.clip(np.searchsorted(xs, xc, side="right") - 1, 0, n - 2)
+    t = (xc - xs[i]) / h[i]
+    t2, t3 = t * t, t * t * t
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * d[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * d[i + 1]
+
+
+class CrossoverOffsets(NamedTuple):
+    """The per-pixel offset table: CROSSOVER_BINS rows of log offsets between mean logs lo and hi."""
+
+    bins: np.ndarray
+    lo: float
+    hi: float
+
+
+def crossover_offsets(table: Optional[Sequence[float]], crossover: float, neutralize: float = 0.0) -> Optional[CrossoverOffsets]:
+    """The offsets a render adds in log, -(cast * neutralize + (lean - cast) * crossover), or None when
+    nothing moves. Each row sums to zero under CROSSOVER_WEIGHTS and is scaled down as a whole to
+    CROSSOVER_LIMIT, so the correction keeps the mean density and its own hue."""
+    if not table or (crossover == 0.0 and neutralize == 0.0):
+        return None
+    rows = crossover_bands(table)
+    cast = crossover_cast(table)
+    xs = rows[:, 0]
+    lo, hi = float(xs[0]), float(xs[-1])
+    # Bands are dense end first, so the anchors already rise in mean log.
+    x = np.linspace(lo, hi, CROSSOVER_BINS) if hi > lo else np.full(CROSSOVER_BINS, lo)
+    lean = np.stack([_shape_cubic(xs, rows[:, 2 + c], x) for c in range(3)], axis=1)
+    offset = -(cast * neutralize + (lean - cast) * crossover)
+    offset -= _mean_log(offset)[:, None]
+    peak = np.abs(offset).max(axis=1, keepdims=True)
+    offset *= np.minimum(1.0, CROSSOVER_LIMIT / np.maximum(peak, 1e-12))
+    if float(np.abs(offset).max()) <= 1e-4:
+        return None
+    return CrossoverOffsets(offset.astype(np.float32), lo, hi)
+
+
+def apply_crossover(img_log: ImageBuffer, offsets: Optional[CrossoverOffsets]) -> ImageBuffer:
+    """*img_log* plus the offset row its own mean log selects, linear between bins."""
+    if offsets is None:
+        return img_log
+    img = np.asarray(img_log, dtype=np.float32)
+    m = _mean_log(img.reshape(-1, 3).astype(np.float64))
+    span = offsets.hi - offsets.lo
+    pos = np.zeros_like(m) if span <= 0.0 else np.clip((m - offsets.lo) / span, 0.0, 1.0) * (CROSSOVER_BINS - 1)
+    i0 = np.floor(pos).astype(np.intp)
+    i1 = np.minimum(i0 + 1, CROSSOVER_BINS - 1)
+    f = (pos - i0)[:, None].astype(np.float32)
+    delta = offsets.bins[i0] * (1.0 - f) + offsets.bins[i1] * f
+    return (img.reshape(-1, 3) + delta).reshape(img.shape).astype(np.float32)
+
+
+def crossover_space(density: FadeDensity, white_space: str) -> str:
+    """Names the log space a crossover table is measured in: the render's fade matrix, its anchor and
+    the white space. A table tagged with another name was measured against other survivals."""
+    named = b"" if density.matrix is None else np.round(np.asarray(density.matrix, dtype=np.float64), 5).tobytes()
+    if density.anchor is not None:
+        named += b"anchor" + np.round(np.asarray(density.anchor, dtype=np.float64), 5).tobytes()
+    return hashlib.sha1(b"crossover" + named + white_space.encode()).hexdigest()[:12]
+
+
+#: A table a render measured for itself: (table, fade_crossover_space).
+MeasuredCrossover = tuple[Optional[tuple[float, ...]], str]
+
+
+def resolve_crossover(
+    process: ProcessConfig, space: str, grid: Callable[[], ImageBuffer]
+) -> tuple[Optional[tuple[float, ...]], Optional[MeasuredCrossover]]:
+    """(table, measured): the table a render applies, and the one it measured on the after-fade *grid*
+    when the stored one is stale, else None. Nothing is read with Crossover at 0."""
+    if render_path(process) is RenderPath.PRINT or process.fade_crossover == 0.0:
+        return None, None
+    if process.fade_crossover_space == space:
+        return process.fade_crossover_table, None
+    table = measure_crossover(grid())
+    return table, (table, space)
+
+
+def survival_grid(
+    grid: ImageBuffer,
+    red: float,
+    green: float,
+    blue: float,
+    white: Optional[tuple[float, float, float]],
+    white_anchor: bool,
+    camera_raw: bool,
+) -> np.ndarray:
+    """The Estimate *grid* through the fade a render with these survivals applies after the crosstalk unmix."""
+    from negpy.features.exposure.normalization import unmix_log_image
+    from negpy.features.process.models import ProcessMode
+
+    space = "estimate" if camera_raw else ""
+    w = white or (0.0, 0.0, 0.0)
+    process = replace(
+        ProcessConfig(),
+        process_mode=ProcessMode.E6,
+        fade_ratio_r=red,
+        fade_ratio_g=green,
+        fade_ratio_b=blue,
+        fade_white_anchor=white_anchor,
+        fade_white_r=w[0],
+        fade_white_g=w[1],
+        fade_white_b=w[2],
+        fade_white_space=space,
+    )
+    density = fade_density(process, ProcessMode.E6, space)
+    return np.asarray(unmix_log_image(np.ascontiguousarray(grid, dtype=np.float32), density.matrix, density.anchor))

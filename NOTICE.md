@@ -4,6 +4,39 @@ original-floor writer rule, interior-radius routing with feathered compositing)
 from digital-fauxice, Copyright (c) 2026 Rohan Pandula, MIT License.
 https://github.com/rohanpandula/digital-fauxice
 
+The crossover table of Fade Restoration in negpy/features/process/fade.py
+(`measure_crossover`, `crossover_offsets`, `_shape_cubic`) ports the per-band
+neutral lean, the mean-shift cluster, the cast/crossover split and the
+Fritsch-Carlson table from NegativeConverter's expired-film rescue
+(negative2positive/src/pipeline/expiredRescue.js: `analyzeExpiredFilm`,
+`offsetsFromBands`, `shapeCubic`). Modified by NegPy: it measures and applies
+the table in log density after the fade matrix, not on the display-encoded
+positive.
+
+  https://github.com/lexluthor0304/NegativeConverter
+
+  MIT License
+
+  Copyright (c) 2025 lex
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
 The Plustek USB driver lives in the separate [pyopticfilm](https://github.com/jboneng/pyopticfilm) package. NegPy integrates it via `negpy/infrastructure/scanners/plustek_backend.py`. That driver includes
 material derived from or informed by the SANE Project genesys backend
 (Scanner Access Now Easy), GNU GPL:

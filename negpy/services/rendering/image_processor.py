@@ -516,6 +516,11 @@ class ImageProcessor:
         master is numerically exact and never subject to the looser GPU parity."""
         return settings.exposure.render_intent == RenderIntent.FLAT
 
+    @staticmethod
+    def _cpu_only(settings: WorkspaceConfig) -> bool:
+        """A Flat master, or a slide with the prototype Crossover table on, which has no shader."""
+        return ImageProcessor._is_flat(settings) or settings.process.fade_crossover > 0.0
+
     def _slow_step(self, label: str) -> None:
         if self.on_slow_step is not None:
             self.on_slow_step(label)
@@ -924,7 +929,7 @@ class ImageProcessor:
             hair_masks,
         )
 
-        if self._is_flat(settings):
+        if self._cpu_only(settings):
             prefer_gpu = False
 
         needs_tiling = bool(prefer_gpu and self.engine_gpu and self.engine_gpu.requires_tiling(img, settings, render_size_ref))
@@ -1519,7 +1524,7 @@ class ImageProcessor:
         params, _ = _resolve_meter_rect(f32_buffer, params)
         timing.lap("auto crop/meter area")
 
-        if self._is_flat(params):
+        if self._cpu_only(params):
             prefer_gpu = False
         # A resized export sharpens after the resize, so the radius is in exported pixels as it is
         # in the preview's own pixels.
@@ -2058,7 +2063,7 @@ class ImageProcessor:
             params, _ = _resolve_armed_autocrop(f32_buffer, params)
             params, _ = _resolve_meter_rect(f32_buffer, params)
 
-            if self._is_flat(params):
+            if self._cpu_only(params):
                 prefer_gpu = False
 
             if prefer_gpu and self.engine_gpu:

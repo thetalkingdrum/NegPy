@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Optional
 
 from negpy.kernel.system.i18n import tr
@@ -531,7 +532,7 @@ class SensorSidebar(BaseSidebar):
 
     def _run_estimate(self, white_anchor: bool) -> None:
         from negpy.desktop.workers.chart_fit import fade_estimate_grid
-        from negpy.features.process.fade import estimate_fade, render_white_space
+        from negpy.features.process.fade import crossover_space, estimate_fade, fade_density, render_white_space
 
         conf = self.state.config.process
         if render_path(conf) is RenderPath.PRINT:
@@ -575,13 +576,14 @@ class SensorSidebar(BaseSidebar):
             slider.blockSignals(True)
             slider.setValue(value)
             slider.blockSignals(False)
-        self.controller.set_roll_default(
-            "fade",
-            fade_ratio_r=red,
-            fade_ratio_g=chosen.green,
-            fade_ratio_b=chosen.blue,
-            **white,
-        )
+        survivals = dict(fade_ratio_r=red, fade_ratio_g=chosen.green, fade_ratio_b=chosen.blue, **white)
+        # The table was measured after these survivals; a frame keeps its own, so it locks no card.
+        crossover = {}
+        if chosen.crossover is not None:
+            new_conf = replace(conf, **survivals)
+            tag = crossover_space(fade_density(new_conf, conf.process_mode, space), space)
+            crossover = dict(fade_crossover_table=chosen.crossover, fade_crossover_space=tag)
+        self.controller.set_roll_default("fade", **survivals, **crossover)
 
     def _on_hue_trim_changed(self, val: float, persist: bool = True) -> None:
         # Sticky on commit only, so a drag doesn't write every intermediate value.

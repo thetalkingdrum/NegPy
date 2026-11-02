@@ -231,6 +231,12 @@ class ProcessConfig:
     # `fade.fade_white_space` of the decode the whites were measured on, "" for a source with no
     # camera matrix. A render in another space ignores them.
     fade_white_space: str = ""
+    # Crossover (prototype): the share of the per-density lean of the neutrals left after the fade
+    # matrix that the render removes (`fade.crossover_offsets`). 0 is off. The table is this frame's
+    # measurement, tagged with `fade.crossover_space`; a render in another space measures it again.
+    fade_crossover: float = 0.0
+    fade_crossover_table: Optional[tuple] = None
+    fade_crossover_space: str = ""
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
     # per-setup property calibrated from three bare-light R/G/B exposures
@@ -276,6 +282,8 @@ class ProcessConfig:
             object.__setattr__(self, "crosstalk_matrix", tuple(self.crosstalk_matrix))
         if self.sensor_matrix is not None:
             object.__setattr__(self, "sensor_matrix", tuple(self.sensor_matrix))
+        if self.fade_crossover_table is not None:
+            object.__setattr__(self, "fade_crossover_table", tuple(float(v) for v in self.fade_crossover_table))
         if self.analysis_rect is not None:
             object.__setattr__(self, "analysis_rect", tuple(self.analysis_rect))
         if self.meter_rect is not None:

@@ -1,0 +1,180 @@
+"""The Fade Restoration crossover table, checked on films from `fade_crossover_scene`, whose per-layer
+characteristic curves are independent of the table's band model."""
+
+from dataclasses import replace
+from functools import lru_cache
+
+import numpy as np
+import pytest
+
+from fade_crossover_scene import (
+    CROSSOVER,
+    REFERENCE,
+    build_scene,
+    chroma,
+    estimate,
+    hue,
+    linear_fade,
+    ramp_chroma,
+    region_lab,
+    render,
+    scan_image,
+    survival_changes,
+    to_lab,
+)
+from negpy.domain.interfaces import PipelineContext
+from negpy.domain.models import WorkspaceConfig
+from negpy.features.process.fade import (
+    CROSSOVER_LIMIT,
+    CROSSOVER_WEIGHTS,
+    crossover_bands,
+    crossover_offsets,
+    measure_crossover,
+)
+from negpy.features.process.models import ProcessConfig, ProcessMode
+from negpy.services.rendering.engine import base_processor
+
+
+@lru_cache(maxsize=None)
+def _case(film_key: str, subject: bool = False, groups: bool = False):
+    film = {"crossover": CROSSOVER, "linear": linear_fade(REFERENCE, (1.0, 0.7, 0.5)), "reference": REFERENCE}[film_key]
+    scene = build_scene(subject=subject, opposite_groups=groups)
+    image = scan_image(film, scene)
+    return scene, image, estimate(image)
+
+
+@lru_cache(maxsize=None)
+def _lab(film_key: str, crossover: float, subject: bool = False, groups: bool = False) -> np.ndarray:
+    scene, image, est = _case(film_key, subject, groups)
+    return to_lab(render(image, survival_changes(est, crossover)))
+
+
+def test_leans_and_offsets_cancel_under_the_weights():
+    _, _, est = _case("crossover")
+    rows = crossover_bands(est.crossover)
+    w = np.asarray(CROSSOVER_WEIGHTS)
+    assert np.abs(rows[:, 2:] @ w).max() < 1e-4
+    for strength, neutralize in ((1.0, 0.0), (0.5, 0.0), (1.0, 1.0)):
+        offsets = crossover_offsets(est.crossover, strength, neutralize)
+        assert offsets is not None
+        assert np.abs(offsets.bins.astype(np.float64) @ w).max() < 1e-6
+        assert np.abs(offsets.bins).max() <= CROSSOVER_LIMIT + 1e-6
+
+
+def test_the_table_keeps_each_pixels_mean_density():
+    _, _, est = _case("crossover")
+    from negpy.features.process.fade import apply_crossover
+
+    rng = np.random.default_rng(1)
+    img = rng.uniform(-3.0, 0.0, (32, 32, 3)).astype(np.float32)
+    out = apply_crossover(img, crossover_offsets(est.crossover, 1.0))
+    w = np.asarray(CROSSOVER_WEIGHTS, dtype=np.float32)
+    assert np.abs(out @ w - img @ w).max() < 1e-5
+    assert np.abs(out - img).max() > 0.05
+
+
+def test_a_linear_fade_leaves_the_table_near_identity():
+    """The survivals fit a fade that is linear in density exactly, so no residual remains to fix."""
+    _, _, est = _case("linear")
+    assert est.green == pytest.approx(0.7, abs=0.01) and est.blue == pytest.approx(0.5, abs=0.01)
+    assert np.abs(crossover_bands(est.crossover)[:, 2:]).max() < 0.015
+    assert np.abs(_lab("linear", 1.0) - _lab("linear", 0.0)).max() < 1.5
+
+
+def test_the_table_removes_a_density_dependent_crossover():
+    scene, _, _ = _case("crossover")
+    worst = {x: max(m for m, _ in ramp_chroma(_lab("crossover", x), scene)) for x in (0.0, 0.5, 1.0)}
+    assert worst[1.0] < 0.35 * worst[0.0]
+    assert worst[1.0] < worst[0.5] < worst[0.0]
+
+
+def test_the_cast_term_is_left_to_the_survivals():
+    """With neutralize at 0 the table moves only what leans away from the overall cast: the
+    share-weighted mean of its offsets over the bands is zero."""
+    _, _, est = _case("crossover")
+    rows = crossover_bands(est.crossover)
+    cast = (rows[:, 1:2] * rows[:, 2:]).sum(axis=0) / rows[:, 1].sum()
+    residual = rows[:, 2:] - cast
+    assert np.abs((rows[:, 1:2] * residual).sum(axis=0)).max() < 1e-4
+
+
+def test_a_large_saturated_subject_is_not_neutralized():
+    """The red subject fills much of the frame and one density band; its low neutral weight and the
+    mean-shift keep the band's lean on the grays."""
+    _, _, plain = _case("crossover")
+    scene, _, with_subject = _case("crossover", subject=True)
+    a, b = crossover_bands(plain.crossover), crossover_bands(with_subject.crossover)
+    assert a.shape == b.shape
+    assert np.abs(a[:, 2:] - b[:, 2:]).max() < 0.05
+    before = region_lab(_lab("crossover", 0.0, subject=True), scene.subject)
+    after = region_lab(_lab("crossover", 1.0, subject=True), scene.subject)
+    assert abs(chroma(after) - chroma(before)) < 4.0
+    assert abs(hue(after) - hue(before)) < 3.0
+
+
+def test_opposite_groups_at_one_density_follow_the_larger():
+    """Two near-neutral groups lean opposite ways in one band: the mean-shift settles on the larger,
+    so the table pulls it to neutral and pushes the smaller further out."""
+    scene, _, _ = _case("reference", groups=True)
+    big, small = scene.groups
+    lab0, lab1 = _lab("reference", 0.0, groups=True), _lab("reference", 1.0, groups=True)
+    assert chroma(region_lab(lab1, big)) < 0.6 * chroma(region_lab(lab0, big))
+    assert chroma(region_lab(lab1, small)) > chroma(region_lab(lab0, small))
+
+
+def _base(process: ProcessConfig, image: np.ndarray):
+    settings = replace(WorkspaceConfig(), process=process)
+    h, w = image.shape[:2]
+    ctx = PipelineContext(original_size=(h, w), scale_factor=1.0, process_mode=ProcessMode.E6)
+    out = base_processor(settings).process(image, ctx)
+    return np.asarray(out), ctx
+
+
+def test_a_render_measures_the_table_the_estimate_stores():
+    _, image, est = _case("crossover")
+    tagged = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, 1.0))
+    _, ctx = _base(replace(tagged, fade_crossover_space="stale"), image)
+    table, space = ctx.metrics["fade_crossover"]
+    assert space == tagged.fade_crossover_space
+    assert np.abs(np.asarray(table) - np.asarray(est.crossover)).max() < 2e-3
+    _, ctx = _base(tagged, image)
+    assert "fade_crossover" not in ctx.metrics
+
+
+def test_crossover_at_zero_reads_nothing_and_changes_nothing():
+    _, image, est = _case("crossover")
+    process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, 0.0))
+    stored, ctx = _base(process, image)
+    bare, _ = _base(replace(process, fade_crossover_table=None, fade_crossover_space=""), image)
+    assert "fade_crossover" not in ctx.metrics
+    assert np.array_equal(stored, bare)
+
+
+def test_a_print_takes_no_table():
+    _, image, est = _case("crossover")
+    process = replace(ProcessConfig(), process_mode=ProcessMode.C41, fade_crossover=1.0)
+    _, ctx = _base(process, image)
+    assert "fade_crossover" not in ctx.metrics
+
+
+def test_measure_needs_cells():
+    assert measure_crossover(np.zeros((4, 4, 3), np.float32) - 1.0) is None
+
+
+def test_the_table_survives_a_flat_round_trip():
+    _, _, est = _case("crossover")
+    config = replace(
+        WorkspaceConfig(),
+        process=replace(ProcessConfig(), fade_crossover=0.5, fade_crossover_table=est.crossover, fade_crossover_space="abc"),
+    )
+    back = WorkspaceConfig.from_flat_dict(config.to_dict())
+    assert back.process.fade_crossover_table == est.crossover
+    assert back.process.fade_crossover == 0.5 and back.process.fade_crossover_space == "abc"
+
+
+def test_a_frame_with_the_table_on_renders_on_the_cpu():
+    from negpy.services.rendering.image_processor import ImageProcessor
+
+    on = replace(WorkspaceConfig(), process=replace(ProcessConfig(), process_mode=ProcessMode.E6, fade_crossover=0.5))
+    assert ImageProcessor._cpu_only(on)
+    assert not ImageProcessor._cpu_only(replace(on, process=replace(on.process, fade_crossover=0.0)))
