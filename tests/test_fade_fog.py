@@ -77,7 +77,9 @@ def test_run_pipeline_bakes_the_fog_and_keys_it_in_the_source():
 
     def run(fog: str) -> np.ndarray:
         cfg = replace(settings, process=_process(fog))
-        out, _ = ImageProcessor(use_gpu=False).run_pipeline(scene.fogged, cfg, "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False)
+        out, _ = ImageProcessor(use_gpu=False).run_pipeline(
+            scene.fogged, cfg, "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False
+        )
         return np.asarray(out)
 
     off, negpy = run("off"), run("negpy")

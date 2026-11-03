@@ -650,9 +650,12 @@ class SensorSidebar(BaseSidebar):
         ):
             btn.setCurrentIndex(max(0, btn.findData(str(value))))
         # A camera RAW scales about its own white; only a scanner file has a zero to choose.
-        scanner = fade_white_space(self.state.preview_cam_xyz, self.state.preview_camera_wb) == ""
+        cam_xyz = self.state.preview_cam_xyz
+        scanner = cam_xyz is None or fade_white_space(cam_xyz, self.state.preview_camera_wb) == ""
         for i in range(self._scanner_zero_row.count()):
-            self._scanner_zero_row.itemAt(i).widget().setVisible(scanner)
+            widget = self._scanner_zero_row.itemAt(i).widget()
+            if widget is not None:
+                widget.setVisible(scanner)
 
     def _on_fade_tone_changed(self, tone: str) -> None:
         """Tone NegPy writes this frame's tone into the sliders and keeps the values it replaced;

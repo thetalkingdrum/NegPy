@@ -48,7 +48,9 @@ def zero_report() -> None:
         for fade_name, film in FADES:
             image = scan_image(scanner(film), scene)
             print(f"\n## {scanner_name}, {fade_name}\n")
-            print("| zero | survivals r/g/b | lean slope r/g/b | residual | x | ramp C* max | ramp C* mean | patch dE mean | patch dE max |")
+            print(
+                "| zero | survivals r/g/b | lean slope r/g/b | residual | x | ramp C* max | ramp C* mean | patch dE mean | patch dE max |"
+            )
             print("|---|---|---|---|---|---|---|---|---|")
             tables = {}
             for zero in ZEROS:
@@ -114,14 +116,20 @@ def render_tone(image: np.ndarray, process_changes: dict, tone: str) -> tuple[np
 def tone_report() -> None:
     print("\n# Tone\n")
     scene = build_scene()
-    models = (("NegPy, Crossover 0", dict(fade_ab_model="negpy"), 0.0), ("NegPy, Crossover 100 %", dict(fade_ab_model="negpy"), 1.0), ("NC", dict(fade_ab_model="nc"), 1.0))
+    models = (
+        ("NegPy, Crossover 0", dict(fade_ab_model="negpy"), 0.0),
+        ("NegPy, Crossover 100 %", dict(fade_ab_model="negpy"), 1.0),
+        ("NC", dict(fade_ab_model="nc"), 1.0),
+    )
     low_range = ("low-range linear fade 0.6/0.45/0.35", linear_fade(REFERENCE, (0.6, 0.45, 0.35)))
     for fade_name, film in (*FADES, low_range):
         image = scan_image(film, scene)
         ref_lab = to_lab(render(scan_image(REFERENCE, scene), {}))
         est = estimate(image)
         print(f"\n## {fade_name} (camera RAW slide path)\n")
-        print("| color model | tone | Print Density / ISO-R Grade | ramp C* max | ramp C* mean | patch dE mean | patch dE max | ramp dL* mean |")
+        print(
+            "| color model | tone | Print Density / ISO-R Grade | ramp C* max | ramp C* mean | patch dE mean | patch dE max | ramp dL* mean |"
+        )
         print("|---|---|---|---|---|---|---|---|")
         for model_name, fields, x in models:
             for tone in TONES:
@@ -166,7 +174,10 @@ def fog_scores(lab: np.ndarray, clean_lab: np.ndarray, scene) -> dict:
     dl = lab[..., 0] - clean_lab[..., 0]
     top = gray.copy()
     top[int(h * 0.55) :] = False
-    bands = [float(dl[:, i0:i1][top[:, i0:i1]].mean()) for i0, i1 in zip(np.linspace(0, w, 9).astype(int)[:-1], np.linspace(0, w, 9).astype(int)[1:])]
+    bands = [
+        float(dl[:, i0:i1][top[:, i0:i1]].mean())
+        for i0, i1 in zip(np.linspace(0, w, 9).astype(int)[:-1], np.linspace(0, w, 9).astype(int)[1:])
+    ]
     corner = gray.copy()
     corner[int(h * 0.25) :, :] = False
     corner[:, : int(w * 0.75)] = False
@@ -200,7 +211,11 @@ def their_fog_scene():
     v = np.where(wall, 220.0, v)
     # The clean scene keeps the fog's even part (0.10 at the right edge), which no stage removes.
     clean = 0.10 + 0.8 * v / 255.0
-    decode = lambda d: np.ascontiguousarray(working_oetf_decode(np.repeat(np.asarray(d, np.float32).reshape(FOG_H, FOG_W, -1)[..., :1], 3, -1)))
+
+    def decode(d) -> np.ndarray:
+        plane = np.asarray(d, np.float32).reshape(FOG_H, FOG_W, -1)[..., :1]
+        return np.ascontiguousarray(working_oetf_decode(np.repeat(plane, 3, -1)))
+
     return FogScene(decode(aged[..., :1]), decode(clean), ~wall)
 
 

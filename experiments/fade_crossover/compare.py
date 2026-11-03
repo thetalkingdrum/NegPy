@@ -1,12 +1,12 @@
 """Render real slides through Fade Estimate, the crossover table and the Compare choices, headless.
 
 For each input, writes beside it:
-  <name>.crossover-0.png, -0.5.png, -1.png  the Estimate's survivals with the table at that strength;
-  <name>.model.png   color model NegPy at Crossover 0 and 100 %, and NC;
-  <name>.zero.png    scanner zero Full Scale, Clear Film and Gray (scanner files), Crossover 0 and 100 %,
+  <name>.p3-crossover-0.png, -0.5.png, -1.png  the Estimate's survivals with the table at that strength;
+  <name>.p3-model.png   color model NegPy at Crossover 0 and 100 %, and NC;
+  <name>.p3-zero.png    scanner zero Full Scale, Clear Film and Gray (scanner files), Crossover 0 and 100 %,
                      each with a fresh Estimate;
-  <name>.tone.png    tone Off, NC and NegPy under color models NegPy (Crossover 100 %) and NC;
-  <name>.fog.png     uneven fog Off, NC and NegPy under color model NegPy (Crossover 100 %).
+  <name>.p3-tone.png    tone Off, NC and NegPy under color models NegPy (Crossover 100 %) and NC;
+  <name>.p3-fog.png     uneven fog Off, NC and NegPy under color model NegPy (Crossover 100 %).
 Each file opens as a Slide, as the app opens it (a scanner file starts Positive), with the slide defaults.
 
     uv run python experiments/fade_crossover/compare.py Statue.NEF faded/slide01.tif [--long-edge 2000] [--gpu]
@@ -184,7 +184,7 @@ def compare(path: Path, long_edge: int, method: EstimateMethod, gpu: bool = Fals
         return
 
     def write(suffix: str, image: Image.Image) -> None:
-        out = path.with_name(f"{path.stem}.{suffix}.png")
+        out = path.with_name(f"{path.stem}.p3-{suffix}.png")
         image.save(out)
         print(f"  wrote {out}")
 

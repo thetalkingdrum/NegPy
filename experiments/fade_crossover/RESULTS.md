@@ -45,7 +45,18 @@ What it says:
 - `clear_neutral` removes the per-channel part (no d_min cast), but its anchor sits off the true zero by the white's mean, so it leaves a smaller lean of the opposite sign. It is second best on Plustek and worst on Coolscan.
 - On Coolscan-like scans full scale is the true zero, and either clear zero only adds error, as expected.
 
-Real files (`compare.py`, `<name>.zero.png`): **NORAD 106-04 (Plustek, SilverFast HDR raw)** confirms the lean: full scale reads slopes +0.115/+0.092/−0.207 and a 0.52 D crossover, clear film +0.014/+0.022/−0.036 and 0.27 D, gray +0.092/+0.100/−0.193 and 0.39 D. By eye, full scale and gray at Crossover 100 % give the most neutral picture; clear film keeps a yellow cast at both strengths, which is the stained white's own color. **Toppenhaug 19 and 30** show almost no lean under any zero (slopes ≤ 0.02 on 19; 30 has a real green/blue lean of ±0.13 that no zero moves), so those scans behave as full-scale scans.
+Real files (`compare.py`, `<name>.p3-zero.png`; scanners from each TIFF's Make, Model and Software tags):
+
+| file | scanner | lean slope r/g/b: full scale | clear film | gray | by eye |
+|---|---|---|---|---|---|
+| NORAD 106-04 | Plustek OpticFilm 7600i, VueScan 9 | +0.115/+0.092/−0.207 (0.52 D) | **+0.014/+0.022/−0.036** (0.27 D) | +0.092/+0.100/−0.193 (0.39 D) | full scale and gray at Crossover 100 % most neutral; clear film keeps the stained white's yellow |
+| FADED_SLIDES Image (2), (5), (9), (13) | Plustek OpticFilm 8200i, SilverFast 8.8 | ≤ ±0.06 | ≤ ±0.08 | ≤ ±0.09 | no zero removes a lean; the three look alike after Crossover |
+| toppenhaug 19, 23, 30, 40 | Nikon Super Coolscan 4000 ED, Nikon Scan 4.0.3 | ≤ ±0.13 | about the same | about the same | full scale is the right zero, as expected for a full-scale white |
+| toppenhaug 50 | same | −0.001/−0.147/+0.148 | **−0.011/+0.019/−0.007** | −0.132/−0.239/+0.372 (blue at the 0.2 bound) | **clear film is the most neutral at Crossover 0**: sand and sky lose the green-yellow lean that full scale leaves |
+
+- The hypothesis (a dim white turns the fade into a linear lean) holds on NORAD, a VueScan file, not a SilverFast HDR file. The four SilverFast files show no such lean, so their whites sit near full scale or the effect is small there.
+- Toppenhaug 50 is the counter-example to the fixtures: on this Coolscan frame the per-channel anchor removes a large lean and looks best. That frame is a heavily faded overcast beach whose brightest area is cloud; the white reads close to clear film there.
+- The scans in `Faded slides/` other than NORAD are edited web positives and were not used.
 
 ### 2. Tone NegPy (`fade_ab_tone = negpy`)
 
@@ -69,7 +80,7 @@ Fixtures, camera RAW slide path, distance from the unfaded film (patch dE76 over
 
 - Like NC's, Tone NegPy moves every frame that kept its range away from the unfaded film (+15 to +19 dE). It is a look, not a restoration, and it lands where theirs does (within 3 dE), slightly closer in the ramp.
 - On a low-range fade, where the Estimate leaves the lost range (red survival set so the best layer is 1.0), both tones move toward the unfaded film (29.5 → 24); this is the case the "more pleasing on faded, low-range files" finding is about.
-- Real files (`<name>.tone.png`): NORAD gets 0.78 / 81 under NegPy and looks close to tone NC, a little lighter. Toppenhaug 30 (low range, green) gets 1.57 / 50, the Grade floor, and its remaining green cast grows with the contrast; under the NC color table the same tone looks fine. Toppenhaug 19: 0.62 / 116.
+- Real files (`<name>.p3-tone.png`): NORAD gets 0.78 / 81 under NegPy and looks close to tone NC, a little lighter. Toppenhaug 30 (low range, green) gets 1.57 / 50, the Grade floor, and its remaining green cast grows with the contrast; under the NC color table the same tone looks fine. Toppenhaug 19: 0.62 / 116, 23: 0.55 / 100, 40: 0.88 / 87, 50: 1.41 / 50. The SilverFast frames all land at ISO-R 50 to 73: their tone takes the Grade to its floor on most faded files, so the slider range, not their rule, limits the contrast there.
 
 ### 3. Uneven fog (`fade_ab_fog`)
 
@@ -107,11 +118,11 @@ Fixtures (`fog_scene`, Coolscan-like positive; "gradient left" is the spread of 
 
 - **The blue spots reproduce.** Their scene (a textured full-range ramp) does not: every erosion window holds a black, so the floor is even. A real frame has flat areas. A light gray wall with a small dark doorway, under a large warm area or a blue sky, makes their per-channel floor read high in one or two channels over part of the frame, and the wall turns blue (15.8 and 23.4 C*) and 9–14 L* darker. NegPy's bake leaves both scans bit-identical.
 - **The two stages remove different fogs.** Slide fog is added density, which shows in the clear film (the highlights); NegPy's bake removes it (1.62 → 0.29) and NC's, which erodes the positive's dark floor, does not touch it. NC removes its own model (a lifted floor in the positive, the fog of a negative) perfectly, and NegPy's does not, since that fog never reaches the thinnest film.
-- Real files (`<name>.fog.png`): NORAD reads 0.084 D, toppenhaug 19 the 0.15 D cap, toppenhaug 30 0.14 D. By eye NegPy's bake changes these frames little; NC's darkens toppenhaug 19 overall. None of these files shows the blue spots, which were reported on Coolscan files.
+- Real files (`<name>.p3-fog.png`): NegPy's bake reads 0.08 to 0.15 D on most frames (the cap on toppenhaug 19 and three SilverFast frames; none on toppenhaug 50). By eye it lightens a band a little; whether that is fog or a lit area is not settled, and the cap is reached often enough that the surface may follow content. NC's stage darkens the frame and its edges (toppenhaug 19, SilverFast Image (9)). On these five Coolscan frames NC did not paint visible blue spots; the reported spots came from other frames.
 
 ### 4. compare.py
 
-`compare.py` writes beside each input: `.crossover-0/0.5/1.png` (strength strips), `.model.png` (NegPy at Crossover 0 and 100 %, NC), `.zero.png` (three zeros × Crossover 0 and 100 %, fresh Estimate each, scanner files only), `.tone.png` (three tones × color models NegPy 100 % and NC), `.fog.png` (three fogs, Estimate read after the bake). It prints each Estimate's band table and lean line. Written for NORAD/106-04.tif, toppenhaug 19 and toppenhaug 30.
+`compare.py` writes beside each input: `.crossover-0/0.5/1.png` (strength strips), `.model.png` (NegPy at Crossover 0 and 100 %, NC), `.zero.png` (three zeros × Crossover 0 and 100 %, fresh Estimate each, scanner files only), `.tone.png` (three tones × color models NegPy 100 % and NC), `.fog.png` (three fogs, Estimate read after the bake). It prints each Estimate's band table and lean line. The outputs carry a `.p3-` prefix so they never replace another run's files. Written for NORAD/106-04.tif, toppenhaug 19, 23, 30, 40 and 50 (Coolscan) and FADED_SLIDES Image (2), (5), (9) and (13) (SilverFast).
 
 ### Decisions to check
 
@@ -122,7 +133,8 @@ Fixtures (`fog_scene`, Coolscan-like positive; "gradient left" is the spread of 
 
 ### Not tested
 
-- **Coolscan files**: I did not find them; the "Coolscan-like" findings are fixtures only, and the toppenhaug scanner is unknown to me.
+- Coolscan blue spots on a real frame: not reproduced on the five toppenhaug frames.
+- A real file with clear film (a mount gap or leader) to read the true zero from.
 - The app driven by hand: the panel is covered by headless sidebar tests only.
 - GPU: parity ran on this Mac's Metal adapter with no skips (`tests/test_gpu_fade_crossover_parity.py`, 9 tests: stored and stale table, tone points, each scanner zero at 0 and 100 %, the stale scanner white, the fog bake, the tiled export). The NC stages remain CPU-only.
 

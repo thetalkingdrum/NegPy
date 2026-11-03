@@ -97,7 +97,9 @@ def tone_values(points: Sequence[float], positive_source: bool) -> dict[str, flo
     pivot = float(TRANSFER_CONSTANTS["transfer_contrast_pivot"])
     ref = float(TRANSFER_CONSTANTS["transfer_grade_ref"])
     per_density = float(TRANSFER_CONSTANTS["transfer_density_stops"]) * math.log10(2.0)
-    grades = np.arange(float(EXPOSURE_CONSTANTS["iso_r_min"]), float(EXPOSURE_CONSTANTS["iso_r_max"]) + 0.5 * TONE_GRADE_STEP, TONE_GRADE_STEP)
+    grades = np.arange(
+        float(EXPOSURE_CONSTANTS["iso_r_min"]), float(EXPOSURE_CONSTANTS["iso_r_max"]) + 0.5 * TONE_GRADE_STEP, TONE_GRADE_STEP
+    )
     densities = np.round(np.arange(0.0, 2.0 + 0.5 * TONE_DENSITY_STEP, TONE_DENSITY_STEP), 2)
     contrast = ref / grades[:, None, None]
     offset = ((1.0 - densities) * per_density)[None, :, None]

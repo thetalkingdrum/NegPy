@@ -71,7 +71,6 @@ class TestGpuFadeCrossoverParity(unittest.TestCase):
         self.assertLess(float(np.abs(np.asarray(gpu_table) - np.asarray(cpu_table)).max()), 0.02)
         self.assertLess(float(np.abs(cpu - gpu).mean()), 0.004)
 
-
     def test_both_engines_report_the_tone_points_alike(self):
         _, cpu = self._render(_settings(survival_changes(self.est, 1.0)), False)
         _, gpu = self._render(_settings(survival_changes(self.est, 1.0)), True)
@@ -116,6 +115,7 @@ class TestGpuScannerZeroParity(unittest.TestCase):
         self.assertEqual(cpu_metrics["fade_white"][3], gpu_metrics["fade_white"][3])
         self.assertLess(float(np.abs(np.asarray(cpu_metrics["fade_white"][:3]) - np.asarray(gpu_metrics["fade_white"][:3])).max()), 1e-4)
         self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
+
 
 @unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
 class TestTiledFadeCrossover(unittest.TestCase):
@@ -175,6 +175,8 @@ class TestGpuFogBakeParity(unittest.TestCase):
         settings = _settings(dict(positive_source=True, fade_ab_fog="negpy"))
         out = []
         for prefer_gpu in (False, True):
-            result, _ = processor.run_pipeline(img, settings, "fog-parity", render_size_ref=float(max(img.shape[:2])), prefer_gpu=prefer_gpu)
+            result, _ = processor.run_pipeline(
+                img, settings, "fog-parity", render_size_ref=float(max(img.shape[:2])), prefer_gpu=prefer_gpu
+            )
             out.append(np.asarray(result.readback() if hasattr(result, "readback") else result)[:, :, :3].astype(np.float64))
         self.assertLess(float(np.abs(out[0] - out[1]).max()), 0.01)

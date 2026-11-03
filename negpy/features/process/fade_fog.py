@@ -144,9 +144,11 @@ def _small_density(linear: ImageBuffer) -> tuple[np.ndarray, np.ndarray, tuple[f
     rh, rw = region.shape[:2]
     sw = FOG_WORKING_WIDTH
     sh = max(8, int(round(rh * sw / rw)))
-    film = ~(region >= FOG_CLIP).all(axis=2)
+    film: np.ndarray = np.logical_not(np.all(region >= FOG_CLIP, axis=2))
     weight = np.ascontiguousarray(film.astype(np.float32))
-    summed = negpy_core.resize_area(np.ascontiguousarray(np.where(film[..., None], np.maximum(region, 1e-6), 0.0).astype(np.float32)), (sw, sh))
+    summed = negpy_core.resize_area(
+        np.ascontiguousarray(np.where(film[..., None], np.maximum(region, 1e-6), 0.0).astype(np.float32)), (sw, sh)
+    )
     count = np.asarray(negpy_core.resize_area(weight, (sw, sh)), dtype=np.float32)
     valid = count > 0.25
     mean = np.asarray(summed) / np.maximum(count, 1e-6)[..., None]
@@ -234,4 +236,3 @@ def bake_fog(linear: ImageBuffer, process) -> ImageBuffer:
         return linear
     surface = measure_fog(linear)
     return linear if surface is None else remove_fog(linear, surface)
-
