@@ -25,6 +25,7 @@ from negpy.features.exposure.normalization import (
     resolve_analysis_region,
     unmix_log_image,
 )
+from negpy.features.process.fade_tone import fade_tone_points
 from negpy.features.process.fade import (
     apply_crossover,
     crossover_offsets,
@@ -159,6 +160,7 @@ class TransparencyBaseProcessor:
         # The Crop tool shows the whole frame, so the parade's columns span it too (the GPU's full_frame).
         # Export and batch thumbnails render with stage caching off and skip it.
         if context.cache_stages:
+            context.metrics["fade_tone_points"] = fade_tone_points(prefiltered, self.config)
             parade_roi = None if context.crop_preview_full else context.active_roi
             context.metrics["density_parade"] = density_parade(img_log, parade_roi)
             context.metrics["scan_full_scale"] = scan_full_scale_columns(image, parade_roi)

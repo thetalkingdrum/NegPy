@@ -46,11 +46,31 @@ class FadeABModel(StrEnum):
     NC = "nc"
 
 
+class FadeABScannerZero(StrEnum):
+    """The log point a scanner file's fade scales density about: full scale (log 0), each channel's
+    measured white, or the mean of the measured white on all three channels."""
+
+    FULL_SCALE = "full_scale"
+    CLEAR_FILM = "clear_film"
+    CLEAR_NEUTRAL = "clear_neutral"
+
+
 class FadeABTone(StrEnum):
-    """Off, or NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive."""
+    """Off, NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive, or
+    NegPy's: the faded range read in density and written into the slide's tone sliders."""
 
     OFF = "off"
     NC = "nc"
+    NEGPY = "negpy"
+
+
+class FadeABFog(StrEnum):
+    """Uneven fog: off, NegativeConverter's display-space floor surface on the positive, or NegPy's
+    shared density surface baked out of the linear source."""
+
+    OFF = "off"
+    NC = "nc"
+    NEGPY = "negpy"
 
 
 class SensorUnmix(StrEnum):
@@ -265,6 +285,10 @@ class ProcessConfig:
     fade_ab_neutrals: FadeABNeutrals = FadeABNeutrals.NEGPY
     fade_ab_model: FadeABModel = FadeABModel.NEGPY
     fade_ab_tone: FadeABTone = FadeABTone.OFF
+    fade_ab_scanner_zero: FadeABScannerZero = FadeABScannerZero.FULL_SCALE
+    fade_ab_fog: FadeABFog = FadeABFog.OFF
+    # The tone sliders' values before Tone NegPy wrote its own, restored when Tone goes back to Off.
+    fade_tone_saved: Optional[tuple] = None
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
     # per-setup property calibrated from three bare-light R/G/B exposures
@@ -295,6 +319,10 @@ class ProcessConfig:
         object.__setattr__(self, "fade_ab_neutrals", FadeABNeutrals(self.fade_ab_neutrals))
         object.__setattr__(self, "fade_ab_model", FadeABModel(migrate_fade_model(self.fade_ab_model)))
         object.__setattr__(self, "fade_ab_tone", FadeABTone(self.fade_ab_tone))
+        object.__setattr__(self, "fade_ab_scanner_zero", FadeABScannerZero(self.fade_ab_scanner_zero))
+        object.__setattr__(self, "fade_ab_fog", FadeABFog(self.fade_ab_fog))
+        if self.fade_tone_saved is not None:
+            object.__setattr__(self, "fade_tone_saved", tuple(self.fade_tone_saved))
         # Same reach for renamed crosstalk profiles: roll defaults overlay this field
         # raw through dataclasses.replace, so the rename must run on every build too.
         if isinstance(self.crosstalk_profile, str) and self.crosstalk_profile in CROSSTALK_PROFILE_RENAMES:

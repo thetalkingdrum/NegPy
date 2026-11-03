@@ -87,6 +87,9 @@ _SENSOR_FIELDS = (
     "fade_ab_neutrals",
     "fade_ab_model",
     "fade_ab_tone",
+    "fade_ab_scanner_zero",
+    "fade_ab_fog",
+    "fade_tone_saved",
     "hue_trim",
 )
 # ProcessConfig is split across five cards. Each tuple is both the card's reset scope and
@@ -818,13 +821,23 @@ class ControlsPanel(QWidget):
             ),
             (
                 self.sensor_sidebar.fade_ab_model_btn,
-                tr("How the fade is corrected: Survival only, NegativeConverter's color table, or Survival with Crossover."),
+                tr("How the fade is corrected: Survival with Crossover, or NegativeConverter's color table."),
                 "fade_ab_model_cycle",
             ),
             (
                 self.sensor_sidebar.fade_ab_tone_btn,
-                tr("Adds NegativeConverter's automatic levels, brightness and contrast after the color correction."),
+                tr("Automatic levels and contrast for a faded slide: NegativeConverter's curve, or NegPy's values in the tone sliders."),
                 "fade_ab_tone_cycle",
+            ),
+            (
+                self.sensor_sidebar.fade_ab_scanner_zero_btn,
+                tr("Where a scanner file's fade is measured from: full scale, the clear film per channel, or the clear film as a gray."),
+                "fade_ab_scanner_zero_cycle",
+            ),
+            (
+                self.sensor_sidebar.fade_ab_fog_btn,
+                tr("Removes fog that is denser in one part of the slide: NegativeConverter's method or NegPy's."),
+                "fade_ab_fog_cycle",
             ),
         ):
             btn.setToolTip(tooltip_with_shortcut(tip, action_id))

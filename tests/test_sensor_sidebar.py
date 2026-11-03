@@ -428,6 +428,9 @@ def _slide_sidebar(**process):
     cfg = replace(cfg, process=replace(cfg.process, process_mode=ProcessMode.E6, **process))
     ctrl = MagicMock()
     ctrl.state.config = cfg
+    ctrl.state.preview_cam_xyz = None
+    ctrl.state.preview_camera_wb = None
+    ctrl.state.last_metrics = {}
     w = SensorSidebar(ctrl)
     w.sync_ui()
     return w, ctrl
@@ -465,10 +468,46 @@ def test_each_compare_choice_stores_its_enum_value_on_the_fade_card():
     for btn, field, value in (
         (w.fade_ab_neutrals_btn, "fade_ab_neutrals", "nc"),
         (w.fade_ab_model_btn, "fade_ab_model", "nc"),
-        (w.fade_ab_tone_btn, "fade_ab_tone", "nc"),
+        (w.fade_ab_scanner_zero_btn, "fade_ab_scanner_zero", "clear_neutral"),
+        (w.fade_ab_fog_btn, "fade_ab_fog", "negpy"),
     ):
         btn.setCurrentIndex(btn.findData(value))
         ctrl.set_roll_default.assert_called_with("fade", **{field: value})
+
+
+def test_tone_negpy_writes_the_sliders_and_off_gives_them_back_exactly():
+    w, ctrl = _slide_sidebar()
+    before = replace(ctrl.state.config.exposure, density=1.13, grade=97.0, auto_exposure=True)
+    ctrl.state.config = replace(ctrl.state.config, exposure=before)
+    ctrl.state.last_metrics = {"fade_tone_points": (1.6, 0.9, 0.3)}
+    w.fade_ab_tone_btn.setCurrentIndex(w.fade_ab_tone_btn.findData("negpy"))
+    written = ctrl.set_fade_tone.call_args.args[0]
+    assert written.process.fade_ab_tone == "negpy"
+    assert written.process.fade_tone_saved == (1.13, 97.0, True, before.auto_normalize_contrast)
+    assert (written.exposure.density, written.exposure.grade) != (1.13, 97.0)
+    assert not written.exposure.auto_exposure
+    ctrl.state.config = written
+    w.fade_ab_tone_btn.setCurrentIndex(w.fade_ab_tone_btn.findData("off"))
+    restored = ctrl.set_fade_tone.call_args.args[0]
+    assert restored.exposure == before
+    assert (restored.process.fade_ab_tone, restored.process.fade_tone_saved) == ("off", None)
+
+
+def test_tone_negpy_without_a_reading_changes_nothing():
+    w, ctrl = _slide_sidebar()
+    w.fade_ab_tone_btn.setCurrentIndex(w.fade_ab_tone_btn.findData("negpy"))
+    ctrl.set_fade_tone.assert_not_called()
+    assert w.fade_tone_hint.text()
+    assert w.fade_ab_tone_btn.currentData() == "off"
+
+
+def test_scanner_zero_hides_for_a_camera_raw():
+    w, ctrl = _slide_sidebar()
+    assert not w.fade_ab_scanner_zero_btn.isHidden()
+    ctrl.state.preview_cam_xyz = [[0.6, 0.3, 0.1], [0.2, 0.7, 0.1], [0.0, 0.1, 0.9]]
+    ctrl.state.preview_camera_wb = [2.0, 1.0, 1.5, 1.0]
+    w.sync_ui()
+    assert w.fade_ab_scanner_zero_btn.isHidden()
 
 
 def test_sync_shows_the_frame_s_compare_choices():

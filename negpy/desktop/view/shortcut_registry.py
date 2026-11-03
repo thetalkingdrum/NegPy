@@ -181,6 +181,8 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "fade_ab_neutrals_cycle": ShortcutEntry("", tr("Switch the Compare neutrals (Fade Restoration)"), tr("Process")),
     "fade_ab_model_cycle": ShortcutEntry("", tr("Switch the Compare color model (Fade Restoration)"), tr("Process")),
     "fade_ab_tone_cycle": ShortcutEntry("", tr("Switch the Compare tone (Fade Restoration)"), tr("Process")),
+    "fade_ab_scanner_zero_cycle": ShortcutEntry("", tr("Switch the Compare scanner zero (Fade Restoration)"), tr("Process")),
+    "fade_ab_fog_cycle": ShortcutEntry("", tr("Switch the Compare uneven fog (Fade Restoration)"), tr("Process")),
     "scan_prescan": ShortcutEntry("", tr("Prescan and set crop (Plustek)"), tr("Process")),
     "scan_meter_frame": ShortcutEntry("", tr("Meter a frame and lock the scan exposure (Coolscan)"), tr("Process")),
     "scan_as_roll": ShortcutEntry("", tr("Toggle Scan as Roll"), tr("Process")),

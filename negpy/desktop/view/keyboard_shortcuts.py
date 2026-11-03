@@ -499,6 +499,8 @@ class ShortcutManager:
             "fade_ab_neutrals_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_neutrals_btn),
             "fade_ab_model_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_model_btn),
             "fade_ab_tone_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_tone_btn),
+            "fade_ab_scanner_zero_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_scanner_zero_btn),
+            "fade_ab_fog_cycle": lambda: controls.sensor_sidebar.cycle_choice(controls.sensor_sidebar.fade_ab_fog_btn),
             "scan_prescan": (lambda: right.scan_sidebar.prescan_btn.click() if getattr(right, "scan_sidebar", None) is not None else None),
             "scan_meter_frame": (
                 lambda: right.scan_sidebar.exposure_meter_btn.click() if getattr(right, "scan_sidebar", None) is not None else None

@@ -97,6 +97,7 @@ from negpy.features.transparency.logic import (
     wb_split_geometry,
     zone_geometry,
 )
+from negpy.features.process.fade_tone import fade_tone_points
 from negpy.features.process.fade import (
     FadeDensity,
     crossover_offsets,
@@ -293,6 +294,7 @@ def _analysis_cache_key(settings: WorkspaceConfig, analysis_source_hash: str, fi
         p.fade_crossover_table,
         p.fade_crossover_space,
         p.fade_ab_model,
+        p.fade_ab_scanner_zero,
         g.rotation,
         g.flip_horizontal,
         g.flip_vertical,
@@ -1835,6 +1837,8 @@ class GPUEngine:
             metrics["fade_white"] = measured_white
         if measured_crossover is not None:
             metrics["fade_crossover"] = measured_crossover
+        if transfer and cam_prefiltered is not None and readback_metrics and not tiling_mode:
+            metrics["fade_tone_points"] = fade_tone_points(cam_prefiltered, settings.process)
         # A drag with no read leaves the base out, so the merged metrics keep the last frame's.
         if not transfer and film_base is None and source_base_log is NOT_READ:
             del metrics["film_base_density"]

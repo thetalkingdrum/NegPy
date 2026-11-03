@@ -74,6 +74,34 @@ class ScaledFilm:
         return np.power(10.0, -d * np.asarray(self.survivals))
 
 
+#: A broadband (white LED) scanner: each channel reads 15 to 25 % of its neighbors' dyes.
+BROADBAND_MIX = ((0.80, 0.20, 0.00), (0.18, 0.64, 0.18), (0.00, 0.22, 0.78))
+#: Log offset of clear film below full scale on a raw Plustek / SilverFast HDR file: 1.3 stops.
+PLUSTEK_WHITE = -1.3 * float(np.log10(2.0))
+
+
+@dataclass(frozen=True)
+class ScannerFilm:
+    """*film* as a scanner reads it: each channel's density a *mix* of the dye densities, and clear
+    film *white* (log) below full scale."""
+
+    film: object
+    mix: tuple = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    white: float = 0.0
+
+    def scan(self, log_e: np.ndarray) -> np.ndarray:
+        d = -np.log10(self.film.scan(log_e))
+        return np.power(10.0, -(d @ np.asarray(self.mix).T) + self.white)
+
+
+def plustek(film) -> ScannerFilm:
+    return ScannerFilm(film, BROADBAND_MIX, PLUSTEK_WHITE)
+
+
+def coolscan(film) -> ScannerFilm:
+    return ScannerFilm(film)
+
+
 @dataclass(frozen=True)
 class Scene:
     """Scene log exposure (H, W, 3) and the masks of its regions."""
@@ -142,7 +170,8 @@ def scan_image(film, scene: Scene, noise: float = 0.004, seed: int = 0) -> np.nd
 
 
 def render(image: np.ndarray, process_changes: dict) -> np.ndarray:
-    """The CPU engine's display-encoded render of a slide *image* with *process_changes*."""
+    """The CPU engine's display-encoded render of a slide *image* with *process_changes* (a scanner
+    file passes positive_source=True, as it opens)."""
     from negpy.domain.models import WorkspaceConfig
     from negpy.features.process.models import ProcessMode, mode_aware_exposure_reset
     from negpy.services.rendering.engine import DarkroomEngine
@@ -176,7 +205,7 @@ def hue(lab: np.ndarray) -> float:
     return float(np.degrees(np.arctan2(lab[2], lab[1])))
 
 
-def estimate_grid(image: np.ndarray) -> np.ndarray:
+def estimate_grid(image: np.ndarray, **process) -> np.ndarray:
     """The grid the panel's Estimate reads: the slide base stage's own, with the fade at identity."""
     from negpy.domain.interfaces import PipelineContext
     from negpy.domain.models import WorkspaceConfig
@@ -184,35 +213,45 @@ def estimate_grid(image: np.ndarray) -> np.ndarray:
     from negpy.services.rendering.engine import base_processor
 
     base = WorkspaceConfig()
-    settings = replace(base, process=replace(base.process, process_mode=ProcessMode.E6))
+    settings = replace(base, process=replace(base.process, process_mode=ProcessMode.E6, **process))
     ctx = PipelineContext(original_size=image.shape[:2], scale_factor=1.0, process_mode=ProcessMode.E6, wants_fade_grid=True)
     base_processor(settings).process(image, ctx)
     return ctx.metrics["transfer_grid"]
 
 
-def estimate(image: np.ndarray):
-    """Fade Estimate (the Midtone method, the panel's default) on *image*'s analysis grid."""
-    from negpy.features.process.fade import EstimateMethod, estimate_fade
+def estimate(image: np.ndarray, **process):
+    """Fade Estimate (the Midtone method, the panel's default) on *image*'s analysis grid, with the
+    render's white space as the panel passes it."""
+    from negpy.features.process.fade import EstimateMethod, estimate_fade, render_white_space
+    from negpy.features.process.models import ProcessConfig, ProcessMode
 
-    return estimate_fade(estimate_grid(image))[EstimateMethod.MIDTONE]
+    space = render_white_space(replace(ProcessConfig(), process_mode=ProcessMode.E6, **process), ProcessMode.E6, None, None)
+    return estimate_fade(estimate_grid(image, **process), white_space=space)[EstimateMethod.MIDTONE]
 
 
-def survival_changes(est, crossover: float, with_table: bool = True) -> dict:
-    """The process fields of an Estimate, with its table tagged as the Estimate button stores it."""
-    from negpy.features.process.fade import crossover_space, fade_density
+def survival_changes(est, crossover: float, with_table: bool = True, **process_fields) -> dict:
+    """The process fields of an Estimate, with its white and table tagged as the Estimate button
+    stores them, for a scanner file with *process_fields* (Positive, a scanner zero)."""
+    from negpy.features.process.fade import crossover_space, fade_density, render_white_space
     from negpy.features.process.models import ProcessConfig, ProcessMode
 
     changes = dict(
+        process_fields,
         fade_ratio_r=1.0 if est.red is None else est.red,
         fade_ratio_g=est.green,
         fade_ratio_b=est.blue,
         fade_crossover=crossover,
     )
+    process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **changes)
+    space = render_white_space(process, ProcessMode.E6, None, None)
+    if space and est.white is not None:
+        white = dict(zip(("fade_white_r", "fade_white_g", "fade_white_b"), est.white), fade_white_space=space)
+        changes.update(white)
+        process = replace(process, **white)
     if with_table and est.crossover is not None:
-        process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **changes)
         changes.update(
             fade_crossover_table=est.crossover,
-            fade_crossover_space=crossover_space(fade_density(process, ProcessMode.E6, ""), "", process),
+            fade_crossover_space=crossover_space(fade_density(process, ProcessMode.E6, space), space, process),
         )
     return changes
 

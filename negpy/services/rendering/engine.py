@@ -252,6 +252,7 @@ class DarkroomEngine:
             settings.process.fade_crossover_table,
             settings.process.fade_crossover_space,
             settings.process.fade_ab_model,
+            settings.process.fade_ab_scanner_zero,
             settings.process.lock_bounds,
             settings.process.use_cast_average,
             settings.process.locked_neutral_axis,

@@ -18,7 +18,7 @@ from negpy.features.exposure.normalization import (
 )
 from negpy.features.process.capture_color import camera_matrix_parts, is_source_profile
 from negpy.features.process.logic import effective_highlight_reconstruction
-from negpy.features.process.models import FadeABModel, FadeABNeutrals, ProcessConfig
+from negpy.features.process.models import FadeABModel, FadeABNeutrals, FadeABScannerZero, ProcessConfig
 from negpy.features.process.path import RenderPath, render_path
 
 #: Below this density spread a channel's neutral axis is too flat to be signal.
@@ -95,15 +95,30 @@ def render_white_space(
     process: ProcessConfig, process_mode: Optional[str], cam_xyz: Optional[Sequence[Sequence[float]]], camera_wb: Optional[Sequence[float]]
 ) -> str:
     """`fade_white_space` of a render with *process*: its crosstalk unmix and highlight mode included,
-    "" on a negative, which takes no fade."""
+    "" on a negative, which takes no fade. A scanner file whose fade scales about its measured white
+    (`fade_ab_scanner_zero`) takes a `SCANNER_SPACE` tag, so it stores and measures that white as a
+    camera RAW does."""
     if render_path(process) is RenderPath.PRINT:
         return ""
     crosstalk = effective_crosstalk_matrix(process, process_mode)
-    return fade_white_space(cam_xyz, camera_wb, crosstalk, effective_highlight_reconstruction(process))
+    space = fade_white_space(cam_xyz, camera_wb, crosstalk, effective_highlight_reconstruction(process))
+    if space or process.fade_ab_scanner_zero == FadeABScannerZero.FULL_SCALE:
+        return space
+    named = b"" if crosstalk is None else np.round(np.asarray(crosstalk, dtype=np.float64), 4).tobytes()
+    return f"{SCANNER_SPACE}{process.fade_ab_scanner_zero.value}-{hashlib.sha1(b'scanner' + named).hexdigest()[:8]}"
 
 
 # Names the channels in `fade_white_space`, so a tag hashed any other way reads as stale.
 _WHITE_SPACE_CHANNELS = b"camera-gains"
+#: The prefix of a scanner file's white space, then its `FadeABScannerZero` value.
+SCANNER_SPACE = "scanner-"
+
+
+def scanner_zero(white_space: str) -> Optional[FadeABScannerZero]:
+    """The scanner zero a `SCANNER_SPACE` tag names, None for a camera RAW's tag or ""."""
+    if not white_space.startswith(SCANNER_SPACE):
+        return None
+    return FadeABScannerZero(white_space[len(SCANNER_SPACE) :].rsplit("-", 1)[0])
 
 
 class FadeDensity(NamedTuple):
@@ -154,7 +169,7 @@ def _white_terms(process: ProcessConfig, white_space: str, fade_acts: bool) -> O
     if remove_stain(process):
         return white, np.full(3, _white_target(white))
     if white_space and fade_acts:
-        level = np.asarray(density_anchor(white, False), dtype=np.float64)
+        level = np.asarray(density_anchor(white, False, white_space), dtype=np.float64)
         return level, level
     return None
 
@@ -164,13 +179,15 @@ def remove_stain(process: ProcessConfig) -> bool:
     return process.fade_white_anchor and process.fade_ab_model != FadeABModel.NC
 
 
-def density_anchor(white: Sequence[float], remove_stain: bool) -> tuple[float, float, float]:
-    """The log point a camera RAW's fade scales density about: each channel's white with Remove Stain,
-    else the white's cleanest channel on all three. A neutral point keeps a gray neutral when the white
-    is a colored highlight, which is all a slide shows when it holds no clear film."""
-    if remove_stain:
+def density_anchor(white: Sequence[float], remove_stain: bool, white_space: str = "") -> tuple[float, float, float]:
+    """The log point a fade scales density about: each channel's white with Remove Stain or a scanner
+    zero at the clear film, the white's mean log at a neutral scanner zero, else (a camera RAW) its
+    cleanest channel on all three. A neutral point keeps a gray neutral when the white is a colored
+    highlight, which is all a slide shows when it holds no clear film."""
+    zero = scanner_zero(white_space)
+    if remove_stain or zero == FadeABScannerZero.CLEAR_FILM:
         return (float(white[0]), float(white[1]), float(white[2]))
-    level = float(max(white))
+    level = float(np.mean(np.asarray(white, dtype=np.float64))) if zero == FadeABScannerZero.CLEAR_NEUTRAL else float(max(white))
     return (level, level, level)
 
 
@@ -381,20 +398,22 @@ def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], method: str =
 
 
 def estimate_fade(
-    grid: ImageBuffer, white_anchor: bool = False, camera_raw: bool = False, neutrals: str = FadeABNeutrals.NEGPY
+    grid: ImageBuffer, white_anchor: bool = False, camera_raw: bool = False, neutrals: str = FadeABNeutrals.NEGPY, white_space: str = ""
 ) -> dict[EstimateMethod, FadeEstimate]:
     """Both methods' estimates from one measurement of the grays. `grid` is the transparency
     meter's grid with the crosstalk unmix, no fade and no Remove Stain (`TransparencyBaseProcessor`).
     Both methods set Red Survival so the best-kept layer lands at 1.0; a ratio above 1 says red
     faded most. With `white_anchor`, or on a `camera_raw` whose render scales density above its
     white (`unmix_with_fade`), the grays are read as density above the point the render scales about
-    (`density_anchor`). *neutrals* picks the gray reader (`FadeABNeutrals`). Each estimate carries the
-    crossover table measured after its own survivals, zero at its midtone."""
+    (`density_anchor`; *white_space*, the render's, names a scanner zero). *neutrals* picks the gray
+    reader (`FadeABNeutrals`). Each estimate carries the crossover table measured after its own
+    survivals, zero at its midtone."""
     white = measure_white(grid)
     if white_anchor and white is None:
         return {m: FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame.")) for m in EstimateMethod}
+    camera_raw = camera_raw or bool(white_space)
     anchored = white is not None and (white_anchor or camera_raw)
-    gray_grid = white_anchored_grid(grid, density_anchor(white, white_anchor)) if anchored else grid
+    gray_grid = white_anchored_grid(grid, density_anchor(white, white_anchor, white_space)) if anchored else grid
     refs, reason = nc_neutral_refs(gray_grid) if neutrals == FadeABNeutrals.NC else neutral_axis_from_grid(gray_grid)
     out = {}
     for method in EstimateMethod:
@@ -408,12 +427,12 @@ def estimate_fade(
             red = min(max(1.0 / max(g, b, 1.0), lo), hi)
         table = None
         if red is not None:
-            density = survival_density(red, g, b, white, white_anchor, camera_raw)
+            density = survival_density(red, g, b, white, white_anchor, camera_raw, white_space)
             # The midtone the survivals were fit on, through the same fade: the table's zero.
             mid = np.asarray(refs[0], dtype=np.float32).reshape(1, 1, 3)
             if anchored:
                 # The grays were read above the anchor; the table is read on the grid itself.
-                mid = mid + np.asarray(density_anchor(white, white_anchor), dtype=np.float32)
+                mid = mid + np.asarray(density_anchor(white, white_anchor, white_space), dtype=np.float32)
             zero = float(_mean_log(through_density(mid, density).reshape(1, 3).astype(np.float64))[0])
             table = measure_crossover(through_density(grid, density), zero)
         out[method] = FadeEstimate(red, g, b, why, white, table)
@@ -617,6 +636,17 @@ def crossover_description(table: Sequence[float]) -> str:
     return " ".join([amount, *parts])
 
 
+def crossover_lean_fit(table: Sequence[float]) -> tuple[np.ndarray, float]:
+    """(slope per channel, RMS residual) of a share-weighted least-squares line through each band's
+    lean against its mean log. A wrong zero leans linearly; a real crossover curves."""
+    rows = crossover_bands(table)
+    x, w = rows[:, 0], rows[:, 1]
+    a = np.stack([np.ones_like(x), x], axis=1) * np.sqrt(w)[:, None]
+    coef, *_ = np.linalg.lstsq(a, rows[:, 2:] * np.sqrt(w)[:, None], rcond=None)
+    residual = rows[:, 2:] - (coef[0] + x[:, None] * coef[1])
+    return coef[1], float(np.sqrt((w[:, None] * residual * residual).sum() / (3.0 * w.sum())))
+
+
 def crossover_cast(table: Sequence[float]) -> np.ndarray:
     """The share-weighted mean lean of the bands."""
     rows = crossover_bands(table)
@@ -757,11 +787,12 @@ def survival_density(
     white: Optional[tuple[float, float, float]],
     white_anchor: bool,
     camera_raw: bool,
+    white_space: str = "",
 ) -> FadeDensity:
     """The fade a render with these survivals applies after the crosstalk unmix, on the Estimate grid."""
     from negpy.features.process.models import ProcessMode
 
-    space = "estimate" if camera_raw else ""
+    space = white_space or ("estimate" if camera_raw else "")
     w = white or (0.0, 0.0, 0.0)
     process = replace(
         ProcessConfig(),
