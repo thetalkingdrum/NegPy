@@ -52,3 +52,44 @@ PROBES = tuple((y, x) for y in (5, 30, 60, 70, 90) for x in (3, 40, 100, 150, 20
 CASES = {"faded": faded_positive, "crossover": crossover_positive}
 #: Stage variants: (colour table, tone curve).
 VARIANTS = {"colour": (True, False), "tone": (False, True), "both": (True, True)}
+
+
+FOG_W, FOG_H = 240, 160
+
+
+def _fog_at(x: np.ndarray) -> np.ndarray:
+    """Their test's fog: a uniform floor and a gradient toward the left edge (light piping)."""
+    return 0.10 + 0.12 * (1 - x / (FOG_W - 1))
+
+
+def fog_wall_positive() -> np.ndarray:
+    """Their expiredRescueOpenCv.test.mjs scene, a textured neutral ramp with a bright wall in the
+    lower right, aged by their fog, as a uint16 plane."""
+    y, x = np.mgrid[0:FOG_H, 0:FOG_W]
+    v = 255.0 * ((x * 7 + y * 3) % 40) / 39.0
+    v = np.where((x > FOG_W * 0.6) & (y > FOG_H * 0.6), 220.0, v)
+    scene = np.round(v)
+    f = _fog_at(x)
+    aged = np.round((f + (0.9 - f) * (scene / 255.0)) * 255.0)
+    return np.round(np.repeat(aged[..., None], 3, axis=-1) / 255.0 * 65535.0).astype(np.uint16)
+
+
+def coolscan_clean_positive() -> np.ndarray:
+    """A clean narrowband slide scan with no fog: deep shadows, a large warm area and a gray ramp,
+    from the film model of `fade_crossover_scene`, display-encoded, uint16."""
+    from fade_crossover_scene import REFERENCE, build_scene, coolscan, scan_image
+
+    scene = build_scene(FOG_W, FOG_H)
+    log_e = scene.log_e.copy()
+    yy, xx = np.mgrid[0:FOG_H, 0:FOG_W]
+    # A warm wall over the right half of the lower part, and a deep shadow along the bottom left.
+    log_e[(yy > FOG_H // 3) & (xx > FOG_W // 2)] = (-0.15, -0.55, -1.25)
+    log_e[(yy > FOG_H * 3 // 4) & (xx < FOG_W // 3)] = (-2.6, -2.6, -2.6)
+    t = scan_image(coolscan(REFERENCE), type(scene)(log_e, scene.ramp, scene.patches))
+    return np.round(np.clip(np.power(t, 1.0 / 2.2), 0.0, 1.0) * 65535.0).astype(np.uint16)
+
+
+FOG_CASES = {"fog_wall": fog_wall_positive, "coolscan_clean": coolscan_clean_positive}
+FOG_PROBES = tuple((y, x) for y in (6, 40, 80, 120, 150) for x in (2, 50, 120, 170, 236))
+#: Fog variants: (colour table, tone curve) after the fog stage.
+FOG_VARIANTS = {"fog": (False, False), "fog_both": (True, True)}

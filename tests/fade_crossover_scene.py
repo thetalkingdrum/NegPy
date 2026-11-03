@@ -260,3 +260,55 @@ def ramp_chroma(lab: np.ndarray, scene: Scene, bands: int = 8) -> list[tuple[flo
     """(max, mean) C* of the ramp steps in *bands* equal groups, darkest first."""
     c = np.array([chroma(region_lab(lab, m)) for m in scene.ramp])
     return [(float(g.max()), float(g.mean())) for g in np.array_split(c, bands)]
+
+
+@dataclass(frozen=True)
+class FogScene:
+    """A scanner file of the unfaded film with and without uneven fog, and its gray cells."""
+
+    fogged: np.ndarray
+    clean: np.ndarray
+    gray: np.ndarray
+
+
+#: A saturated blue sky, as a narrowband scanner separates it.
+SKY_BLUE = (-0.9, -0.5, -0.1)
+WARM = (-0.15, -0.55, -1.25)
+
+
+def fog_scene(layout: str = "fog", width: int = 384, height: int = 256) -> FogScene:
+    """Scenes on the unfaded film, scanned at full scale with no channel mix (Coolscan-like).
+
+    "fog": NegativeConverter's fog test scene, a textured gray ramp over the whole range with a large
+    light-gray wall in the lower right that must not read as fog, under fog density that falls from
+    the left edge and a bump in the top-right corner. "warm" and "sky" hold no fog: a light gray wall
+    with a dark doorway, under a large warm area or a blue sky over the top third. The clean scan
+    holds the fog's even part, which no stage removes."""
+    y, x = np.mgrid[0:height, 0:width]
+    if layout == "fog":
+        t = ((x * 7 + y * 3) % 40) / 39.0
+        log_e = np.repeat((RAMP_RANGE[0] + t * (RAMP_RANGE[1] - RAMP_RANGE[0]))[..., None], 3, axis=-1)
+        other = (x > width * 0.6) & (y > height * 0.6)
+        log_e[other] = -0.3
+    else:
+        log_e = np.full((height, width, 3), -0.6)
+        door = (y > height * 0.7) & (np.abs(x - width * 0.5) < width * 0.08)
+        log_e[door] = -2.6
+        if layout == "warm":
+            other = (x > width * 0.5) & (y > height * 0.33)
+        else:
+            other = y < height * 0.35
+        log_e[other] = WARM if layout == "warm" else SKY_BLUE
+        other = other | door
+    density = -np.log10(REFERENCE.scan(log_e))
+    if layout == "fog":
+        corner = np.exp(-(((x - width) / (0.25 * width)) ** 2 + (y / (0.25 * width)) ** 2))
+        fog = 0.03 + 0.12 * (1.0 - x / (width - 1)) + 0.08 * corner
+    else:
+        fog = np.full((height, width), 0.03)
+    grain = np.random.default_rng(1).normal(0.0, 0.004, density.shape)
+
+    def scan(d: np.ndarray) -> np.ndarray:
+        return np.clip(np.power(10.0, -(d + grain)), 1e-6, 1.0).astype(np.float32)
+
+    return FogScene(scan(density + fog[..., None]), scan(density + float(fog.min())), ~other)

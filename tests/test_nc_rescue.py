@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nc_rescue_fixtures import CASES, PROBES, VARIANTS
+from nc_rescue_fixtures import CASES, FOG_CASES, FOG_PROBES, FOG_VARIANTS, PROBES, VARIANTS
 from negpy.features.process import nc_rescue
 from negpy.features.process.models import ProcessMode
 
@@ -135,3 +135,41 @@ def test_nc_neutrals_read_the_survivals_too():
     assert theirs.red is not None and theirs.reason == ""
     assert theirs.blue < 0.95
     assert (theirs.green, theirs.blue) != (ours.green, ours.blue)
+
+
+_FOG_EXPECTED = json.loads((Path(__file__).parent / "fixtures" / "nc_fog_port.json").read_text())["cases"]
+
+
+@pytest.fixture(scope="module", params=sorted(FOG_CASES))
+def fog_case(request):
+    name = request.param
+    img = FOG_CASES[name]()
+    return name, img, img.astype(np.float64) / 65535.0, _FOG_EXPECTED[name]
+
+
+def test_the_fog_maps_match(fog_case):
+    _, _, display, theirs = fog_case
+    maps = nc_rescue.fog_maps(display)
+    assert (maps.grid_width, maps.grid_height) == (theirs["maps"]["gridWidth"], theirs["maps"]["gridHeight"])
+    fraction = theirs["maps"]["fraction"]
+    assert maps.fraction == pytest.approx((fraction["left"], fraction["top"], fraction["width"], fraction["height"]))
+    for mine, grid in zip(maps.low, theirs["maps"]["low"]):
+        assert np.abs(mine.ravel() - np.asarray(grid)).max() < 1e-6
+
+
+def test_the_fog_surface_matches(fog_case):
+    _, _, display, theirs = fog_case
+    ours = nc_rescue.fit_spatial(nc_rescue.fog_maps(display))
+    fog = theirs["spatial"]["fog"]
+    assert np.abs(np.asarray(ours["coefficients"]) - np.asarray(fog["coefficients"])).max() <= 1e-4
+    assert ours["offset"] == pytest.approx(fog["offset"], abs=1e-4)
+    assert ours["amplitude"] == pytest.approx(fog["amplitude"], abs=1e-4)
+
+
+@pytest.mark.parametrize("variant", sorted(FOG_VARIANTS))
+def test_the_fog_stage_matches_within_one_level(fog_case, variant):
+    _, _, display, theirs = fog_case
+    colour, tone = FOG_VARIANTS[variant]
+    whole = nc_rescue.rescue(display, colour, tone, fog=True)
+    probes = np.array([whole[y, x] for y, x in FOG_PROBES]) * 255.0
+    assert np.abs(probes - np.asarray(theirs["variants"][variant]["probes"])).max() < 1.0
