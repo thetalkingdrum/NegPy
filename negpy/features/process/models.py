@@ -30,10 +30,11 @@ _LEGACY_MODES = {"C41": ProcessMode.C41, "B&W": ProcessMode.BW, "E-6": ProcessMo
 
 
 class FadeABNeutrals(StrEnum):
-    """Which cells Fade Estimate reads as gray: NegPy's neutral-axis meter, or NegativeConverter's
-    soft neutral weight with a mean-shift per density band."""
+    """Which cells Fade Estimate reads as gray: NegPy's neutral-axis meter, the same without its sky
+    sector, or NegativeConverter's soft neutral weight with a mean-shift per density band."""
 
     NEGPY = "negpy"
+    NO_SKY = "no_sky"
     NC = "nc"
 
 
@@ -56,12 +57,14 @@ class FadeABScannerZero(StrEnum):
 
 
 class FadeABTone(StrEnum):
-    """Off, NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive, or
-    NegPy's: the faded range read in density and written into the slide's tone sliders."""
+    """Off, NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive,
+    NegPy's (their curve read in density and written into the slide's tone sliders), or Adaptive (the
+    frame's own density span and median written into the same sliders)."""
 
     OFF = "off"
     NC = "nc"
     NEGPY = "negpy"
+    ADAPTIVE = "adaptive"
 
 
 class FadeABFog(StrEnum):
@@ -283,11 +286,16 @@ class ProcessConfig:
     fade_crossover_space: str = ""
     # A/B against NegativeConverter's expired-film rescue (experiment). NegPy's own at the defaults.
     fade_ab_neutrals: FadeABNeutrals = FadeABNeutrals.NEGPY
+    # Moves Estimate's grays from NegPy's (or No Sky's) reader at 0 to NegativeConverter's at 1.
+    fade_neutrals_mix: float = 0.0
     fade_ab_model: FadeABModel = FadeABModel.NEGPY
     fade_ab_tone: FadeABTone = FadeABTone.OFF
     fade_ab_scanner_zero: FadeABScannerZero = FadeABScannerZero.FULL_SCALE
     fade_ab_fog: FadeABFog = FadeABFog.OFF
-    # The tone sliders' values before Tone NegPy wrote its own, restored when Tone goes back to Off.
+    # How far Tone NegPy and Adaptive move Print Density and ISO-R Grade from the saved values (0) to
+    # the fitted ones (1).
+    fade_tone_strength: float = 1.0
+    # The tone sliders' values before Tone NegPy or Adaptive wrote its own, restored when Tone goes back to Off.
     fade_tone_saved: Optional[tuple] = None
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A

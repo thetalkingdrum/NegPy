@@ -6586,11 +6586,12 @@ class AppController(QObject):
         self.apply_config(config, persist=True)
         self._lock_roll_card("film")
 
-    def set_fade_tone(self, config: WorkspaceConfig) -> None:
+    def set_fade_tone(self, config: WorkspaceConfig, persist: bool = True) -> None:
         """Applies a Tone change from `fade_tone_changes`: the Fade card's choice and the Tone sliders
         it writes or gives back, in one edit. The choice locks the Fade card like any other."""
-        self.apply_config(config, persist=True)
-        self._lock_roll_card("fade")
+        self.apply_config(config, persist=persist)
+        if persist:
+            self._lock_roll_card("fade")
 
     def set_positive_source(self, checked: bool) -> None:
         """Toggles Positive for the active frame, locking the "film" card away from

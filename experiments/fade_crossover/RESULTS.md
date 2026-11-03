@@ -7,7 +7,150 @@ Reproduce the numbers:
 ```bash
 uv run python experiments/fade_crossover/evaluate.py      # phases 1 and 2
 uv run python experiments/fade_crossover/phase3.py      # phase 3: scanner zero, tone, fog
+uv run python experiments/fade_crossover/phase4.py      # phase 4: gray finders, tone, fog diagnostics
 ```
+
+## Phase 4
+
+Every new setting is on the `fade` roll card (in `LATE_FADE_DEFAULTS`), in the Fade Restoration paste row and the card reset, and translated in all four catalogs. No field was renamed, so `migrations.py` has no entry. The defaults (`fade_neutrals_mix` 0, `fade_tone_strength` 1, Neutrals NegPy, Tone Off, fog Off) render bit-identically: Mix and No Sky act only when Estimate runs, Tone Strength only when a Tone that writes the sliders is chosen, and the fog refactor keeps the bake's arithmetic (`test_a_clean_scan_stays_bit_identical`, `test_the_defaults_render_as_before`). Nothing new reaches the GPU: Estimate and the tone fits are CPU analysis that write settings, and the fog bake is a source bake ahead of both engines. `THUMBNAIL_RENDER_VERSION` is not bumped (the base branch already bumped it over main, and no default render changes).
+
+Reproduce: `uv run python experiments/fade_crossover/phase4.py [neutrals] [tone] [fog]`.
+
+### 1. Neutrals Mix (`fade_neutrals_mix`)
+
+A **Mix** slider (0 to 100 %) under Neutrals in the Compare fold. Estimate reads each gray ref (midtone, shadow, highlight; log, per channel) as `(1 − m)·r + m·r_nc`, before the survivals, the lean and the table fit (`fade.gray_refs`). Mix 0 is NegPy's reader exactly and Mix 100 % is NC's exactly (`test_mix_ends_are_the_two_readers_exactly`). In between, a frame where one reader finds no grays takes the other's. Mix acts under Neutrals NegPy and No Sky, is grayed out under NC, and shows only while Color model is NegPy. Like Neutrals, it changes nothing until Estimate runs again; the tooltip says so.
+
+### 2. The cold lean
+
+Method: a NumPy copy of NegPy's `neutral_axis` with each suspect switchable (`experiments/fade_crossover/neutral_finders.py`; `check_replica` asserts it matches `negpy_core` on every Coolscan-like fixture). New scenes in `tests/fade_crossover_scene.warm_scene`, each with a true gray ramp over the top 10 % of the frame:
+- **wall**: a large wall lit to shaded, sand, skin, some sky and foliage, the wall and sand warm by `warmth` × (0.03, 0, −0.05) and (0.04, −0.02, −0.14) log E;
+- **sun**: gray objects in warm sun on one half and cool skylit shade on the other, the ramp only over the midtones;
+- **bright**: the wall layout with a warm sunlit area as the frame's brightest part;
+- **sky**: the wall layout under a saturated blue sky over the top 40 %.
+
+Each reader runs a full Estimate (Midtone); the score is the render's mean b\* over the true gray ramp's midtone steps (negative = cold), Coolscan-like and Plustek-like (broadband mix, white 1.3 stops down), linear fade 1/.75/.55 and the crossover fade.
+
+**NC's reader is not warmer than ours on these fixtures; it is colder.** Over all 32 fixture renders at Crossover 100 %:
+
+| reader | mean b\* | mean \|b\*\| | shift from NegPy |
+|---|---|---|---|
+| NegPy | −2.67 | 3.52 | 0 |
+| NegPy, Mix 50 % | −4.08 | 4.68 | −1.41 |
+| NC | −3.90 | 4.33 | −1.23 |
+
+Mix 50 % is colder than either end: a midtone ref halfway between two readers that sit at different densities fits survivals that neither reader gives. NC's mean-shift settles each band on its largest near-neutral cluster, so a large uniform warm area (skin, a wall) wins its band. On the wall layout at warmth 1, NC's midtone bands read b\* +8.8 and +3.4 in the unfaded film, NegPy's midtone +3.4 (`phase4.py`, band table).
+
+**The one case that reproduces "ours is colder" is sun and shade on the Plustek-like scan**: NegPy −2.0 and −4.2 b\* where NC reads −0.1 and +0.4 (crossover fade, warmth 1 and 2). The cause is the **sky sector**: in the frame's own per-channel stretch, skylit shade reads blue enough (chroma above 0.06, hue −150° to −60°) to be dropped as sky, 19 to 23 % of the cells. That leaves the warm sunlit grays as the neutral, and the render goes cold. With the foliage sector only, the same frames read +1.3 and +2.5.
+
+Each suspect alone, mean over all fixtures at Crossover 100 % (0):
+
+| suspect, alone | mean \|b\*\| | shift in mean b\* |
+|---|---|---|
+| none (NegPy) | 3.52 (4.21) | 0 |
+| no chroma caps | 3.52 (4.21) | 0.00: the caps never bind on these frames |
+| no subject sectors at all | 3.67 (4.43) | +0.05 (+0.13): the foliage sector helps where the sky sector hurts |
+| **sky sector off** (= No Sky, the shipped reader) | **3.06 (3.89)** | **+0.69 (+0.72)** |
+| soft weight 0.25 D (or 0.12 D) instead of the 30 % quantile | 3.34 (3.76) | −0.02 (+0.32) |
+| 8 bands, NC's layout | 3.32 (5.98) | +0.04 (−1.95) |
+| soft weight and 8 bands | 3.62 (4.93) | −0.29 (−0.83) |
+| raw-log chroma instead of the stretch | 3.71 (4.72) | −0.23 (−0.61) |
+
+**Sky sector off wins**, and it is the only change that moves the lean warm. It is better even on the saturated-sky layout (Coolscan linear −7.6 → −2.1, crossover −10.7 → −6.9), because a saturated sky never enters the lowest-chroma set; the sector instead drops grays the fade's cast pushed toward blue. It is worse on one fixture: Coolscan crossover, bright layout, −9.5 → −10.9.
+
+It ships as a third Neutrals choice, **No Sky** (`fade_ab_neutrals = "no_sky"`): `neutral_axis_from_grid(grid, sky_sector=False)`, which passes an infinite chroma floor for the sky sector to `negpy_core.neutral_axis` (no Rust change; every fallback pass keeps the setting). The default reader is unchanged.
+
+### 3. Tone Strength and Adaptive
+
+**Tone Strength** (`fade_tone_strength`, 0 to 100 %, default 100 %) shows while Tone is NegPy or Adaptive. Each slider gets `v0 + t·(v1 − v0)`, rounded to its step: `v0` is what the slider prints when the Tone is chosen (an Auto Density or Auto Grade's metered value included, `transfer_shown_values`), `v1` the fit. A strength change writes the sliders again from `fade_tone_saved`, so Off still restores them exactly (`test_strength_moves_the_sliders_from_the_saved_values_and_off_still_restores`). Under Off or NC the slider is hidden and the value is only stored.
+
+**Adaptive** (`fade_ab_tone = "adaptive"`, `fade_tone.adaptive_values`) does not use their curve. It reads the same `fade_tone_points` (the frame's mean density after the fade and the table, through the slide window) and solves the two sliders directly:
+
+| constant | value | why |
+|---|---|---|
+| `ADAPTIVE_SPAN` | 2.4 D | the print density span the frame's 0.5 to 99.5 % span maps to: about what a well-exposed slide's picture holds |
+| `ADAPTIVE_CONTRAST` | 1.0 to 1.5 (ISO-R 115 to 77) | the floor: a frame that kept its range keeps the slide default and is never flattened. The ceiling: a frame that lost most of its range is stretched at most 1.5 times, so grain and stain do not grow into the picture |
+| `ADAPTIVE_MIDTONE` | 1.0 D | where the median prints: about a normally exposed slide's mid gray, and where it prints at the slide defaults (Print Density 1, ISO-R 115 print each density as itself) |
+
+Contrast is `ADAPTIVE_SPAN / span` held to the range, then Grade = 115 / contrast on its 1-step grid, then Print Density puts the median at `ADAPTIVE_MIDTONE` given that Grade (step 0.01, held to 0 to 2). The fixtures' scene is dense (median 1.7 D), so Adaptive brightens it.
+
+The Grade each option picks (fresh Estimate, Crossover 100 %, Strength 100 %; "uniform s" scales all three layers by s, a pure loss of range; dE is the 9-patch mean against the unfaded film):
+
+| scanner | fade | span D | NegPy Density / Grade | Adaptive Density / Grade | dE Off / NC / NegPy / Adaptive |
+|---|---|---|---|---|---|
+| Coolscan-like | uniform 1 | 2.89 | 0.41 / 104 | 0.00 / 115 | 0.0 / 16.5 / 16.1 / 28.2 |
+|  | uniform 0.8 | 2.32 | 0.58 / 89 | 0.41 / 111 | 13.1 / 23.4 / 23.5 / 30.9 |
+|  | uniform 0.6 | 1.74 | 0.98 / 63 | 0.86 / 83 | 29.4 / 23.9 / 23.9 / 31.3 |
+|  | uniform 0.45 | 1.31 | 1.12 / 50 | 1.26 / 77 | 42.9 / 35.1 / 35.0 / 30.4 |
+|  | uniform 0.3 | 0.87 | 1.49 / 50 | 1.69 / 77 | 55.8 / 41.8 / 36.9 / 30.1 |
+|  | linear 1/.7/.5 | 2.89 | 0.41 / 104 | 0.00 / 115 | 0.3 / 16.5 / 16.2 / 28.2 |
+|  | crossover | 2.90 | 0.43 / 105 | 0.00 / 115 | 5.4 / 19.0 / 19.0 / 30.9 |
+|  | low range .6/.45/.35 | 1.74 | 0.98 / 63 | 0.87 / 83 | 29.5 / 24.0 / 23.9 / 30.9 |
+|  | low range .4/.3/.25 | 1.16 | 1.23 / 50 | 1.41 / 77 | 47.5 / 38.4 / 36.6 / 29.9 |
+| Plustek-like | uniform 1 | 2.89 | 0.00 / 89 | 0.00 / 115 | 0.0 / 30.6 / 16.1 / 17.1 |
+|  | uniform 0.8 | 2.32 | 0.00 / 90 | 0.00 / 111 | 5.6 / 33.0 / 26.7 / 26.4 |
+|  | uniform 0.6 | 1.74 | 0.19 / 73 | 0.21 / 83 | 13.3 / 36.3 / 35.7 / 33.8 |
+|  | uniform 0.45 | 1.31 | 0.54 / 54 | 0.61 / 77 | 20.8 / 36.3 / 35.9 / 30.4 |
+|  | uniform 0.3 | 0.87 | 0.85 / 50 | 1.04 / 77 | 30.2 / 36.5 / 36.5 / 26.7 |
+|  | linear 1/.7/.5 | 2.56 | 0.00 / 81 | 0.00 / 115 | 1.5 / 30.8 / 16.8 / 18.2 |
+|  | crossover | 2.77 | 0.00 / 86 | 0.00 / 115 | 1.6 / 31.9 / 18.4 / 19.0 |
+|  | low range .6/.45/.35 | 1.55 | 0.24 / 65 | 0.27 / 77 | 14.2 / 35.8 / 35.4 / 32.7 |
+|  | low range .4/.3/.25 | 1.02 | 0.68 / 50 | 0.81 / 77 | 24.6 / 35.9 / 34.9 / 27.7 |
+
+- **Adaptive never goes below ISO-R 77; NegPy reaches the ISO-R 50 floor at uniform 0.45 and below** (and on low range .4/.3/.25), as on the real files.
+- On a heavily faded frame Adaptive lands closest to the unfaded film (Coolscan uniform 0.3: dE 30.1 against NegPy's 36.9 and NC's 41.8). On a mild fade NegPy's fit is closer, because Adaptive moves a frame's brightness to its midtone rule.
+- On the Plustek-like scan both reach the Print Density floor (0) on any frame that kept its range: the dim white puts the whole frame too dense for the slider. The scanner zero (phase 3) is the control for that.
+
+### 4. Fog diagnostics
+
+`fade_fog.fit_fog` returns the measurement with what it read (`FogFit`): the grid cells, their shared floor, which were coherent and which were kept as clear film, the surface's range over its region before the cap, and why no surface was taken. `measure_fog` and the bake use it unchanged. Measure-only metrics: each render with fog NegPy reports `metrics["fade_fog"] = {amplitude, cap_hit, kept_share, reason}` (CPU; the bake runs before both engines). `compare.py` writes the overlay (`.p4-fog.png`): the scan as loaded with the removed density as a magenta tint (full at 0.15 D), each grid cell as a dot (green kept, orange read as picture, red incoherent), the removed map alone, and the render. A canvas overlay was not added: the sheet needs no app change and runs on your files.
+
+Scenes (`phase4.bright_fog_scene`, unfaded film, Coolscan-like, a textured picture filling the frame): a bright area (none, a lit near-white wall over the right third, a pale sky band over the top third) with no fog, gradual fog from the left (0.12 D), a corner bump (0.14 D) or strong fog from the left (0.25 D, past the cap). "err" is the RMS of the removed map against the true uneven fog; "bright" the removed density over the bright area minus over the rest, with the truth in brackets.
+
+| bright area | fog | amp before cap | cap hit | kept | err D | bright D |
+|---|---|---|---|---|---|---|
+| none | none | 0.003 | | 100 % | 0.000 | |
+| none | left | 0.113 | | 100 % | 0.006 | |
+| none | strong | 0.238 | yes | 100 % | 0.008 | |
+| wall | none | 0.026 | | 44 % | 0.020 | −0.021 (0) |
+| wall | left | 0.067 | | 44 % | 0.022 | −0.056 (−0.060) |
+| sky | none | **0.102** | | 52 % | **0.075** | **−0.081 (0)** |
+| sky | left | **0.206** | **yes** | 50 % | 0.058 | −0.065 (0) |
+| sky | corner | 0.177 | yes | 52 % | 0.090 | −0.079 (+0.025) |
+
+**The surface follows the picture when a pale area sits beside textured content.** The textured picture's thinnest pixel in each erosion window is denser than clear film, and the pale sky's is not, so the floor steps at the sky's edge. With no fog at all, the bake removes 0.10 D from everything but the sky; with real fog it hits the cap. That fits the real files, which hit the cap often. A lit wall does much less (0.026 D).
+
+Stricter rejection, the same scenes (mean err over the 9 fogged scenes / the 3 clean ones, mean bright-area error):
+
+| variant | fog scenes | clean scenes | bright area | strong fog alone |
+|---|---|---|---|---|
+| default | 0.029 | 0.032 | 0.026 | removes 0.15 (capped), err 0.008 |
+| `FOG_PLAUSIBLE` 0.20 | 0.050 | 0.023 | 0.022 | rejected, err 0.116 |
+| `FOG_PLAUSIBLE` 0.14 | 0.047 | 0.016 | 0.018 | rejected, err 0.116 |
+| clear-cell band 0.14, bend limit kept at 0.28 | 0.027 | 0.016 | 0.023 | removes 0.15, err 0.011 |
+| **clear-cell band 0.10**, bend limit kept at 0.28 | **0.025** | **0.008** | **0.019** | removes 0.118, err 0.024 |
+| kept-cell minimum 64 or 160 | 0.029 | 0.032 | 0.026 | unchanged |
+| clear cells on both sides of the gradient | 0.029 | 0.032 | 0.026 | unchanged |
+
+- `FOG_PLAUSIBLE` does two jobs: the bend limit and the clear-cell band. Tightening it rejects a strong real fog outright. Splitting them (`fit_fog(clear_band=...)`) keeps strong fog and tightens only which cells count as clear film.
+- A clear-cell band of 0.10 D cuts the clean-sky false removal from 0.10 to 0.03 D and the fogged-scene error a little; the cost is that a strong fog with little clear film is removed less (0.118 instead of 0.15).
+- The kept-cell minimum and the both-sides rule change nothing here: a textured frame has clear-looking cells everywhere.
+- Defaults are unchanged and the 0.15 D cap stays. The candidate is a clear band of 0.10 D; judge it on real files with the `.p4-fog.png` overlay first.
+
+### 5. compare.py
+
+`compare.py` now writes the phase 4 sheets by default (`--phase 3` or `all` for the earlier ones), with a `.p4-` prefix: `.p4-mix.png` (Neutrals NegPy and No Sky at Mix 0, 50, 100 %, each with a fresh Estimate, Crossover 100 %), `.p4-tone.png` (Tone Off, then NegPy and Adaptive at Strength 50 and 100 %, labeled with the Print Density and Grade each writes), `.p4-fog.png` (the overlay above). It prints each Estimate and the fog fit's metrics. Checked on a synthetic 16-bit scanner TIFF only.
+
+### Tests
+
+`make all`: format, Rust checks (81 passed), lint and ty pass; pytest 13,496 passed, 56 skipped, 2 failed. The two failures are `test_gradient_icon.py::test_a_checked_glyph_is_flat` and `test_a_toggle_icon_is_gray_while_off_and_brightens_when_checked`, which fail the same way at the branch tip in this container. GPU parity (`tests/test_gpu_fade_crossover_parity.py`) passes with no skips on the container's software adapter (llvmpipe, Mesa); rerun it on Metal. New tests: `test_fade_neutrals.py`, and additions to `test_fade_tone.py`, `test_fade_fog.py` and `test_sensor_sidebar.py`.
+
+### Open
+
+- The cold lean on your real files may have a cause these fixtures lack. The sky sector is the one mechanism found; No Sky is the A/B for it.
+- Adaptive's constants are set from what a normal slide holds, not fitted to files. `ADAPTIVE_MIDTONE` decides brightness on every frame.
+- Fog: the clear-band candidate is untested on real files.
+- Tone Strength under a roll push: like Tone, the push carries the choice and the strength, and writes no frame's sliders.
+
 
 ## Phase 3
 

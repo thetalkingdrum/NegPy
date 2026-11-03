@@ -1,6 +1,17 @@
 """Render real slides through Fade Estimate, the crossover table and the Compare choices, headless.
 
-For each input, writes beside it:
+Phase 4 (the default, --phase 4) writes beside each input:
+  <name>.p4-mix.png     Neutrals NegPy and No Sky at Mix 0, 50 and 100 %, each with a fresh Estimate and
+                        Crossover 100 %;
+  <name>.p4-tone.png    Tone Off, then NegPy and Adaptive at Tone Strength 50 and 100 %, labeled with the
+                        Print Density and ISO-R Grade each writes;
+  <name>.p4-fog.png     NegPy's fog fit over the scan as loaded: the removed density as a magenta tint and
+                        the grid cells it kept (green), took for picture (orange) or found incoherent (red),
+                        then the removed map alone and the render with fog NegPy.
+It prints each Estimate and the fog fit's amplitude before the cap, whether the cap was hit and the share
+of cells kept.
+
+Phase 3 (--phase 3) writes:
   <name>.p3-crossover-0.png, -0.5.png, -1.png  the Estimate's survivals with the table at that strength;
   <name>.p3-model.png   color model NegPy at Crossover 0 and 100 %, and NC;
   <name>.p3-zero.png    scanner zero Full Scale, Clear Film and Gray (scanner files), Crossover 0 and 100 %,
@@ -9,7 +20,7 @@ For each input, writes beside it:
   <name>.p3-fog.png     uneven fog Off, NC and NegPy under color model NegPy (Crossover 100 %).
 Each file opens as a Slide, as the app opens it (a scanner file starts Positive), with the slide defaults.
 
-    uv run python experiments/fade_crossover/compare.py Statue.NEF faded/slide01.tif [--long-edge 2000] [--gpu]
+    uv run python experiments/fade_crossover/compare.py Statue.NEF faded/slide01.tif [--long-edge 2000] [--gpu] [--phase 3|4|all]
 """
 
 from __future__ import annotations
@@ -38,8 +49,8 @@ from negpy.features.process.fade import (
     fade_white_space,
     render_white_space,
 )
-from negpy.features.process.fade_fog import measure_fog
-from negpy.features.process.fade_tone import fade_tone_changes
+from negpy.features.process.fade_fog import FOG_CAP, FogFit, fit_fog, fog_map, measure_fog
+from negpy.features.process.fade_tone import TONE_FITS, fade_tone_changes
 from negpy.features.process.models import FadeABTone, ProcessMode, mode_aware_exposure_reset, with_process_mode
 from negpy.infrastructure.loaders.source_kind import with_scanner_positive_default
 from negpy.services.rendering.image_processor import ImageProcessor, _downsample_to_long_edge
@@ -85,10 +96,10 @@ class Frame:
         proc = replace(self.config.process, **process)
         return render_white_space(proc, proc.process_mode, self.cam_xyz, self.camera_wb)
 
-    def estimate(self, method: EstimateMethod, neutrals: str = "negpy", **process) -> FadeEstimate:
+    def estimate(self, method: EstimateMethod, neutrals: str = "negpy", mix: float = 0.0, **process) -> FadeEstimate:
         space = self.space(**process)
         grid = self.grid(process.get("fade_ab_fog", "off"))
-        return estimate_fade(grid, white_anchor=False, camera_raw=bool(space), neutrals=neutrals, white_space=space)[method]
+        return estimate_fade(grid, white_anchor=False, camera_raw=bool(space), neutrals=neutrals, white_space=space, mix=mix)[method]
 
     def changes(self, est: FadeEstimate, **process) -> dict:
         """The process fields the Estimate button stores: survivals, the tagged white and table."""
@@ -121,17 +132,23 @@ class Frame:
             result = result.readback()
         return np.clip(np.asarray(result, dtype=np.float32)[..., :3], 0.0, 1.0), metrics
 
-    def render(self, tone: str = "off", **process) -> np.ndarray:
+    def render(self, tone: str = "off", strength: float = 1.0, **process) -> np.ndarray:
+        return self.render_toned(tone, strength, **process)[0]
+
+    def render_toned(self, tone: str = "off", strength: float = 1.0, **process) -> tuple[np.ndarray, str]:
+        """(render, label): the render with Tone *tone*; a Tone that writes the sliders reads them from a
+        first render at *strength*, as the panel does, and the label names what it wrote."""
         settings = replace(self.config, process=replace(self.config.process, **process))
-        if tone != "negpy":
-            return self.run(replace(settings, process=replace(settings.process, fade_ab_tone=tone)))[0]
+        if FadeABTone(tone) not in TONE_FITS:
+            return self.run(replace(settings, process=replace(settings.process, fade_ab_tone=tone)))[0], ""
         _, metrics = self.run(settings, cache_stages=True)
-        toned, reason = fade_tone_changes(settings, FadeABTone.NEGPY, metrics)
+        toned, reason = fade_tone_changes(settings, FadeABTone(tone), metrics, strength)
         if toned is None:
-            print(f"  tone NegPy: {reason}")
-            return self.run(settings)[0]
-        print(f"  tone NegPy: Print Density {toned.exposure.density:.2f}, ISO-R Grade {toned.exposure.grade:.0f}")
-        return self.run(toned)[0]
+            print(f"  tone {tone}: {reason}")
+            return self.run(settings)[0], reason
+        label = f"Print Density {toned.exposure.density:.2f}, ISO-R {toned.exposure.grade:.0f}"
+        print(f"  tone {tone} at {strength * 100:g} %: {label}")
+        return self.run(toned)[0], label
 
 
 def _png(rgb: np.ndarray) -> Image.Image:
@@ -174,7 +191,64 @@ def sheet(rows: list[list[tuple[str, np.ndarray]]]) -> Image.Image:
     return out
 
 
-def compare(path: Path, long_edge: int, method: EstimateMethod, gpu: bool = False) -> None:
+def fog_overlay(linear: np.ndarray, fit: FogFit) -> tuple[np.ndarray, np.ndarray]:
+    """(overlay, map): the scan as loaded with NegPy's fitted fog over it, and the removed density alone,
+    both display-encoded. The removed density tints magenta, full at FOG_CAP; each grid cell is a dot,
+    green where the fit kept it, orange where it read as picture, red where its channel floors disagree."""
+    shown = np.power(np.clip(np.asarray(linear, dtype=np.float32)[..., :3], 0.0, 1.0), 1.0 / 2.2)
+    h, w = shown.shape[:2]
+    removed = np.zeros((h, w)) if fit.surface is None else fog_map(linear, fit.surface)
+    a = (removed / FOG_CAP)[..., None] * 0.5
+    overlay = shown * (1.0 - a) + np.array([1.0, 0.0, 1.0]) * a
+    heat = np.repeat((removed / FOG_CAP)[..., None], 3, axis=-1) * np.array([1.0, 0.0, 1.0])
+    img = _png(np.clip(overlay, 0.0, 1.0))
+    draw = ImageDraw.Draw(img)
+    r = max(2, w // 300)
+    for u, v, coherent, kept in zip(fit.u, fit.v, fit.coherent, fit.kept):
+        colour = (40, 220, 60) if kept else ((255, 150, 0) if coherent else (230, 30, 30))
+        x, y = u * w, v * h
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=colour)
+    return np.asarray(img, dtype=np.float32) / 255.0, np.clip(heat, 0.0, 1.0)
+
+
+def compare_p4(frame: "Frame", method: EstimateMethod, write) -> None:
+    rows = []
+    for name, neutrals in (("NegPy", "negpy"), ("No Sky", "no_sky")):
+        row = []
+        for mix in (0.0, 0.5, 1.0):
+            est = frame.estimate(method, neutrals, mix)
+            print_estimate(f"{method}, Neutrals {name}, Mix {mix * 100:g} %", est)
+            row.append((f"Neutrals {name} | Mix {mix * 100:g} % | Crossover 100 %", frame.render(**frame.changes(est), fade_crossover=1.0)))
+        rows.append(row)
+    write("mix", sheet(rows))
+
+    base = frame.changes(frame.estimate(method))
+    off = ("Tone Off | NegPy, Crossover 100 %", frame.render(**base, fade_crossover=1.0))
+    tone_rows = []
+    for name, tone in (("NegPy", "negpy"), ("Adaptive", "adaptive")):
+        row = [off]
+        for strength in (0.5, 1.0):
+            img, label = frame.render_toned(tone, strength, **base, fade_crossover=1.0)
+            row.append((f"Tone {name} {strength * 100:g} % | {label}", img))
+        tone_rows.append(row)
+    write("tone", sheet(tone_rows))
+
+    fit = fit_fog(frame.buffer)
+    amp = "none" if fit.amplitude is None else f"{fit.amplitude:.3f} D"
+    print(
+        f"  fog NegPy fit: amplitude before the cap {amp}, cap hit {fit.cap_hit}, cells kept {fit.kept_share:.0%}, {fit.reason or 'removed'}"
+    )
+    overlay, heat = fog_overlay(frame.buffer, fit)
+    fest = frame.estimate(method, fade_ab_fog="negpy")
+    after = frame.render(**frame.changes(fest, fade_ab_fog="negpy"), fade_crossover=1.0)
+    label = f"amp {amp}, cap {'hit' if fit.cap_hit else 'not hit'}, kept {fit.kept_share:.0%}"
+    write(
+        "fog",
+        sheet([[(f"fog fit | {label}", overlay), (f"removed (magenta = {FOG_CAP:g} D)", heat), ("fog NegPy | Crossover 100 %", after)]]),
+    )
+
+
+def compare(path: Path, long_edge: int, method: EstimateMethod, gpu: bool = False, phase: str = "4") -> None:
     frame = Frame(path, long_edge, gpu)
     proc = frame.config.process
     kind = "scanner file" if frame.scanner else "camera RAW"
@@ -183,11 +257,21 @@ def compare(path: Path, long_edge: int, method: EstimateMethod, gpu: bool = Fals
         print("  no Estimate grid")
         return
 
-    def write(suffix: str, image: Image.Image) -> None:
-        out = path.with_name(f"{path.stem}.p3-{suffix}.png")
-        image.save(out)
-        print(f"  wrote {out}")
+    def writer(prefix: str):
+        def write(suffix: str, image: Image.Image) -> None:
+            out = path.with_name(f"{path.stem}.{prefix}-{suffix}.png")
+            image.save(out)
+            print(f"  wrote {out}")
 
+        return write
+
+    if phase in ("4", "all"):
+        compare_p4(frame, method, writer("p4"))
+    if phase in ("3", "all"):
+        compare_p3(frame, method, writer("p3"))
+
+
+def compare_p3(frame: "Frame", method: EstimateMethod, write) -> None:
     est = frame.estimate(method)
     print_estimate(f"{method}, NegPy neutrals", est)
     print_estimate(f"{method}, NC neutrals", frame.estimate(method, "nc"))
@@ -229,9 +313,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--long-edge", type=int, default=2000, help="downsample to this long edge first (default 2000)")
     parser.add_argument("--method", choices=[m.value for m in EstimateMethod], default=EstimateMethod.MIDTONE.value)
     parser.add_argument("--gpu", action="store_true", help="render on the GPU where a stage allows, as the preview does")
+    parser.add_argument("--phase", choices=("3", "4", "all"), default="4", help="which phase's sheets to write (default 4)")
     args = parser.parse_args(argv)
     for path in args.paths:
-        compare(path.resolve(), args.long_edge, EstimateMethod(args.method), args.gpu)
+        compare(path.resolve(), args.long_edge, EstimateMethod(args.method), args.gpu, args.phase)
     return 0
 
 

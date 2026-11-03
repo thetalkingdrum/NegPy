@@ -513,3 +513,58 @@ def test_scanner_zero_hides_for_a_camera_raw():
 def test_sync_shows_the_frame_s_compare_choices():
     w, _ = _slide_sidebar(fade_ab_neutrals="nc", fade_ab_model="nc", fade_ab_tone="nc")
     assert (w.fade_ab_neutrals_btn.currentData(), w.fade_ab_model_btn.currentData(), w.fade_ab_tone_btn.currentData()) == ("nc", "nc", "nc")
+
+
+def test_mix_shows_under_the_negpy_model_and_waits_on_a_negpy_family_reader():
+    w, _ = _slide_sidebar()
+    assert not w.fade_neutrals_mix_slider.isHidden() and w.fade_neutrals_mix_slider.isEnabled()
+    w, _ = _slide_sidebar(fade_ab_neutrals="nc")
+    assert not w.fade_neutrals_mix_slider.isEnabled()
+    w, _ = _slide_sidebar(fade_ab_neutrals="no_sky")
+    assert w.fade_neutrals_mix_slider.isEnabled()
+    w, _ = _slide_sidebar(fade_ab_model="nc")
+    assert w.fade_neutrals_mix_slider.isHidden()
+
+
+def test_the_mix_slider_stores_a_fraction_on_the_fade_card():
+    w, ctrl = _slide_sidebar()
+    w.fade_neutrals_mix_slider.valueCommitted.emit(30.0)
+    ctrl.set_roll_default.assert_called_with("fade", persist=True, readback_metrics=False, fade_neutrals_mix=0.3)
+
+
+def test_estimate_reads_the_mix():
+    from unittest.mock import patch
+
+    from negpy.features.process import fade
+
+    w, _ = _slide_sidebar(fade_neutrals_mix=0.4)
+    with (
+        patch("negpy.desktop.workers.chart_fit.fade_estimate_grid", return_value=np.zeros((8, 8, 3), np.float32)),
+        patch.object(fade, "estimate_fade", wraps=fade.estimate_fade) as est,
+    ):
+        w._run_estimate(False)
+    assert est.call_args.kwargs["mix"] == 0.4
+
+
+@pytest.mark.parametrize("tone, shown", [("off", False), ("nc", False), ("negpy", True), ("adaptive", True)])
+def test_tone_strength_shows_under_a_tone_that_writes_the_sliders(tone, shown):
+    w, _ = _slide_sidebar(fade_ab_tone=tone)
+    assert w.fade_tone_strength_slider.isHidden() is not shown
+
+
+def test_tone_strength_rewrites_the_sliders_under_adaptive():
+    w, ctrl = _slide_sidebar()
+    ctrl.state.last_metrics = {"fade_tone_points": (0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.6)}
+    w.fade_ab_tone_btn.setCurrentIndex(w.fade_ab_tone_btn.findData("adaptive"))
+    ctrl.state.config = ctrl.set_fade_tone.call_args.args[0]
+    w.fade_tone_strength_slider.valueCommitted.emit(50.0)
+    written = ctrl.set_fade_tone.call_args
+    assert written.kwargs == {"persist": True}
+    assert written.args[0].process.fade_tone_strength == 0.5
+    assert written.args[0].process.fade_ab_tone == "adaptive"
+
+
+def test_tone_strength_under_off_is_only_stored():
+    w, ctrl = _slide_sidebar()
+    w.fade_tone_strength_slider.valueCommitted.emit(60.0)
+    ctrl.set_roll_default.assert_called_with("fade", persist=True, readback_metrics=False, fade_tone_strength=0.6)

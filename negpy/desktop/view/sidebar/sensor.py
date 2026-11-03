@@ -217,7 +217,7 @@ class SensorSidebar(BaseSidebar):
 
         # A/B against NegativeConverter's expired-film rescue. The values are the stored enum values.
         self.fade_ab_neutrals_btn = SegmentedChoice(
-            (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC"))),
+            (("fa5s.film", tr("NegPy")), ("fa5s.cloud", tr("No Sky")), ("fa5s.exchange-alt", tr("NC"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABNeutrals),
         )
@@ -227,7 +227,7 @@ class SensorSidebar(BaseSidebar):
             data=tuple(m.value for m in FadeABModel),
         )
         self.fade_ab_tone_btn = SegmentedChoice(
-            (("fa5s.ban", tr("Off")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.film", tr("NegPy"))),
+            (("fa5s.ban", tr("Off")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.film", tr("NegPy")), ("fa5s.arrows-alt-v", tr("Adaptive"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABTone),
         )
@@ -242,7 +242,14 @@ class SensorSidebar(BaseSidebar):
             data=tuple(m.value for m in FadeABFog),
         )
         for btn, tips in (
-            (self.fade_ab_neutrals_btn, (tr("NegPy: the gray finder Estimate always uses."), tr("NC: NegativeConverter's gray finder."))),
+            (
+                self.fade_ab_neutrals_btn,
+                (
+                    tr("NegPy: the gray finder Estimate always uses."),
+                    tr("No Sky: the NegPy gray finder, but it also reads bluish grays, such as shade lit by the sky."),
+                    tr("NC: NegativeConverter's gray finder."),
+                ),
+            ),
             (
                 self.fade_ab_model_btn,
                 (
@@ -256,6 +263,7 @@ class SensorSidebar(BaseSidebar):
                     tr("Off: the tone sliders as you set them."),
                     tr("NC: NegativeConverter's levels, brightness and contrast."),
                     tr("NegPy: sets Print Density and ISO-R Grade from this frame. Off gives your values back."),
+                    tr("Adaptive: sets Print Density and ISO-R Grade so the frame fills a normal print range. Off gives your values back."),
                 ),
             ),
             (
@@ -278,6 +286,12 @@ class SensorSidebar(BaseSidebar):
             for i, tip in enumerate(tips):
                 btn.set_choice_tooltip(i, tip)
         self._scanner_zero_row = field_row(tr("Scanner zero"), self.fade_ab_scanner_zero_btn)
+        self.fade_neutrals_mix_slider = CompactSlider(tr("Mix"), 0.0, 100.0, conf.fade_neutrals_mix * 100.0, step=1.0, unit="%")
+        self.fade_neutrals_mix_slider.setToolTip(
+            tr("Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's; click Estimate again to use it.")
+        )
+        self.fade_tone_strength_slider = CompactSlider(tr("Tone Strength"), 0.0, 100.0, conf.fade_tone_strength * 100.0, step=1.0, unit="%")
+        self.fade_tone_strength_slider.setToolTip(tr("How far Tone moves Print Density and ISO-R Grade from your values toward its own."))
         # Why Tone NegPy has no values to write.
         self.fade_tone_hint = hint_label("")
         self.fade_tone_hint.setVisible(False)
@@ -285,8 +299,10 @@ class SensorSidebar(BaseSidebar):
             "sensor_fade_compare",
             tr("Compare"),
             field_row(tr("Neutrals"), self.fade_ab_neutrals_btn),
+            self.fade_neutrals_mix_slider,
             field_row(tr("Color model"), self.fade_ab_model_btn),
             field_row(tr("Tone"), self.fade_ab_tone_btn),
+            self.fade_tone_strength_slider,
             self._scanner_zero_row,
             field_row(tr("Uneven fog"), self.fade_ab_fog_btn),
             self.fade_tone_hint,
@@ -425,6 +441,10 @@ class SensorSidebar(BaseSidebar):
         ):
             btn.currentChanged.connect(lambda _i, b=btn, f=field: self.controller.set_roll_default("fade", **{f: b.currentData()}))
         self.fade_ab_tone_btn.currentChanged.connect(lambda _i: self._on_fade_tone_changed(self.fade_ab_tone_btn.currentData()))
+        self.fade_neutrals_mix_slider.valueChanged.connect(lambda v: self._on_fade_neutrals_mix_changed(v, persist=False))
+        self.fade_neutrals_mix_slider.valueCommitted.connect(lambda v: self._on_fade_neutrals_mix_changed(v, persist=True))
+        self.fade_tone_strength_slider.valueChanged.connect(lambda v: self._on_fade_tone_strength_changed(v, persist=False))
+        self.fade_tone_strength_slider.valueCommitted.connect(lambda v: self._on_fade_tone_strength_changed(v, persist=True))
         self.fade_ratio_r_slider.valueChanged.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=False))
         self.fade_ratio_r_slider.valueCommitted.connect(lambda v: self._on_fade_ratio_r_changed(v, persist=True))
         self.fade_ratio_g_slider.valueChanged.connect(
@@ -622,6 +642,25 @@ class SensorSidebar(BaseSidebar):
         """The next choice of a Compare control, the action its shortcut runs."""
         btn.setCurrentIndex((btn.currentIndex() + 1) % btn.count())
 
+    def _on_fade_neutrals_mix_changed(self, val: float, persist: bool = True) -> None:
+        self.controller.set_roll_default("fade", persist=persist, readback_metrics=False, fade_neutrals_mix=val / 100.0)
+
+    def _on_fade_tone_strength_changed(self, val: float, persist: bool = True) -> None:
+        """Under a Tone that writes the sliders, the strength writes them again from the saved values;
+        under any other, it is only stored for the next time one is chosen."""
+        from negpy.features.process.fade_tone import TONE_FITS, fade_tone_changes
+
+        conf = self.state.config
+        tone = FadeABTone(conf.process.fade_ab_tone)
+        if tone not in TONE_FITS:
+            self.controller.set_roll_default("fade", persist=persist, readback_metrics=False, fade_tone_strength=val / 100.0)
+            return
+        changes, reason = fade_tone_changes(conf, tone, self.state.last_metrics, val / 100.0)
+        self.fade_tone_hint.setText(reason)
+        self.fade_tone_hint.setVisible(bool(reason))
+        if changes is not None:
+            self.controller.set_fade_tone(changes, persist=persist)
+
     def _on_fade_crossover_changed(self, val: float, persist: bool = True) -> None:
         self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, fade_crossover=val / 100.0)
 
@@ -641,6 +680,14 @@ class SensorSidebar(BaseSidebar):
             if not negpy:
                 text += " " + tr("Set Color model to NegPy to use Crossover.")
         self.fade_crossover_hint.setText(text)
+        # Mix is a NegPy color model setting that blends NegPy's (or No Sky's) grays with NC's.
+        self.fade_neutrals_mix_slider.setValue(conf.fade_neutrals_mix * 100.0)
+        self.fade_neutrals_mix_slider.setVisible(negpy)
+        self.fade_neutrals_mix_slider.setEnabled(conf.fade_ab_neutrals != FadeABNeutrals.NC)
+        from negpy.features.process.fade_tone import TONE_FITS
+
+        self.fade_tone_strength_slider.setValue(conf.fade_tone_strength * 100.0)
+        self.fade_tone_strength_slider.setVisible(FadeABTone(conf.fade_ab_tone) in TONE_FITS)
         for btn, value in (
             (self.fade_ab_neutrals_btn, conf.fade_ab_neutrals),
             (self.fade_ab_model_btn, conf.fade_ab_model),
@@ -710,7 +757,9 @@ class SensorSidebar(BaseSidebar):
         method = EstimateMethod(self.estimate_method_combo.currentData())
         anchor = white_anchor
         space = render_white_space(conf, conf.process_mode, source.cam_xyz, source.camera_wb)
-        estimates = estimate_fade(grid, white_anchor=anchor, camera_raw=bool(space), neutrals=conf.fade_ab_neutrals, white_space=space)
+        estimates = estimate_fade(
+            grid, white_anchor=anchor, camera_raw=bool(space), neutrals=conf.fade_ab_neutrals, white_space=space, mix=conf.fade_neutrals_mix
+        )
         chosen, other = estimates[method], estimates[next(m for m in EstimateMethod if m != method)]
         failed = bool(chosen.reason) and chosen.green == 1.0 and chosen.blue == 1.0
         # The white is stored with the survivals; a render measures one only for a stale camera RAW
@@ -831,6 +880,8 @@ class SensorSidebar(BaseSidebar):
             self.fade_ratio_b_slider,
             self.fade_white_anchor_btn,
             self.fade_crossover_slider,
+            self.fade_neutrals_mix_slider,
+            self.fade_tone_strength_slider,
             self.fade_ab_neutrals_btn,
             self.fade_ab_model_btn,
             self.fade_ab_tone_btn,

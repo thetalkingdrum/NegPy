@@ -312,3 +312,81 @@ def fog_scene(layout: str = "fog", width: int = 384, height: int = 256) -> FogSc
         return np.clip(np.power(10.0, -(d + grain)), 1e-6, 1.0).astype(np.float32)
 
     return FogScene(scan(density + fog[..., None]), scan(density + float(fog.min())), ~other)
+
+
+#: Log exposure offsets (r, g, b) of the warm near-neutrals, per unit of warmth: a painted wall, sand, skin.
+WALL = (0.03, 0.0, -0.05)
+SAND = (0.04, -0.02, -0.14)
+
+
+@dataclass(frozen=True)
+class WarmScene:
+    """Scene log exposure (H, W, 3), the true gray ramp's steps and the named regions."""
+
+    log_e: np.ndarray
+    ramp: list[np.ndarray]
+    regions: dict[str, np.ndarray]
+
+
+def warm_scene(warmth: float = 1.0, gray_share: float = 0.1, layout: str = "wall", width: int = 384, height: int = 288) -> WarmScene:
+    """A frame whose near-neutrals are mostly warm, with a true gray ramp over *gray_share* of the height.
+
+    "wall": a large wall in light and shade, sand, skin, and some sky and foliage.
+    "sun": gray objects lit warm by the sun and cool by the sky in the shade, the ramp only over the
+    midtones; the frame's extremes are a warm highlight and a cool shadow.
+    "sky": the wall layout under a saturated blue sky over the top 40 %, the case the sky sector is for.
+    "bright": the wall layout with the ramp only over the midtones and a warm sunlit area as the
+    frame's brightest part, so the warm content sets the frame's own stretch.
+    *warmth* scales the colored offsets; 0 makes the wall, sand and sun/shade objects true grays."""
+    log_e = np.zeros((height, width, 3))
+    ramp_h = max(8, int(height * gray_share))
+    steps = np.linspace(-2.4, 0.9, 16) if layout == "wall" else np.linspace(-1.4, 0.2, 16)
+    edges = np.linspace(0, width, len(steps) + 1).astype(int)
+    ramp = []
+    for i, e in enumerate(steps):
+        m = np.zeros((height, width), bool)
+        m[:ramp_h, edges[i] : edges[i + 1]] = True
+        log_e[m] = e
+        ramp.append(m)
+    y, x = np.mgrid[0:height, 0:width]
+    body = y >= ramp_h
+    regions: dict[str, np.ndarray] = {}
+    if layout == "sun":
+        # Gray objects across the frame: the left half in sun (warm, bright), the right half in shade.
+        level = -0.9 + 1.6 * ((x * 7 + y * 5) % 37) / 36.0
+        lit = body & (x < width * 0.5)
+        shade = body & ~lit
+        log_e[lit] = (level[lit] + 0.5)[:, None] + warmth * np.asarray(WALL)
+        log_e[shade] = (level[shade] - 0.9)[:, None] - warmth * np.asarray(WALL)
+        regions["wall"] = lit
+        regions["shade"] = shade
+        return WarmScene(log_e, ramp, regions)
+    # The wall: the left 55 %, lit to shaded from top to bottom.
+    wall = body & (x < width * 0.55)
+    shade = -1.6 + 2.0 * (1.0 - (y - ramp_h) / max(1, height - ramp_h))
+    log_e[wall] = shade[wall][:, None] + warmth * np.asarray(WALL)
+    regions["wall"] = wall
+    sand = body & (x >= width * 0.55) & (y >= height * 0.7)
+    top = 1.2 if layout == "bright" else 0.3
+    log_e[sand] = (-0.3 + (top + 0.3) * (x[sand] - width * 0.55) / (width * 0.45))[:, None] + warmth * np.asarray(SAND)
+    regions["sand"] = sand
+    skin = body & (x >= width * 0.55) & (x < width * 0.75) & (y < height * 0.7)
+    log_e[skin] = SKIN
+    regions["skin"] = skin
+    sky = body & (x >= width * 0.75) & (y < height * 0.45)
+    log_e[sky] = SKY
+    if layout == "sky":
+        sky = body & (y < height * 0.4)
+        log_e[sky] = SKY_BLUE
+    regions["sky"] = sky
+    foliage = body & (x >= width * 0.75) & (y >= height * 0.45) & (y < height * 0.7)
+    log_e[foliage] = FOLIAGE
+    regions["foliage"] = foliage
+    return WarmScene(log_e, ramp, regions)
+
+
+def scan_warm(film, scene: WarmScene) -> np.ndarray:
+    """The film's linear scan of a warm scene, as `scan_image` does."""
+    rng = np.random.default_rng(0)
+    t = film.scan(scene.log_e) * np.power(10.0, rng.normal(0.0, 0.004, scene.log_e.shape))
+    return np.clip(t, 1e-6, 1.0).astype(np.float32)

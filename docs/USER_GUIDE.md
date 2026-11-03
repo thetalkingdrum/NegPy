@@ -532,10 +532,10 @@ Gives a faded slide its dye layers back.
 
 *   **Red Survival**: how much red dye is left. Lower it until the contrast comes back.
 *   **Green Survival** / **Blue Survival**: the same for green and blue, against red.
-*   **Remove Stain**: makes yellowed clear areas white, and runs Estimate. Try it when Estimate turns its icon amber.
-*   **Estimate**: sets the sliders from the grays in this frame. **Midtone** suits a badly faded slide. **Gray Range** suits a mild fade with deep shadows.
-*   **Crossover** (Color model **NegPy**): removes a color shift that changes from shadows to highlights. Run Estimate first.
-*   **Compare**: A/B choices against NegativeConverter (**NC**), and **Scanner zero** for scanner files. Flat Field fixes uneven light.
+*   **Remove Stain**: whitens yellowed clear areas and runs Estimate. Try it when its icon turns amber.
+*   **Estimate**: sets the sliders from the grays in this frame. **Midtone** suits a badly faded slide, **Gray Range** a mild fade with deep shadows.
+*   **Crossover** (Color model **NegPy**): after Estimate, removes a color shift that changes from shadows to highlights.
+*   **Compare**: A/B choices against NegativeConverter (**NC**). **Mix** moves the grays toward NC's; **Tone Strength** sets how far Tone moves your sliders.
 
 <!-- panel:process -->
 ### 10.5 Metering: negative → positive

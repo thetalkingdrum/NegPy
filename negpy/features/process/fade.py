@@ -270,16 +270,17 @@ def nc_neutral_refs(grid: ImageBuffer) -> tuple[Optional[NeutralAxisRefs], str]:
     return (mid, shadow, highlight, 1.0), ""
 
 
-def neutral_axis_from_grid(grid: ImageBuffer) -> tuple[Optional[NeutralAxisRefs], str]:
-    """`measure_neutral_axis_ratios` on a prefiltered log grid."""
-    refs = measure_neutral_axis_from_log(grid, _measured_slide_bounds(grid, COLOR_EXTREME_PCT), None, 0.0)
+def neutral_axis_from_grid(grid: ImageBuffer, sky_sector: bool = True) -> tuple[Optional[NeutralAxisRefs], str]:
+    """`measure_neutral_axis_ratios` on a prefiltered log grid; *sky_sector* False keeps bluish grays,
+    such as shade lit by the sky, that the sky sector drops."""
+    refs = measure_neutral_axis_from_log(grid, _measured_slide_bounds(grid, COLOR_EXTREME_PCT), None, 0.0, sky_sector=sky_sector)
     if refs is not None and refs[3] >= MIN_CONFIDENCE:
         return refs, ""
     # A faded slide's grays carry the fade's cast, which can put them in the foliage or sky
     # sector; the unfiltered set is the last try.
     bounds = _measured_slide_bounds(grid, ROBUST_EXTREME_PCT)
     for exclude in (True, False):
-        refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0, exclude_subjects=exclude)
+        refs = measure_neutral_axis_from_log(grid, bounds, None, 0.0, exclude_subjects=exclude, sky_sector=sky_sector)
         if refs is not None and refs[3] >= ROBUST_MIN_CONFIDENCE:
             return refs, ""
     return None, tr("No reliable grays found on this frame.")
@@ -397,24 +398,67 @@ def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], method: str =
     return ratio_g, ratio_b, ""
 
 
+def _blend_refs(a: NeutralAxisRefs, b: NeutralAxisRefs, mix: float) -> NeutralAxisRefs:
+    def lerp(x, y):
+        return tuple(float((1.0 - mix) * u + mix * v) for u, v in zip(x, y))
+
+    highlight = lerp(a[2], b[2]) if a[2] is not None and b[2] is not None else (a[2] if mix < 0.5 else b[2])
+    return lerp(a[0], b[0]), lerp(a[1], b[1]), highlight, float((1.0 - mix) * a[3] + mix * b[3])
+
+
+def gray_refs(grid: ImageBuffer, neutrals: str = FadeABNeutrals.NEGPY, mix: float = 0.0) -> tuple[Optional[NeutralAxisRefs], str]:
+    """(refs, reason) of the gray reader *neutrals* (`FadeABNeutrals`). Under NegPy and No Sky, *mix*
+    moves each ref in log from that reader's (0) to NegativeConverter's (1); in between, a frame where
+    one reader finds no grays takes the other's."""
+    if neutrals == FadeABNeutrals.NC:
+        return nc_neutral_refs(grid)
+    sky = neutrals != FadeABNeutrals.NO_SKY
+    mix = min(max(float(mix), 0.0), 1.0)
+    if mix <= 0.0:
+        return neutral_axis_from_grid(grid, sky)
+    if mix >= 1.0:
+        return nc_neutral_refs(grid)
+    ours, why = neutral_axis_from_grid(grid, sky)
+    theirs, why_nc = nc_neutral_refs(grid)
+    if ours is None or theirs is None:
+        return (ours, why) if theirs is None else (theirs, why_nc)
+    return _blend_refs(ours, theirs, mix), ""
+
+
 def estimate_fade(
-    grid: ImageBuffer, white_anchor: bool = False, camera_raw: bool = False, neutrals: str = FadeABNeutrals.NEGPY, white_space: str = ""
+    grid: ImageBuffer,
+    white_anchor: bool = False,
+    camera_raw: bool = False,
+    neutrals: str = FadeABNeutrals.NEGPY,
+    white_space: str = "",
+    mix: float = 0.0,
 ) -> dict[EstimateMethod, FadeEstimate]:
     """Both methods' estimates from one measurement of the grays. `grid` is the transparency
     meter's grid with the crosstalk unmix, no fade and no Remove Stain (`TransparencyBaseProcessor`).
     Both methods set Red Survival so the best-kept layer lands at 1.0; a ratio above 1 says red
     faded most. With `white_anchor`, or on a `camera_raw` whose render scales density above its
     white (`unmix_with_fade`), the grays are read as density above the point the render scales about
-    (`density_anchor`; *white_space*, the render's, names a scanner zero). *neutrals* picks the gray
-    reader (`FadeABNeutrals`). Each estimate carries the crossover table measured after its own
+    (`density_anchor`; *white_space*, the render's, names a scanner zero). *neutrals* and *mix* pick
+    the gray reader (`gray_refs`). Each estimate carries the crossover table measured after its own
     survivals, zero at its midtone."""
+    return estimate_fade_with(grid, lambda g: gray_refs(g, neutrals, mix), white_anchor, camera_raw, white_space)
+
+
+def estimate_fade_with(
+    grid: ImageBuffer,
+    reader: Callable[[ImageBuffer], tuple[Optional[NeutralAxisRefs], str]],
+    white_anchor: bool = False,
+    camera_raw: bool = False,
+    white_space: str = "",
+) -> dict[EstimateMethod, FadeEstimate]:
+    """`estimate_fade` with the gray reader *reader*, which takes the grid the grays are read on."""
     white = measure_white(grid)
     if white_anchor and white is None:
         return {m: FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame.")) for m in EstimateMethod}
     camera_raw = camera_raw or bool(white_space)
     anchored = white is not None and (white_anchor or camera_raw)
     gray_grid = white_anchored_grid(grid, density_anchor(white, white_anchor, white_space)) if anchored else grid
-    refs, reason = nc_neutral_refs(gray_grid) if neutrals == FadeABNeutrals.NC else neutral_axis_from_grid(gray_grid)
+    refs, reason = reader(gray_grid)
     out = {}
     for method in EstimateMethod:
         if refs is None:

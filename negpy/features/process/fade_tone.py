@@ -1,6 +1,7 @@
-"""Tone NegPy: NegativeConverter's automatic tone for a faded slide, read in density and written into
-the slide's own Print Density and ISO-R Grade sliders, so no hidden curve acts. The two sliders are
-fitted so the transfer curve shows the frame's tones as their levels, brightness and S-curve would."""
+"""Tone NegPy and Adaptive: an automatic tone for a faded slide, written into the slide's own Print
+Density and ISO-R Grade sliders, so no hidden curve acts. NegPy fits the two sliders so the transfer
+curve shows the frame's tones as NegativeConverter's levels, brightness and S-curve would; Adaptive
+maps the frame's own density span onto a print range with its median at a midtone."""
 
 import math
 from dataclasses import replace
@@ -30,6 +31,16 @@ TONE_DENSITY_STEP = 0.01
 TONE_GRADE_STEP = 1.0
 #: The exposure fields Tone NegPy writes and gives back, in the order `fade_tone_saved` holds them.
 TONE_FIELDS = ("density", "grade", "auto_exposure", "auto_normalize_contrast")
+#: Adaptive: the print density span the frame's 0.5 to 99.5 % span maps to: about the span a well-exposed
+#: slide's picture holds.
+ADAPTIVE_SPAN = 2.4
+#: Adaptive: the contrast (transfer slope) it applies, at least the slide default (a frame that kept its
+#: range keeps ISO-R 115) and at most 1.5 (ISO-R 77), so a frame that lost most of its range is not
+#: stretched until its grain and stain grow into the picture.
+ADAPTIVE_CONTRAST = (1.0, 1.5)
+#: Adaptive: the print density of the frame's median, about a normally exposed slide's mid gray. At the
+#: slide defaults (Print Density 1, ISO-R 115) the transfer curve prints each density as itself.
+ADAPTIVE_MIDTONE = 1.0
 
 
 def tone_points(density: ImageBuffer) -> Optional[tuple[float, ...]]:
@@ -109,21 +120,64 @@ def tone_values(points: Sequence[float], positive_source: bool) -> dict[str, flo
     return {"density": float(densities[di]), "grade": float(grades[gi])}
 
 
-def fade_tone_changes(config: Any, tone: FadeABTone, metrics: Mapping[str, Any]) -> tuple[Optional[Any], str]:
-    """(config, reason): *config* with Tone set to *tone*. NegPy writes `tone_values` into the Tone
-    sliders and keeps the values it replaced in `fade_tone_saved`; any other choice gives them back
-    first, so Off restores the sliders exactly. None with a reason when NegPy has no reading."""
+def adaptive_values(points: Sequence[float], positive_source: bool) -> dict[str, float]:
+    """Print Density and ISO-R Grade, on the sliders' steps and ranges, that map the frame's 0.5 to
+    99.5 % density span onto ADAPTIVE_SPAN within ADAPTIVE_CONTRAST, and print its median at
+    ADAPTIVE_MIDTONE. *positive_source* is unused: the fit is in density on both paths."""
+    from negpy.features.transparency.logic import TRANSFER_CONSTANTS
+
+    d = np.asarray(points, dtype=np.float64)
+    ref = float(TRANSFER_CONSTANTS["transfer_grade_ref"])
+    pivot = float(TRANSFER_CONSTANTS["transfer_contrast_pivot"])
+    per_density = float(TRANSFER_CONSTANTS["transfer_density_stops"]) * math.log10(2.0)
+    lo_c, hi_c = ADAPTIVE_CONTRAST
+    contrast = min(max(ADAPTIVE_SPAN / max(float(d[-1] - d[0]), TONE_MIN_SPAN), lo_c), hi_c)
+    lo, hi = float(EXPOSURE_CONSTANTS["iso_r_min"]), float(EXPOSURE_CONSTANTS["iso_r_max"])
+    grade = min(max(round(ref / contrast / TONE_GRADE_STEP) * TONE_GRADE_STEP, lo), hi)
+    offset = float(np.median(d)) - pivot - (ADAPTIVE_MIDTONE - pivot) / (ref / grade)
+    density = min(max(round((1.0 - offset / per_density) / TONE_DENSITY_STEP) * TONE_DENSITY_STEP, 0.0), 2.0)
+    return {"density": round(density, 2), "grade": float(grade)}
+
+
+#: The Tone choices that write the sliders, and their fit.
+TONE_FITS = {FadeABTone.NEGPY: tone_values, FadeABTone.ADAPTIVE: adaptive_values}
+
+
+def _blend(start: dict[str, float], fit: dict[str, float], strength: float) -> dict[str, float]:
+    s = min(max(float(strength), 0.0), 1.0)
+    density = start["density"] + s * (fit["density"] - start["density"])
+    grade = start["grade"] + s * (fit["grade"] - start["grade"])
+    return {
+        "density": round(round(density / TONE_DENSITY_STEP) * TONE_DENSITY_STEP, 2),
+        "grade": float(round(grade / TONE_GRADE_STEP) * TONE_GRADE_STEP),
+    }
+
+
+def fade_tone_changes(
+    config: Any, tone: FadeABTone, metrics: Mapping[str, Any], strength: Optional[float] = None
+) -> tuple[Optional[Any], str]:
+    """(config, reason): *config* with Tone set to *tone* at *strength* (None keeps the frame's Tone
+    Strength). NegPy and Adaptive write their fit into the Tone sliders, moved from the values they
+    replace by the strength, and keep those values in `fade_tone_saved`; any other choice gives them
+    back first, so Off restores the sliders exactly. None with a reason when the frame has no reading."""
+    from negpy.features.transparency.logic import transfer_shown_values
+
     process, exposure = config.process, config.exposure
+    strength = process.fade_tone_strength if strength is None else float(strength)
     saved = process.fade_tone_saved
-    if saved is not None and process.fade_ab_tone == FadeABTone.NEGPY:
+    if saved is not None and process.fade_ab_tone in TONE_FITS:
         exposure = replace(exposure, **dict(zip(TONE_FIELDS, saved)))
         saved = None
-    if tone == FadeABTone.NEGPY:
+    if tone in TONE_FITS:
         points = metrics.get("fade_tone_points")
         if points is None:
             return None, tr("No range to read on this frame.")
         saved = tuple(getattr(exposure, f) for f in TONE_FIELDS)
-        values = tone_values(points, render_path(process) is RenderPath.POSITIVE)
+        fit = TONE_FITS[tone](points, render_path(process) is RenderPath.POSITIVE)
+        # The values the sliders print now, an Auto Density or Auto Grade included.
+        shown = transfer_shown_values(exposure, metrics)
+        start = {f: float(shown.get(f, getattr(exposure, f))) for f in ("density", "grade")}
+        values = fit if strength >= 1.0 else _blend(start, fit, strength)
         exposure = replace(exposure, **values, auto_exposure=False, auto_normalize_contrast=False)
-    process = replace(process, fade_ab_tone=tone, fade_tone_saved=saved)
+    process = replace(process, fade_ab_tone=tone, fade_tone_saved=saved, fade_tone_strength=strength)
     return replace(config, process=process, exposure=exposure), ""

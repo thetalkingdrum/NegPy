@@ -66,3 +66,72 @@ def test_the_render_reports_the_points_on_a_slide():
     DarkroomEngine().process(image, _slide(), "tone-points", ctx)
     points = ctx.metrics["fade_tone_points"]
     assert points[0] < points[len(points) // 2] < points[-1]
+
+
+def test_adaptive_keeps_a_full_range_frame_near_the_default_grade():
+    from negpy.features.process.fade_tone import ADAPTIVE_SPAN, adaptive_values
+
+    # _ramp spreads the span over 0 to 100 %; the 0.5 to 99.5 % points span 0.99 of it.
+    values = adaptive_values(_ramp(0.25, 0.25 + ADAPTIVE_SPAN / 0.99), positive_source=True)
+    assert values["grade"] == 115.0
+
+
+@pytest.mark.parametrize("span", [0.1, 0.4, 0.8, 1.2])
+def test_adaptive_holds_the_grade_at_its_contrast_limit(span):
+    from negpy.features.process.fade_tone import ADAPTIVE_CONTRAST, adaptive_values
+    from negpy.features.transparency.logic import TRANSFER_CONSTANTS
+
+    floor = round(float(TRANSFER_CONSTANTS["transfer_grade_ref"]) / ADAPTIVE_CONTRAST[1])
+    values = adaptive_values(_ramp(0.4, 0.4 + span), positive_source=True)
+    assert values["grade"] >= floor
+    assert tone_values(_ramp(0.4, 0.4 + span), positive_source=True)["grade"] <= values["grade"]
+
+
+def test_adaptive_prints_the_median_at_its_midtone():
+    from negpy.features.process.fade_tone import ADAPTIVE_MIDTONE, adaptive_values
+    from negpy.features.transparency.logic import TRANSFER_CONSTANTS
+
+    c = TRANSFER_CONSTANTS
+    pivot = float(c["transfer_contrast_pivot"])
+    for points in (_ramp(0.3, 2.0), _ramp(0.6, 1.4)):
+        values = adaptive_values(points, positive_source=True)
+        offset = (1.0 - values["density"]) * float(c["transfer_density_stops"]) * np.log10(2.0)
+        contrast = float(c["transfer_grade_ref"]) / values["grade"]
+        assert pivot + (float(np.median(points)) - offset - pivot) * contrast == pytest.approx(ADAPTIVE_MIDTONE, abs=0.01)
+
+
+def test_adaptive_never_lowers_the_contrast_of_a_wide_frame():
+    from negpy.features.process.fade_tone import adaptive_values
+
+    assert adaptive_values(_ramp(0.1, 3.4), positive_source=True)["grade"] == 115.0
+
+
+@pytest.mark.parametrize("tone", [FadeABTone.NEGPY, FadeABTone.ADAPTIVE])
+def test_strength_moves_the_sliders_from_the_saved_values_and_off_still_restores(tone):
+    from negpy.features.process.fade_tone import TONE_FITS
+
+    before = _slide(density=1.2, grade=110.0)
+    metrics = {"fade_tone_points": _ramp(0.3, 1.2)}
+    fit = TONE_FITS[tone](metrics["fade_tone_points"], positive_source=False)
+    full, _ = fade_tone_changes(before, tone, metrics, 1.0)
+    assert (full.exposure.density, full.exposure.grade) == (fit["density"], fit["grade"])
+    none, _ = fade_tone_changes(full, tone, metrics, 0.0)
+    assert (none.exposure.density, none.exposure.grade) == (1.2, 110.0)
+    half, _ = fade_tone_changes(none, tone, metrics, 0.5)
+    assert half.process.fade_tone_strength == 0.5
+    assert half.exposure.grade == pytest.approx(round(0.5 * (110.0 + fit["grade"])), abs=1.0)
+    assert half.exposure.density == pytest.approx(0.5 * (1.2 + fit["density"]), abs=0.011)
+    assert half.process.fade_tone_saved == full.process.fade_tone_saved
+    restored, _ = fade_tone_changes(half, FadeABTone.OFF, {})
+    assert restored.exposure == before.exposure
+
+
+def test_strength_starts_from_what_auto_density_prints():
+    from negpy.features.transparency.logic import transfer_shown_values
+
+    before = _slide(density=1.0, auto_exposure=True)
+    metrics = {"fade_tone_points": _ramp(0.3, 1.2), "metered_anchor": 0.4}
+    shown = transfer_shown_values(before.exposure, metrics)["density"]
+    none, _ = fade_tone_changes(before, FadeABTone.ADAPTIVE, metrics, 0.0)
+    assert none.exposure.density == pytest.approx(shown, abs=0.006)
+    assert not none.exposure.auto_exposure

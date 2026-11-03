@@ -6,6 +6,7 @@ density. One shared surface is fitted to the floor of the channel mean with Nega
 asymmetric robust fit (quadratic, then plane, then even; MIT, NOTICE.md), so content in one channel
 cannot tilt it. Color is at most a small plane per channel."""
 
+import math
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -156,11 +157,65 @@ def _small_density(linear: ImageBuffer) -> tuple[np.ndarray, np.ndarray, tuple[f
     return density, valid, (inset / w, inset / h, rw / w, rh / h)
 
 
-def measure_fog(linear: ImageBuffer) -> Optional[FogSurface]:
-    """The frame's uneven fog, or None when it is under FOG_FLOOR or no surface fits."""
+class FogFit(NamedTuple):
+    """One fog measurement and what it read, for the bake and its diagnostics. *surface* is None when
+    the frame has no uneven fog or no surface fits; *reason* names why ("" with a surface). The grid
+    holds the cell centres (*u*, *v*, fractions of the frame), each cell's shared floor (D), and
+    which cells were coherent and clear (*kept*). *amplitude* is the fitted surface's range over its
+    region before FOG_CAP, None when no surface fitted."""
+
+    surface: Optional[FogSurface]
+    reason: str
+    shape: tuple[int, int]
+    u: np.ndarray
+    v: np.ndarray
+    floor: np.ndarray
+    coherent: np.ndarray
+    kept: np.ndarray
+    amplitude: Optional[float]
+
+    @property
+    def kept_share(self) -> float:
+        return float(self.kept.mean()) if self.kept.size else 0.0
+
+    @property
+    def cap_hit(self) -> bool:
+        return self.amplitude is not None and self.amplitude > FOG_CAP
+
+    def metrics(self) -> dict:
+        """The measure-only numbers a render reports."""
+        return {"amplitude": self.amplitude, "cap_hit": self.cap_hit, "kept_share": self.kept_share, "reason": self.reason}
+
+
+def _sides_clear(u: np.ndarray, v: np.ndarray, clear: np.ndarray, shared: np.ndarray, fraction) -> bool:
+    """Whether clear cells lie on both sides of the fitted surface's gradient across the region."""
+    left, top, width, height = fraction
+    cu, cv = left + 0.5 * width, top + 0.5 * height
+    gu = shared[1] + 2.0 * shared[3] * cu + shared[5] * cv
+    gv = shared[2] + 2.0 * shared[4] * cv + shared[5] * cu
+    norm = math.hypot(gu, gv)
+    if norm < 1e-9:
+        return True
+    along = ((u[clear] - cu) * gu + (v[clear] - cv) * gv) / norm
+    reach = 0.25 * math.hypot(width * gu / norm, height * gv / norm)
+    return bool((along < -reach).any() and (along > reach).any())
+
+
+def fit_fog(
+    linear: ImageBuffer,
+    plausible: float = FOG_PLAUSIBLE,
+    min_cells: int = 12,
+    both_sides: bool = False,
+    clear_band: Optional[float] = None,
+) -> FogFit:
+    """The frame's uneven fog with what the fit read. *plausible* (the bend limit), *clear_band* (how far
+    above the grid's thin end a clear cell may sit, *plausible* when None), *min_cells* (clear cells
+    the fit needs) and *both_sides* (clear cells on both sides of the gradient) set how strictly it
+    rejects content; the bake uses the defaults."""
+    empty = np.zeros(0)
     density, valid, region = _small_density(linear)
     if valid.sum() < 64:
-        return None
+        return FogFit(None, "too little film", (0, 0), empty, empty, empty, empty.astype(bool), empty.astype(bool), None)
     left, top, width, height = region
     channel_grids = [_floor_grid(density[..., c], valid) for c in range(3)]
     gh, gw = channel_grids[0].shape
@@ -170,33 +225,40 @@ def measure_fog(linear: ImageBuffer) -> Optional[FogSurface]:
     v = np.repeat(top + (np.arange(gh) + 0.5) / gh * height, gw)
     densest = np.max(channel_floors, axis=0)
     coherent = grid_shared - np.mean(channel_floors, axis=0) <= FOG_COHERENT
-    clear = coherent & (densest <= np.percentile(densest[coherent], FOG_CLEAR_PCT) + FOG_PLAUSIBLE) if coherent.any() else coherent
-    if clear.sum() < 12:
-        return None
+    band = plausible if clear_band is None else clear_band
+    clear = coherent & (densest <= np.percentile(densest[coherent], FOG_CLEAR_PCT) + band) if coherent.any() else coherent
+
+    def fit(surface, reason, amplitude=None):
+        return FogFit(surface, reason, (gh, gw), u, v, grid_shared, coherent, clear, amplitude)
+
+    if clear.sum() < min_cells:
+        return fit(None, "too few clear-film cells")
     # The surface is trusted only over the cells that measured it, and held at their edges.
     cell_w, cell_h = width / gw, height / gh
     u0, u1 = float(u[clear].min()) - 0.5 * cell_w, float(u[clear].max()) + 0.5 * cell_w
     v0, v1 = float(v[clear].min()) - 0.5 * cell_h, float(v[clear].max()) + 0.5 * cell_h
     fraction = (u0, v0, u1 - u0, v1 - v0)
     left, top, width, height = fraction
-    u, v, grid_shared = u[clear], v[clear], grid_shared[clear]
+    uc, vc, shared_c = u[clear], v[clear], grid_shared[clear]
     shared = None
     for dof in (6, 3):
-        fit = _robust_floor(grid_shared, u, v, dof)
-        if fit is not None:
-            lo, hi = _surface_range(fit, fraction)
-            if hi - lo <= FOG_PLAUSIBLE:
-                shared = fit
+        coef = _robust_floor(shared_c, uc, vc, dof)
+        if coef is not None:
+            lo, hi = _surface_range(coef, fraction)
+            if hi - lo <= plausible:
+                shared = coef
                 break
     if shared is None:
-        return None
+        return fit(None, "no plausible surface")
     lo, hi = _surface_range(shared, fraction)
     if hi - lo < FOG_FLOOR:
-        return None
+        return fit(None, "under the floor", hi - lo)
+    if both_sides and not _sides_clear(u, v, clear, shared, fraction):
+        return fit(None, "clear film on one side only", hi - lo)
     planes = []
     for c in range(3):
-        fit = _robust_floor(channel_floors[c][clear], u, v, 3)
-        planes.append(np.zeros(3) if fit is None else fit[:3])
+        coef = _robust_floor(channel_floors[c][clear], uc, vc, 3)
+        planes.append(np.zeros(3) if coef is None else coef[:3])
     color = np.asarray(planes) - np.mean(planes, axis=0)
     color[:, 0] = 0.0
     color *= FOG_COLOR_SHRINK
@@ -207,7 +269,22 @@ def measure_fog(linear: ImageBuffer) -> Optional[FogSurface]:
     # Each plane is zero at the region's centre, so it moves no channel there.
     cu, cv = left + 0.5 * width, top + 0.5 * height
     color[:, 0] = -(color[:, 1] * cu + color[:, 2] * cv)
-    return FogSurface(tuple(float(x) for x in shared), tuple(tuple(float(x) for x in p) for p in color), lo, fraction)
+    surface = FogSurface(tuple(float(x) for x in shared), tuple(tuple(float(x) for x in p) for p in color), lo, fraction)
+    return fit(surface, "", hi - lo)
+
+
+def measure_fog(linear: ImageBuffer) -> Optional[FogSurface]:
+    """The frame's uneven fog, or None when it is under FOG_FLOOR or no surface fits."""
+    return fit_fog(linear).surface
+
+
+def fog_map(linear: ImageBuffer, surface: FogSurface) -> np.ndarray:
+    """The shared density the bake removes at each pixel of *linear* (H, W), capped as `remove_fog` caps it."""
+    h, w = np.asarray(linear).shape[:2]
+    left, top, width, height = surface.fraction
+    u = np.clip((np.arange(w, dtype=np.float64) + 0.5) / w, left, left + width)[None, :]
+    v = np.clip((np.arange(h, dtype=np.float64) + 0.5) / h, top, top + height)[:, None]
+    return np.clip(_quadratic(np.asarray(surface.shared), u, v) - surface.offset, 0.0, FOG_CAP)
 
 
 def remove_fog(linear: ImageBuffer, surface: FogSurface) -> ImageBuffer:
@@ -232,7 +309,12 @@ def remove_fog(linear: ImageBuffer, surface: FogSurface) -> ImageBuffer:
 
 def bake_fog(linear: ImageBuffer, process) -> ImageBuffer:
     """The NegPy fog bake: *linear* itself when it does not run or the frame has no uneven fog."""
+    return bake_fog_with_fit(linear, process)[0]
+
+
+def bake_fog_with_fit(linear: ImageBuffer, process) -> tuple[ImageBuffer, Optional[FogFit]]:
+    """`bake_fog` and its measurement, None when the bake does not run."""
     if not fog_active(process):
-        return linear
-    surface = measure_fog(linear)
-    return linear if surface is None else remove_fog(linear, surface)
+        return linear, None
+    fit = fit_fog(linear)
+    return (linear if fit.surface is None else remove_fog(linear, fit.surface)), fit

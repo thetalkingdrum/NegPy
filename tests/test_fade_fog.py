@@ -89,3 +89,37 @@ def test_run_pipeline_bakes_the_fog_and_keys_it_in_the_source():
     first, _ = processor.run_pipeline(scene.fogged, cfg, "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False)
     again, _ = processor.run_pipeline(scene.fogged, cfg, "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False)
     assert np.array_equal(np.asarray(first), np.asarray(again))
+    _, metrics = processor.run_pipeline(scene.fogged, cfg, "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False)
+    assert set(metrics["fade_fog"]) == {"amplitude", "cap_hit", "kept_share", "reason"}
+    _, off_metrics = processor.run_pipeline(
+        scene.fogged, replace(settings, process=_process("off")), "fog-scene", render_size_ref=384.0, prefer_gpu=False, wants_uv_grid=False
+    )
+    assert "fade_fog" not in off_metrics
+
+
+def test_the_fit_reports_its_cells_and_its_amplitude_before_the_cap():
+    from negpy.features.process.fade_fog import fit_fog
+
+    scene = fog_scene("fog")
+    fit = fit_fog(scene.fogged)
+    assert fit.surface == measure_fog(scene.fogged)
+    assert fit.u.shape == fit.v.shape == fit.floor.shape == fit.kept.shape == (fit.shape[0] * fit.shape[1],)
+    assert not (fit.kept & ~fit.coherent).any()
+    assert 0.0 < fit.kept_share <= 1.0 and fit.reason == ""
+    assert fit.amplitude == pytest.approx(min(fit.amplitude, 0.28)) and fit.surface.amplitude() == min(fit.amplitude, FOG_CAP)
+    assert fit.cap_hit == (fit.amplitude > FOG_CAP)
+
+
+def test_a_clean_frame_s_fit_says_why_it_removes_nothing():
+    from negpy.features.process.fade_fog import fit_fog
+
+    fit = fit_fog(fog_scene("warm").clean)
+    assert fit.surface is None and fit.reason
+
+
+def test_a_stricter_bend_limit_rejects_a_fit_the_default_keeps():
+    from negpy.features.process.fade_fog import fit_fog
+
+    scene = fog_scene("fog")
+    assert fit_fog(scene.fogged).surface is not None
+    assert fit_fog(scene.fogged, plausible=0.01).surface is None
