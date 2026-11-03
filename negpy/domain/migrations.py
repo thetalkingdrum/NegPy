@@ -119,6 +119,15 @@ CROSSTALK_PROFILE_RENAMES: Dict[str, str] = {
 }
 
 
+# Retired Fade Restoration color models -> the one that renders alike. Hybrid became NegPy, which now
+# applies Crossover. Applied in ProcessConfig.__post_init__ and to roll defaults, which overlay it raw.
+RETIRED_FADE_MODELS: Dict[str, str] = {"hybrid": "negpy"}
+
+
+def migrate_fade_model(value: Any) -> Any:
+    return RETIRED_FADE_MODELS.get(str(value), value)
+
+
 def migrate_export_fmt(fmt: str) -> str:
     return RETIRED_EXPORT_FORMATS.get(fmt, fmt)
 

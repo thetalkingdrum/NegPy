@@ -86,7 +86,7 @@ def test_the_nc_model_renders_the_scan_without_survivals_or_stain():
     process = replace(ProcessConfig(), process_mode=ProcessMode.E6, fade_ratio_g=0.7, fade_white_anchor=True, fade_ab_model="nc")
     assert fade_matrix(process) is None
     assert not remove_stain(process)
-    assert fade_matrix(replace(process, fade_ab_model="hybrid")) is not None
+    assert fade_matrix(replace(process, fade_ab_model="negpy")) is not None
 
 
 def test_each_stage_moves_the_render():
@@ -105,7 +105,7 @@ def test_the_defaults_render_as_before():
     image, est = _crossover_case()
     survivals = dict(fade_ratio_r=est.red, fade_ratio_g=est.green, fade_ratio_b=est.blue)
     plain = _render(image, **survivals)
-    explicit = _render(image, **survivals, fade_ab_neutrals="negpy", fade_ab_model="negpy", fade_ab_tone="off", fade_crossover=0.5)
+    explicit = _render(image, **survivals, fade_ab_neutrals="negpy", fade_ab_model="negpy", fade_ab_tone="off", fade_crossover=0.0)
     assert np.array_equal(plain, explicit)
 
 
@@ -119,7 +119,7 @@ def test_the_nc_stages_route_to_the_cpu():
     assert not ImageProcessor._cpu_only(slide)
     assert ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_ab_model="nc")))
     assert ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_ab_tone="nc")))
-    assert not ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_ab_model="hybrid")))
+    assert not ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_crossover=1.0)))
     negative = replace(slide, process=replace(slide.process, process_mode=ProcessMode.C41, fade_ab_model="nc"))
     assert not ImageProcessor._cpu_only(negative)
 

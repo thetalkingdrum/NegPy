@@ -22,6 +22,7 @@ from dataclasses import replace
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
+from negpy.domain.migrations import migrate_fade_model
 from negpy.features.exposure.normalization import BOUNDS_VERSION
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, SCANNING_FIELDS
 from negpy.features.process.models import neutral_axis_tuple, with_film_fields
@@ -791,7 +792,12 @@ def roll_defaults(repo: Any, roll_id: str) -> Dict[str, Any]:
     here has no roll default yet -- the frame's own saved value is what is used,
     exactly as before roll defaults existed."""
     entry = roll_for_id(repo, roll_id)
-    return _without_decode_white(dict(entry["defaults"])) if entry and entry.get("defaults") else {}
+    if not entry or not entry.get("defaults"):
+        return {}
+    defaults = _without_decode_white(dict(entry["defaults"]))
+    if "fade_ab_model" in defaults:
+        defaults["fade_ab_model"] = migrate_fade_model(defaults["fade_ab_model"])
+    return defaults
 
 
 def set_roll_defaults(repo: Any, roll_id: str, **fields: Any) -> None:

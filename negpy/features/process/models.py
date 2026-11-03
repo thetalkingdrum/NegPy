@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
-from negpy.domain.migrations import CROSSTALK_PROFILE_RENAMES
+from negpy.domain.migrations import CROSSTALK_PROFILE_RENAMES, migrate_fade_model
 from negpy.kernel.system.i18n import mark
 from negpy.features.exposure.models import EXPOSURE_CONSTANTS, ExposureConfig
 
@@ -38,12 +38,12 @@ class FadeABNeutrals(StrEnum):
 
 
 class FadeABModel(StrEnum):
-    """The fade color model: the survivals alone, NegativeConverter's display-space color table on the
-    positive (survivals and Remove Stain off), or the survivals with the density-space crossover table."""
+    """The fade color model: the survivals, then the density-space crossover table at Crossover's
+    strength, or NegativeConverter's display-space color table on the positive (survivals and Remove
+    Stain off)."""
 
     NEGPY = "negpy"
     NC = "nc"
-    HYBRID = "hybrid"
 
 
 class FadeABTone(StrEnum):
@@ -293,7 +293,7 @@ class ProcessConfig:
         object.__setattr__(self, "source_encoding", SourceEncoding(self.source_encoding))
         object.__setattr__(self, "sensor_unmix", SensorUnmix(self.sensor_unmix))
         object.__setattr__(self, "fade_ab_neutrals", FadeABNeutrals(self.fade_ab_neutrals))
-        object.__setattr__(self, "fade_ab_model", FadeABModel(self.fade_ab_model))
+        object.__setattr__(self, "fade_ab_model", FadeABModel(migrate_fade_model(self.fade_ab_model)))
         object.__setattr__(self, "fade_ab_tone", FadeABTone(self.fade_ab_tone))
         # Same reach for renamed crosstalk profiles: roll defaults overlay this field
         # raw through dataclasses.replace, so the rename must run on every build too.

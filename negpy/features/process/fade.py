@@ -720,9 +720,9 @@ MeasuredCrossover = tuple[Optional[tuple[float, ...]], str]
 
 
 def crossover_strength(process: ProcessConfig) -> float:
-    """The table's strength in a render: Crossover under the hybrid color model, on a slide whose
-    survivals act (an Estimate that succeeded, or survivals set by hand), else 0."""
-    if process.fade_ab_model != FadeABModel.HYBRID or fade_matrix(process) is None:
+    """The table's strength in a render: Crossover on a slide whose survivals act (an Estimate that
+    succeeded, or survivals set by hand), else 0. The NC color model takes no survivals, so no table."""
+    if fade_matrix(process) is None:
         return 0.0
     return float(process.fade_crossover)
 

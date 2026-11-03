@@ -72,11 +72,11 @@ def report(title: str, film, **scene_kw) -> None:
 
 #: (label, process fields) of the model comparison: color model, tone and Estimate neutrals.
 VARIANTS = (
-    ("NegPy", dict(fade_ab_model="negpy")),
-    ("Hybrid", dict(fade_ab_model="hybrid")),
+    ("NegPy, Crossover 0", dict(fade_ab_model="negpy", fade_crossover=0.0)),
+    ("NegPy, Crossover 100 %", dict(fade_ab_model="negpy")),
     ("NC model", dict(fade_ab_model="nc")),
-    ("NegPy + NC tone", dict(fade_ab_model="negpy", fade_ab_tone="nc")),
-    ("Hybrid + NC tone", dict(fade_ab_model="hybrid", fade_ab_tone="nc")),
+    ("NegPy, Crossover 0 + NC tone", dict(fade_ab_model="negpy", fade_crossover=0.0, fade_ab_tone="nc")),
+    ("NegPy, Crossover 100 % + NC tone", dict(fade_ab_model="negpy", fade_ab_tone="nc")),
     ("NC model + NC tone", dict(fade_ab_model="nc", fade_ab_tone="nc")),
 )
 

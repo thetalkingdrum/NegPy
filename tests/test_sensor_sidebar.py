@@ -436,26 +436,26 @@ def _slide_sidebar(**process):
 _TABLE = (-1.5, -2.5, 0.2, 0.1, 0.2, -0.3, -1.5, 0.3, 0.0, 0.0, 0.0, -0.5, 0.3, -0.1, -0.1, 0.2)
 
 
-def test_crossover_waits_for_a_table_and_the_hybrid_model():
+def test_crossover_waits_for_a_table_and_the_negpy_model():
     w, _ = _slide_sidebar()
     assert not w.fade_crossover_slider.isEnabled()
     assert "Estimate" in w.fade_crossover_hint.text()
-    w, _ = _slide_sidebar(fade_crossover_table=_TABLE)
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="nc")
     assert not w.fade_crossover_slider.isEnabled()
-    assert "Hybrid" in w.fade_crossover_hint.text()
-    w, _ = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    assert "Color model" in w.fade_crossover_hint.text()
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE)
     assert w.fade_crossover_slider.isEnabled()
     assert "Crossover" in w.fade_crossover_hint.text()
 
 
 def test_the_hint_names_the_shadow_and_highlight_casts():
-    w, _ = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    w, _ = _slide_sidebar(fade_crossover_table=_TABLE)
     text = w.fade_crossover_hint.text()
     assert "Shadows lean" in text and "Highlights lean" in text
 
 
 def test_the_crossover_slider_stores_a_fraction_on_the_fade_card():
-    w, ctrl = _slide_sidebar(fade_crossover_table=_TABLE, fade_ab_model="hybrid")
+    w, ctrl = _slide_sidebar(fade_crossover_table=_TABLE)
     w.fade_crossover_slider.valueCommitted.emit(40.0)
     ctrl.set_roll_default.assert_called_with("fade", persist=True, readback_metrics=True, fade_crossover=0.4)
 
@@ -464,7 +464,7 @@ def test_each_compare_choice_stores_its_enum_value_on_the_fade_card():
     w, ctrl = _slide_sidebar()
     for btn, field, value in (
         (w.fade_ab_neutrals_btn, "fade_ab_neutrals", "nc"),
-        (w.fade_ab_model_btn, "fade_ab_model", "hybrid"),
+        (w.fade_ab_model_btn, "fade_ab_model", "nc"),
         (w.fade_ab_tone_btn, "fade_ab_tone", "nc"),
     ):
         btn.setCurrentIndex(btn.findData(value))

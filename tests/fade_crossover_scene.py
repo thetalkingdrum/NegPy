@@ -207,7 +207,6 @@ def survival_changes(est, crossover: float, with_table: bool = True) -> dict:
         fade_ratio_g=est.green,
         fade_ratio_b=est.blue,
         fade_crossover=crossover,
-        fade_ab_model="hybrid",
     )
     if with_table and est.crossover is not None:
         process = replace(ProcessConfig(), process_mode=ProcessMode.E6, **changes)

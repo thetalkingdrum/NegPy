@@ -1208,6 +1208,17 @@ def test_a_stored_camera_raw_roll_white_is_not_read():
     assert roll_defaults(repo, roll_id) == dict(fade_ratio_r=0.5)
 
 
+def test_a_roll_s_retired_hybrid_model_reads_as_negpy():
+    repo = _repo()
+    roll_id = create_virtual_roll(repo, "R", ["/a.tif"])
+    store = repo.get_global_setting(ROLLS_KEY)
+    store[roll_id]["defaults"] = dict(fade_ratio_r=0.5, fade_ab_model="hybrid")
+    repo.save_global_setting(ROLLS_KEY, store)
+    assert roll_defaults(repo, roll_id) == dict(fade_ratio_r=0.5, fade_ab_model="negpy")
+    resolved = resolve_roll_config(repo, roll_id, "h1", WorkspaceConfig()).process
+    assert resolved.fade_ab_model == "negpy"
+
+
 def test_a_measured_camera_raw_frame_keeps_its_white_over_a_scanner_roll_white():
     """A roll's scanner white (space "") reaches a frame with none of its own, never a RAW frame's own reading."""
     repo = _repo()

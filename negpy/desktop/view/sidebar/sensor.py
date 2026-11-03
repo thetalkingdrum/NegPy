@@ -220,7 +220,7 @@ class SensorSidebar(BaseSidebar):
             data=tuple(m.value for m in FadeABNeutrals),
         )
         self.fade_ab_model_btn = SegmentedChoice(
-            (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.layer-group", tr("Hybrid"))),
+            (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABModel),
         )
@@ -234,9 +234,8 @@ class SensorSidebar(BaseSidebar):
             (
                 self.fade_ab_model_btn,
                 (
-                    tr("NegPy: the Survival sliders only."),
+                    tr("NegPy: the Survival sliders, then Crossover."),
                     tr("NC: NegativeConverter's color table on the image, with Survival and Remove Stain off."),
-                    tr("Hybrid: the Survival sliders, then Crossover."),
                 ),
             ),
             (self.fade_ab_tone_btn, (tr("Off: no tone change."), tr("NC: NegativeConverter's levels, brightness and contrast."))),
@@ -583,20 +582,20 @@ class SensorSidebar(BaseSidebar):
         self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, fade_crossover=val / 100.0)
 
     def _sync_crossover(self, conf) -> None:
-        """Crossover acts under the Hybrid color model on a frame with a table; the hint names what the
+        """Crossover acts under the NegPy color model on a frame with a table; the hint names what the
         table found, or why the slider is grayed out."""
         from negpy.features.process.fade import crossover_description
 
         self.fade_crossover_slider.setValue(conf.fade_crossover * 100.0)
-        hybrid = conf.fade_ab_model == FadeABModel.HYBRID
+        negpy = conf.fade_ab_model == FadeABModel.NEGPY
         table = conf.fade_crossover_table
-        self.fade_crossover_slider.setEnabled(hybrid and table is not None)
+        self.fade_crossover_slider.setEnabled(negpy and table is not None)
         if table is None:
             text = tr("Click Estimate to measure the crossover.")
         else:
             text = crossover_description(table)
-            if not hybrid:
-                text += " " + tr("Set Color model to Hybrid to use Crossover.")
+            if not negpy:
+                text += " " + tr("Set Color model to NegPy to use Crossover.")
         self.fade_crossover_hint.setText(text)
         for btn, value in (
             (self.fade_ab_neutrals_btn, conf.fade_ab_neutrals),

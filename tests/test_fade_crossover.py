@@ -109,14 +109,24 @@ def test_a_crossover_under_the_floor_applies_nothing():
     assert crossover_offsets(est.crossover, 1.0) is None
 
 
-def test_negpy_and_nc_models_ignore_the_table():
+def test_the_negpy_model_applies_the_table_and_nc_ignores_it():
     from negpy.features.process.fade import crossover_strength
 
     _, _, est = _case("crossover")
-    hybrid = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, 1.0))
-    assert crossover_strength(hybrid) == 1.0
-    assert crossover_strength(replace(hybrid, fade_ab_model="negpy")) == 0.0
-    assert crossover_strength(replace(hybrid, fade_ab_model="nc")) == 0.0
+    negpy = replace(ProcessConfig(), process_mode=ProcessMode.E6, **survival_changes(est, 1.0))
+    assert crossover_strength(negpy) == 1.0
+    assert crossover_strength(replace(negpy, fade_crossover=0.0)) == 0.0
+    assert crossover_strength(replace(negpy, fade_ab_model="nc")) == 0.0
+
+
+def test_a_retired_hybrid_model_reads_as_negpy():
+    """Hybrid was the survivals then the table, which NegPy now is: edits and roll defaults map to it."""
+    from negpy.domain.models import WorkspaceConfig
+
+    assert ProcessConfig(fade_ab_model="hybrid").fade_ab_model == "negpy"
+    flat = {**WorkspaceConfig().to_dict(), "fade_ab_model": "hybrid", "fade_crossover": 0.6}
+    loaded = WorkspaceConfig.from_flat_dict(flat).process
+    assert (loaded.fade_ab_model, loaded.fade_crossover) == ("negpy", 0.6)
 
 
 def test_a_large_saturated_subject_is_not_neutralized():
