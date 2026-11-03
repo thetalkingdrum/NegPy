@@ -82,8 +82,55 @@ def main(argv: list[str]) -> None:
         fog_report()
 
 
+TONES = ("off", "nc", "negpy")
+
+
+def render_tone(image: np.ndarray, process_changes: dict, tone: str) -> tuple[np.ndarray, dict]:
+    """(render, tone sliders): the render with Tone *tone*. NegPy reads the first render's
+    `fade_tone_points` and writes Print Density and ISO-R Grade, as the panel does."""
+    from dataclasses import replace
+
+    from negpy.domain.interfaces import PipelineContext
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.features.process.fade_tone import fade_tone_changes
+    from negpy.features.process.models import FadeABTone, ProcessMode, mode_aware_exposure_reset
+    from negpy.services.rendering.engine import DarkroomEngine
+
+    base = WorkspaceConfig()
+    process = replace(base.process, process_mode=ProcessMode.E6, **process_changes)
+    settings = replace(base, process=process, exposure=mode_aware_exposure_reset(ProcessMode.E6, base.exposure))
+    ctx = PipelineContext(original_size=image.shape[:2], scale_factor=1.0, process_mode=ProcessMode.E6)
+    out = np.asarray(DarkroomEngine().process(image, settings, "fade-tone", ctx))
+    if tone == "nc":
+        settings = replace(settings, process=replace(settings.process, fade_ab_tone="nc"))
+    elif tone == "negpy":
+        settings, _ = fade_tone_changes(settings, FadeABTone.NEGPY, ctx.metrics)
+    else:
+        return out, {}
+    out = np.asarray(DarkroomEngine().process(image, settings, "fade-tone"))
+    return out, {"density": settings.exposure.density, "grade": settings.exposure.grade}
+
+
 def tone_report() -> None:
-    pass
+    print("\n# Tone\n")
+    scene = build_scene()
+    models = (("NegPy, Crossover 0", dict(fade_ab_model="negpy"), 0.0), ("NegPy, Crossover 100 %", dict(fade_ab_model="negpy"), 1.0), ("NC", dict(fade_ab_model="nc"), 1.0))
+    low_range = ("low-range linear fade 0.6/0.45/0.35", linear_fade(REFERENCE, (0.6, 0.45, 0.35)))
+    for fade_name, film in (*FADES, low_range):
+        image = scan_image(film, scene)
+        ref_lab = to_lab(render(scan_image(REFERENCE, scene), {}))
+        est = estimate(image)
+        print(f"\n## {fade_name} (camera RAW slide path)\n")
+        print("| color model | tone | Print Density / ISO-R Grade | ramp C* max | ramp C* mean | patch dE mean | patch dE max | ramp dL* mean |")
+        print("|---|---|---|---|---|---|---|---|")
+        for model_name, fields, x in models:
+            for tone in TONES:
+                out, sliders = render_tone(image, {**survival_changes(est, x), **fields}, tone)
+                lab = to_lab(out)
+                ramp_dl = float(np.mean([abs(region_lab(lab, m)[0] - region_lab(ref_lab, m)[0]) for m in scene.ramp]))
+                s = scores(lab, ref_lab, scene)
+                slid = f"{sliders['density']:.2f} / {sliders['grade']:.0f}" if sliders else ""
+                print(f"| {model_name} | {tone} | {slid} | " + " | ".join(f"{v:.1f}" for v in s) + f" | {ramp_dl:.1f} |")
 
 
 FOGS = ("off", "nc", "negpy")

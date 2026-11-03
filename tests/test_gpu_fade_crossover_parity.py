@@ -72,6 +72,51 @@ class TestGpuFadeCrossoverParity(unittest.TestCase):
         self.assertLess(float(np.abs(cpu - gpu).mean()), 0.004)
 
 
+    def test_both_engines_report_the_tone_points_alike(self):
+        _, cpu = self._render(_settings(survival_changes(self.est, 1.0)), False)
+        _, gpu = self._render(_settings(survival_changes(self.est, 1.0)), True)
+        self.assertLess(float(np.abs(np.asarray(cpu["fade_tone_points"]) - np.asarray(gpu["fade_tone_points"])).max()), 0.01)
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+class TestGpuScannerZeroParity(unittest.TestCase):
+    """A scanner file whose fade scales about its measured white (Scanner zero), measured by each engine."""
+
+    def setUp(self):
+        from fade_crossover_scene import REFERENCE, linear_fade, plustek
+        from negpy.services.rendering.image_processor import ImageProcessor
+
+        self.processor = ImageProcessor()
+        if self.processor.engine_gpu is None:
+            self.skipTest("GPU engine not initialised")
+        self.img = scan_image(plustek(linear_fade(REFERENCE, (1.0, 0.7, 0.5))), build_scene(192, 144))
+
+    def _render(self, settings, prefer_gpu):
+        result, metrics = self.processor.run_pipeline(
+            self.img, settings, "zero-parity", render_size_ref=float(max(self.img.shape[:2])), prefer_gpu=prefer_gpu
+        )
+        return np.asarray(result.readback() if hasattr(result, "readback") else result)[:, :, :3].astype(np.float64), metrics
+
+    def test_each_zero_renders_alike(self):
+        for zero in ("clear_film", "clear_neutral"):
+            fields = dict(positive_source=True, fade_ab_scanner_zero=zero)
+            est = estimate(self.img, **fields)
+            for strength in (0.0, 1.0):
+                with self.subTest(zero=zero, strength=strength):
+                    settings = _settings(survival_changes(est, strength, **fields))
+                    cpu, _ = self._render(settings, False)
+                    gpu, _ = self._render(settings, True)
+                    self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
+                    self.assertLess(float(np.abs(cpu - gpu).mean()), 0.002)
+
+    def test_both_engines_measure_a_stale_scanner_white_alike(self):
+        fields = dict(positive_source=True, fade_ab_scanner_zero="clear_film", fade_ratio_g=0.8, fade_ratio_b=0.6)
+        cpu, cpu_metrics = self._render(_settings(fields), False)
+        gpu, gpu_metrics = self._render(_settings(fields), True)
+        self.assertEqual(cpu_metrics["fade_white"][3], gpu_metrics["fade_white"][3])
+        self.assertLess(float(np.abs(np.asarray(cpu_metrics["fade_white"][:3]) - np.asarray(gpu_metrics["fade_white"][:3])).max()), 1e-4)
+        self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
+
 @unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
 class TestTiledFadeCrossover(unittest.TestCase):
     def setUp(self):
@@ -113,3 +158,23 @@ class TestGpuFollowsCrossover(unittest.TestCase):
         finally:
             engine.destroy_all()
         self.assertGreater(float(np.abs(out[1] - out[0]).max()), 0.05)
+
+
+@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
+class TestGpuFogBakeParity(unittest.TestCase):
+    """The NegPy fog bake runs on the source before either engine."""
+
+    def test_the_baked_source_renders_alike(self):
+        from fade_crossover_scene import fog_scene
+        from negpy.services.rendering.image_processor import ImageProcessor
+
+        processor = ImageProcessor()
+        if processor.engine_gpu is None:
+            self.skipTest("GPU engine not initialised")
+        img = fog_scene("fog").fogged
+        settings = _settings(dict(positive_source=True, fade_ab_fog="negpy"))
+        out = []
+        for prefer_gpu in (False, True):
+            result, _ = processor.run_pipeline(img, settings, "fog-parity", render_size_ref=float(max(img.shape[:2])), prefer_gpu=prefer_gpu)
+            out.append(np.asarray(result.readback() if hasattr(result, "readback") else result)[:, :, :3].astype(np.float64))
+        self.assertLess(float(np.abs(out[0] - out[1]).max()), 0.01)

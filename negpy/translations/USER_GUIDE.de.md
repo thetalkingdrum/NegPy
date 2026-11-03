@@ -337,7 +337,7 @@ Für eine Kamera mit Schmalbandlicht, die von jedem Bild drei Aufnahmen macht: R
 
 Klicke mit der rechten Maustaste auf eine Hälfte für **Teilung für dieses Bild anpassen…** und **Teilung auf Rollenstandard zurücksetzen**. Wenn du Halbformat ausschaltest, bleiben bearbeitete Hälften als **Diptychon** nebeneinander. Schalte es wieder ein, um sie zu bearbeiten.
 
-<!-- panel:sensor src:1192247f -->
+<!-- panel:sensor src:4562e660 -->
 ### 10.3 Kalibrierung: Farben deines Scan-Aufbaus
 
 Korrigiert Farbfehler, die von Lichtquelle, Kamera und Film kommen.
@@ -364,8 +364,8 @@ Gibt einem ausgeblichenen Dia seine Farbstoffschichten zurück.
 *   **Grün-Erhalt** / **Blau-Erhalt**: dasselbe für Grün und Blau, im Vergleich zu Rot.
 *   **Schleier entfernen**: macht gelb gewordene klare Bereiche weiß und führt Schätzen aus. Probiere es, wenn Schätzen sein Symbol gelb-orange färbt.
 *   **Schätzen**: stellt die Regler aus den Grautönen dieses Bildes ein. **Mitteltöne** passt zu einem stark ausgeblichenen Dia. **Grauumfang** passt zu einer leichten Ausbleichung mit tiefen Schatten.
-*   **Crossover** (Farbmodell **Hybrid**): entfernt eine Farbverschiebung, die sich von den Schatten zu den Lichtern ändert. Führe zuerst Schätzen aus.
-*   **Vergleichen**: stellt **Neutraltöne**, **Farbmodell** und **Ton** auf das Verfahren von NegativeConverter (**NC**) um, für einen A/B-Vergleich.
+*   **Crossover** (Farbmodell **NegPy**): entfernt eine Farbverschiebung, die sich von den Schatten zu den Lichtern ändert. Führe zuerst Schätzen aus.
+*   **Vergleichen**: A/B-Auswahlen gegen NegativeConverter (**NC**) und **Scanner-Nullpunkt** für Scannerdateien. Flat Field gleicht ungleichmäßiges Licht aus.
 
 <!-- panel:process src:b1fdce87 -->
 ### 10.5 Messung: Negativ → Positiv

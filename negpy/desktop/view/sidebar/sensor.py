@@ -232,7 +232,7 @@ class SensorSidebar(BaseSidebar):
             data=tuple(m.value for m in FadeABTone),
         )
         self.fade_ab_scanner_zero_btn = SegmentedChoice(
-            (("fa5s.expand", tr("Full")), ("fa5s.film", tr("Film")), ("fa5s.adjust", tr("Gray"))),
+            (("fa5s.expand", tr("Full Scale")), ("fa5s.film", tr("Film")), ("fa5s.adjust", tr("Gray"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABScannerZero),
         )
@@ -261,7 +261,7 @@ class SensorSidebar(BaseSidebar):
             (
                 self.fade_ab_scanner_zero_btn,
                 (
-                    tr("Full: the fade is measured from the scanner's full scale."),
+                    tr("Full Scale: the fade is measured from the top of the scanner's range."),
                     tr("Film: from the clear film, in each color."),
                     tr("Gray: from the clear film's mean level, the same in each color."),
                 ),

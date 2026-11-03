@@ -19,6 +19,8 @@ TONE_PCT = (99.5, 50.0, 0.5)
 TONE_MIDTONE = 0.42
 #: Their contrast: 20 + (1 - range) * 30, held to 10..45, as a fraction of the S-curve.
 TONE_CONTRAST = (20.0, 30.0, 10.0, 45.0)
+#: Their brightness, -100 log2 of the display gamma that puts the median at TONE_MIDTONE, held to this range.
+TONE_BRIGHTNESS = (-25.0, 60.0)
 #: Their S-curve, 0.5 + tanh((x - 0.5) * 4) / (2 tanh 2), has this slope at the midtone.
 TONE_S_SLOPE = 2.0 / math.tanh(2.0)
 #: Below this density span a frame has no range to read.
@@ -64,13 +66,21 @@ def _display(density: float, positive_source: bool) -> float:
     return float(working_oetf_encode(np.array([[[linear] * 3]], dtype=np.float32))[0, 0, 0])
 
 
-def midtone_density(positive_source: bool) -> float:
-    """The output density at which the transfer curve shows TONE_MIDTONE: their midtone target."""
-    lo, hi = 0.0, 4.0
+def display_density(display: float, positive_source: bool) -> float:
+    """The output density at which the transfer curve shows a neutral at *display*."""
+    lo, hi = 0.0, 6.0
     for _ in range(60):
         mid = 0.5 * (lo + hi)
-        lo, hi = (mid, hi) if _display(mid, positive_source) > TONE_MIDTONE else (lo, mid)
+        lo, hi = (mid, hi) if _display(mid, positive_source) > display else (lo, mid)
     return 0.5 * (lo + hi)
+
+
+def midtone_density(leveled: float, positive_source: bool) -> float:
+    """Their midtone move on our transfer curve: the median, shown at *leveled* output density, takes
+    the display gamma toward TONE_MIDTONE that their brightness range allows."""
+    shown = min(max(_display(leveled, positive_source), 0.02), 0.98)
+    brightness = min(max(-100.0 * math.log2(math.log(TONE_MIDTONE) / math.log(shown)), TONE_BRIGHTNESS[0]), TONE_BRIGHTNESS[1])
+    return display_density(shown ** (2.0 ** (-brightness / 100.0)), positive_source)
 
 
 def tone_contrast(span: float) -> float:
@@ -85,8 +95,8 @@ def tone_contrast(span: float) -> float:
 
 
 def tone_values(points: tuple[float, float, float], positive_source: bool) -> dict[str, float]:
-    """Print Density and ISO-R Grade that put *points* through `tone_contrast` about the Grade
-    pivot and the median at `midtone_density`, held to the sliders' ranges."""
+    """Print Density and ISO-R Grade for *points*: `tone_contrast` about the Grade pivot with the
+    light end at white, then the median at `midtone_density`, held to the sliders' ranges."""
     from negpy.features.transparency.logic import TRANSFER_CONSTANTS
 
     dense, median, light = points
@@ -94,8 +104,9 @@ def tone_values(points: tuple[float, float, float], positive_source: bool) -> di
     lo, hi = float(EXPOSURE_CONSTANTS["iso_r_min"]), float(EXPOSURE_CONSTANTS["iso_r_max"])
     grade = min(max(float(TRANSFER_CONSTANTS["transfer_grade_ref"]) / tone_contrast(dense - light), lo), hi)
     contrast = float(TRANSFER_CONSTANTS["transfer_grade_ref"]) / grade
-    # D' = pivot + (D - offset - pivot) * contrast puts the median at the target.
-    offset = median - pivot - (midtone_density(positive_source) - pivot) / contrast
+    # D' = pivot + (D - offset - pivot) * contrast. Levels put the light end at 0.
+    target = midtone_density((median - light) * contrast, positive_source)
+    offset = median - pivot - (target - pivot) / contrast
     density = 1.0 - offset / (float(TRANSFER_CONSTANTS["transfer_density_stops"]) * math.log10(2.0))
     return {"density": min(max(density, 0.0), 2.0), "grade": grade}
 
