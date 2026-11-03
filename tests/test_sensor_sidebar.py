@@ -479,7 +479,7 @@ def test_tone_negpy_writes_the_sliders_and_off_gives_them_back_exactly():
     w, ctrl = _slide_sidebar()
     before = replace(ctrl.state.config.exposure, density=1.13, grade=97.0, auto_exposure=True)
     ctrl.state.config = replace(ctrl.state.config, exposure=before)
-    ctrl.state.last_metrics = {"fade_tone_points": (1.6, 0.9, 0.3)}
+    ctrl.state.last_metrics = {"fade_tone_points": (0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.6)}
     w.fade_ab_tone_btn.setCurrentIndex(w.fade_ab_tone_btn.findData("negpy"))
     written = ctrl.set_fade_tone.call_args.args[0]
     assert written.process.fade_ab_tone == "negpy"
