@@ -1615,7 +1615,7 @@
   "Moves every frame forward along the film to line it up with the pictures, as this transport cannot back up.": "Schiebt jedes Bild auf dem Film vorwärts, um es auf die Aufnahmen auszurichten, da dieser Transport nicht zurückfahren kann.",
   "Moves the black point: positive lifts the blacks, and negative makes them deeper.": "Verschiebt den Schwarzpunkt: Positiv hebt die Schwarztöne an, negativ macht sie tiefer.",
   "Moves the crop inside (positive) or outside (negative) the found edge.": "Verschiebt den Zuschnitt nach innen (positiv) oder außen (negativ) von der gefundenen Kante.",
-  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's; click Estimate again to use it.": "Verschiebt die Grautöne, die Schätzen liest, von der gewählten Grausuche zu der von NegativeConverter; klicke erneut auf Schätzen, um es anzuwenden.",
+  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's, and estimates again as you drag.": "Verschiebt die Grautöne, die Schätzen liest, von der gewählten Grausuche zu der von NegativeConverter und schätzt beim Ziehen neu.",
   "Moves the white point: positive brightens the print, and negative brings back highlights.": "Verschiebt den Weißpunkt: Positiv hellt den Abzug auf, negativ holt Lichter zurück.",
   "Moving the film to the next frame…": "Film wird zum nächsten Bild transportiert…",
   "Multi-Exposure and Multi-Pass are not available at {dpi} dpi.": "Mehrfachbelichtung und Mehrfachdurchgang sind bei {dpi} dpi nicht verfügbar.",

@@ -5,7 +5,16 @@ import numpy as np
 import pytest
 
 from fade_crossover_scene import CROSSOVER, REFERENCE, build_scene, estimate_grid, linear_fade, plustek, scan_image, scan_warm, warm_scene
-from negpy.features.process.fade import EstimateMethod, estimate_fade, gray_refs, nc_neutral_refs, neutral_axis_from_grid
+from negpy.features.process.fade import (
+    EstimateMethod,
+    blend_gray_readings,
+    estimate_fade,
+    estimate_fade_with,
+    gray_readings,
+    gray_refs,
+    nc_neutral_refs,
+    neutral_axis_from_grid,
+)
 from negpy.features.process.models import FadeABNeutrals, ProcessConfig
 
 
@@ -56,3 +65,17 @@ def test_no_sky_reads_a_frame_without_sky_sector_cells_as_negpy_does():
 def test_the_mix_defaults_to_negpy_s_reader():
     assert ProcessConfig().fade_neutrals_mix == 0.0
     assert ProcessConfig(fade_ab_neutrals="no_sky").fade_ab_neutrals is FadeABNeutrals.NO_SKY
+
+
+@pytest.mark.parametrize("neutrals", [FadeABNeutrals.NEGPY, FadeABNeutrals.NO_SKY])
+@pytest.mark.parametrize("mix", [0.0, 0.3, 1.0])
+def test_blending_both_readings_is_gray_refs(grid, neutrals, mix):
+    assert blend_gray_readings(gray_readings(grid, neutrals), mix) == gray_refs(grid, neutrals, mix)
+
+
+def test_a_live_estimate_keeps_the_survivals_and_leaves_out_the_crossover(grid):
+    reader = lambda g: gray_refs(g, FadeABNeutrals.NEGPY, 0.5)  # noqa: E731
+    full, live = estimate_fade_with(grid, reader), estimate_fade_with(grid, reader, crossover=False)
+    for method in EstimateMethod:
+        assert (live[method].red, live[method].green, live[method].blue) == (full[method].red, full[method].green, full[method].blue)
+        assert live[method].crossover is None

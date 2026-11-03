@@ -1615,7 +1615,7 @@
   "Moves every frame forward along the film to line it up with the pictures, as this transport cannot back up.": "이 이송 장치는 뒤로 갈 수 없으므로, 모든 프레임을 필름을 따라 앞으로 옮겨 사진에 맞춥니다.",
   "Moves the black point: positive lifts the blacks, and negative makes them deeper.": "검정점을 옮깁니다: 양수는 검정을 밝히고, 음수는 더 깊게 합니다.",
   "Moves the crop inside (positive) or outside (negative) the found edge.": "찾은 가장자리의 안쪽(양수) 또는 바깥쪽(음수)으로 자르기를 옮깁니다.",
-  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's; click Estimate again to use it.": "추정이 읽는 회색을 선택한 회색 찾기에서 NegativeConverter의 회색 쪽으로 옮깁니다. 적용하려면 추정을 다시 누르십시오.",
+  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's, and estimates again as you drag.": "추정이 읽는 회색을 선택한 회색 찾기에서 NegativeConverter의 회색 쪽으로 옮기고, 끄는 동안 다시 추정합니다.",
   "Moves the white point: positive brightens the print, and negative brings back highlights.": "흰점을 옮깁니다: 양수는 인화를 밝게 하고, 음수는 밝은 영역을 되살립니다.",
   "Moving the film to the next frame…": "필름을 다음 프레임으로 이송하는 중…",
   "Multi-Exposure and Multi-Pass are not available at {dpi} dpi.": "{dpi} dpi에서는 다중 노출과 멀티패스를 사용할 수 없습니다.",

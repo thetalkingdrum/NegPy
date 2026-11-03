@@ -185,6 +185,67 @@ def test_estimate_meters_the_render_grid_before_the_fade():
     np.testing.assert_allclose(metrics["transfer_grid"], grid, atol=1e-5)
 
 
+def test_the_estimate_grid_renders_again_only_when_more_than_the_mix_changes(monkeypatch):
+    """A Mix drag estimates on every tick; the grid it reads is one render."""
+    from dataclasses import replace
+
+    from negpy.desktop.workers import chart_fit
+    from negpy.features.process.models import ProcessMode
+    from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
+    from tests.test_fade_fixtures import clean_slide
+
+    renders = []
+    monkeypatch.setattr(chart_fit, "_grid_memo", None)
+    monkeypatch.setattr(chart_fit, "_render_estimate_grid", lambda source, config: renders.append(config) or np.zeros((4, 4, 3)))
+    image = np.ascontiguousarray(clean_slide(64, 3), dtype=np.float32)
+    cfg = replace(DEFAULT_WORKSPACE_CONFIG, process=replace(DEFAULT_WORKSPACE_CONFIG.process, process_mode=ProcessMode.E6))
+
+    def grid(**process):
+        return chart_fit.fade_estimate_grid(
+            chart_fit.ChartSource(image, replace(cfg, process=replace(cfg.process, **process)), "h", None, None, (), 1)
+        )
+
+    grid(fade_neutrals_mix=0.1)
+    grid(fade_neutrals_mix=0.6, fade_ratio_b=0.8, fade_white_r=-0.1, fade_white_space="w", fade_crossover_table=(0.0,) * 24)
+    assert len(renders) == 1
+    grid(fade_neutrals_mix=0.6, crosstalk_strength=0.5)
+    assert len(renders) == 2
+
+
+def test_what_estimate_stores_leaves_the_estimate_grid_alone(monkeypatch):
+    """The grid cache ignores the stored white, table and Mix, so they must not change the grid."""
+    from dataclasses import replace
+
+    from negpy.desktop.workers import chart_fit
+    from negpy.features.process.models import ProcessMode
+    from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
+    from tests.test_fade_fixtures import clean_slide
+
+    image = np.ascontiguousarray(clean_slide(64, 3), dtype=np.float32)
+    cfg = replace(DEFAULT_WORKSPACE_CONFIG, process=replace(DEFAULT_WORKSPACE_CONFIG.process, process_mode=ProcessMode.E6))
+    stored = replace(
+        cfg,
+        process=replace(
+            cfg.process,
+            fade_ratio_g=0.8,
+            fade_white_anchor=True,
+            fade_white_r=-0.2,
+            fade_white_g=-0.1,
+            fade_white_b=-0.3,
+            fade_crossover=0.5,
+            fade_crossover_table=(0.02,) * 24,
+            fade_neutrals_mix=0.7,
+            local_floors=(-1.9, -1.7, -1.5),
+            local_ceils=(-0.1, -0.2, -0.3),
+        ),
+    )
+    grids = []
+    for c in (cfg, stored):
+        monkeypatch.setattr(chart_fit, "_grid_memo", None)
+        grids.append(chart_fit.fade_estimate_grid(chart_fit.ChartSource(image, c, "h", None, None, (), 1)))
+    np.testing.assert_array_equal(grids[0], grids[1])
+
+
 def _record_axis(monkeypatch, confidences):
     """Stub the neutral-axis meter: each call returns the next confidence and logs its inputs."""
     from negpy.features.process import fade

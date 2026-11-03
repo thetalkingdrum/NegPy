@@ -527,8 +527,11 @@ def test_mix_shows_under_the_negpy_model_and_waits_on_a_negpy_family_reader():
 
 
 def test_the_mix_slider_stores_a_fraction_on_the_fade_card():
+    from unittest.mock import patch
+
     w, ctrl = _slide_sidebar()
-    w.fade_neutrals_mix_slider.valueCommitted.emit(30.0)
+    with patch("negpy.desktop.workers.chart_fit.fade_estimate_grid", return_value=None):
+        w.fade_neutrals_mix_slider.valueCommitted.emit(30.0)
     ctrl.set_roll_default.assert_called_with("fade", persist=True, readback_metrics=False, fade_neutrals_mix=0.3)
 
 
@@ -540,10 +543,46 @@ def test_estimate_reads_the_mix():
     w, _ = _slide_sidebar(fade_neutrals_mix=0.4)
     with (
         patch("negpy.desktop.workers.chart_fit.fade_estimate_grid", return_value=np.zeros((8, 8, 3), np.float32)),
-        patch.object(fade, "estimate_fade", wraps=fade.estimate_fade) as est,
+        patch.object(fade, "blend_gray_readings", wraps=fade.blend_gray_readings) as blend,
     ):
         w._run_estimate(False)
-    assert est.call_args.kwargs["mix"] == 0.4
+    assert blend.call_args.args[1] == 0.4
+
+
+def _mix_grid():
+    from fade_crossover_scene import CROSSOVER, build_scene, estimate_grid, scan_image
+
+    return estimate_grid(scan_image(CROSSOVER, build_scene(96, 72)))
+
+
+def test_a_mix_drag_estimates_live_and_reads_the_grays_once():
+    from unittest.mock import patch
+
+    from negpy.features.process import fade
+
+    w, ctrl = _slide_sidebar()
+    with (
+        patch("negpy.desktop.workers.chart_fit.fade_estimate_grid", return_value=_mix_grid()),
+        patch.object(fade, "gray_readings", wraps=fade.gray_readings) as readings,
+    ):
+        for v in (20.0, 40.0, 60.0):
+            w.fade_neutrals_mix_slider.valueChanged.emit(v)
+    assert readings.call_count == 1
+    calls = [c for c in ctrl.set_roll_default.call_args_list if "fade_ratio_b" in c.kwargs]
+    assert [c.kwargs["fade_neutrals_mix"] for c in calls] == [0.2, 0.4, 0.6]
+    assert all(c.kwargs["persist"] is False and "fade_crossover_table" not in c.kwargs for c in calls)
+    assert len({c.kwargs["fade_ratio_b"] for c in calls}) == 3
+
+
+def test_a_mix_release_stores_the_estimate_with_its_crossover():
+    from unittest.mock import patch
+
+    w, ctrl = _slide_sidebar()
+    with patch("negpy.desktop.workers.chart_fit.fade_estimate_grid", return_value=_mix_grid()):
+        w.fade_neutrals_mix_slider.valueCommitted.emit(50.0)
+    kwargs = ctrl.set_roll_default.call_args.kwargs
+    assert kwargs["persist"] is True and kwargs["fade_neutrals_mix"] == 0.5
+    assert "fade_crossover_table" in kwargs
 
 
 @pytest.mark.parametrize("tone, shown", [("off", False), ("nc", False), ("negpy", True), ("adaptive", True)])

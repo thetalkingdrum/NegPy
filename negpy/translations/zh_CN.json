@@ -1615,7 +1615,7 @@
   "Moves every frame forward along the film to line it up with the pictures, as this transport cannot back up.": "沿胶片向前移动所有帧，使其对准画面，因为此传输机构无法后退。",
   "Moves the black point: positive lifts the blacks, and negative makes them deeper.": "移动黑点：正值提亮黑色，负值使其更深。",
   "Moves the crop inside (positive) or outside (negative) the found edge.": "把裁切移到找到的边缘内侧（正）或外侧（负）。",
-  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's; click Estimate again to use it.": "把估算读取的灰色从所选的灰色查找移向 NegativeConverter 的灰色；再次单击估算即可使用。",
+  "Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's, and estimates again as you drag.": "把估算读取的灰色从所选的灰色查找移向 NegativeConverter 的灰色，并在拖动时重新估算。",
   "Moves the white point: positive brightens the print, and negative brings back highlights.": "移动白点：正值使照片变亮，负值找回高光。",
   "Moving the film to the next frame…": "正在将胶片移到下一帧…",
   "Multi-Exposure and Multi-Pass are not available at {dpi} dpi.": "{dpi} dpi 下无法使用多重曝光和多次扫描。",

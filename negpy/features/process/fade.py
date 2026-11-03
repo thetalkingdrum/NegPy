@@ -420,8 +420,26 @@ def gray_refs(grid: ImageBuffer, neutrals: str = FadeABNeutrals.NEGPY, mix: floa
         return neutral_axis_from_grid(grid, sky)
     if mix >= 1.0:
         return nc_neutral_refs(grid)
-    ours, why = neutral_axis_from_grid(grid, sky)
-    theirs, why_nc = nc_neutral_refs(grid)
+    return blend_gray_readings(gray_readings(grid, neutrals), mix)
+
+
+#: Both readings `gray_refs` blends: (the NegPy or No Sky reader's, NegativeConverter's), each (refs, reason).
+GrayReadings = tuple[tuple[Optional[NeutralAxisRefs], str], tuple[Optional[NeutralAxisRefs], str]]
+
+
+def gray_readings(grid: ImageBuffer, neutrals: str = FadeABNeutrals.NEGPY) -> GrayReadings:
+    """Both readers' grays on *grid*. They do not depend on Mix, so a Mix drag reads them once."""
+    return neutral_axis_from_grid(grid, neutrals != FadeABNeutrals.NO_SKY), nc_neutral_refs(grid)
+
+
+def blend_gray_readings(readings: GrayReadings, mix: float) -> tuple[Optional[NeutralAxisRefs], str]:
+    """`gray_refs` from *readings*: each ref moved in log by *mix*, or the one reader that found grays."""
+    (ours, why), (theirs, why_nc) = readings
+    mix = min(max(float(mix), 0.0), 1.0)
+    if mix <= 0.0:
+        return ours, why
+    if mix >= 1.0:
+        return theirs, why_nc
     if ours is None or theirs is None:
         return (ours, why) if theirs is None else (theirs, why_nc)
     return _blend_refs(ours, theirs, mix), ""
@@ -452,8 +470,10 @@ def estimate_fade_with(
     white_anchor: bool = False,
     camera_raw: bool = False,
     white_space: str = "",
+    crossover: bool = True,
 ) -> dict[EstimateMethod, FadeEstimate]:
-    """`estimate_fade` with the gray reader *reader*, which takes the grid the grays are read on."""
+    """`estimate_fade` with the gray reader *reader*, which takes the grid the grays are read on.
+    *crossover* False leaves out the crossover tables, the slowest step, for a live slider."""
     white = measure_white(grid)
     if white_anchor and white is None:
         return {m: FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame.")) for m in EstimateMethod}
@@ -472,7 +492,7 @@ def estimate_fade_with(
             lo, hi = RED_SURVIVAL_BOUNDS
             red = min(max(1.0 / max(g, b, 1.0), lo), hi)
         table = None
-        if red is not None:
+        if red is not None and crossover:
             density = survival_density(red, g, b, white, white_anchor, camera_raw, white_space)
             # The midtone the survivals were fit on, through the same fade: the table's zero.
             mid = np.asarray(refs[0], dtype=np.float32).reshape(1, 1, 3)
