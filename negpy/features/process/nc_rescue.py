@@ -1,11 +1,8 @@
-"""NegativeConverter's expired-film rescue, color table and tone curve, for an A/B against Fade
-Restoration. A faithful port of negative2positive/src/pipeline/expiredRescue.js (MIT, Copyright (c)
-2025 lex; NOTICE.md): `analyzeExpiredFilm`, `offsetsFromBands`, `shapeCubic`,
-`defaultExpiredRescueParams`, `buildExpiredRescueStages` and `applyExpiredTone`, on display values,
-and the uneven-fog part of the spatial stage: app/expiredRescueOpenCv.js's sample and maps, with
-negpy_core in place of OpenCV.js, then `fitFloor`, `fitFogSurface`, `surfaceRange`,
-`fitExpiredSpatial` and `applyExpiredSpatial`. It keeps the source's arithmetic and its artifacts;
-no semantic anchors and no local contrast."""
+"""NegativeConverter's expired-film rescue color table, for an A/B against Fade Restoration. A
+faithful port of negative2positive/src/pipeline/expiredRescue.js (MIT, Copyright (c) 2025 lex;
+NOTICE.md): `analyzeExpiredFilm`, `offsetsFromBands`, `shapeCubic`, `buildExpiredRescueStages` and
+`applyExpiredTone` with the identity tone, on display values. It keeps the source's arithmetic and
+its artifacts; no semantic anchors, no tone curve, no spatial stage."""
 
 from __future__ import annotations
 
@@ -23,7 +20,6 @@ MIN_BAND_SHARE = 0.004
 NEUTRAL_CHROMA = 0.12
 CLUSTER_RADIUS = 0.06
 MIN_SAMPLES = 400
-TARGET_MIDTONE = 0.42
 OFFSET_BINS = 64
 RESCUE_LUMA = (0.2126, 0.7152, 0.0722)
 MAX_SAMPLES = 200000
@@ -89,20 +85,13 @@ def _bounds(h: int, w: int) -> tuple[int, int, int, int]:
     return inset, inset, max(1, w - inset * 2), max(1, h - inset * 2)
 
 
-def analyze(display: np.ndarray, spatial: Optional["SpatialStage"] = None) -> Optional[Analysis]:
-    """`analyzeExpiredFilm` on a display-encoded (H, W, 3) positive in 0..1, read as their 16-bit plane;
-    with *spatial*, each sample is flattened first, as `options.spatial` does."""
+def analyze(display: np.ndarray) -> Optional[Analysis]:
+    """`analyzeExpiredFilm` on a display-encoded (H, W, 3) positive in 0..1, read as their 16-bit plane."""
     h, w = display.shape[:2]
     left, top, bw, bh = _bounds(h, w)
     stride = max(1, math.ceil(math.sqrt((bw * bh) / MAX_SAMPLES)))
     plane = _plane16(display)
     picked = plane[top : top + bh : stride, left : left + bw : stride] * (1.0 / 65535.0)
-    if spatial is not None:
-        ys = np.arange(top, top + bh, stride)
-        xs = np.arange(left, left + bw, stride)
-        u = np.broadcast_to(((xs + 0.5) / w)[None, :], picked.shape[:2])
-        v = np.broadcast_to(((ys + 0.5) / h)[:, None], picked.shape[:2])
-        picked = apply_spatial(spatial, (picked * 255.0).astype(np.float32), u, v).astype(np.float64) / 255.0
     picked = picked.reshape(-1, 3)
     count = len(picked)
     if count < MIN_SAMPLES:
@@ -241,15 +230,6 @@ class ToneParams(NamedTuple):
 IDENTITY_TONE = ToneParams(0.0, 0.0, 0.0)
 
 
-def default_tone(analysis: Analysis) -> ToneParams:
-    """`defaultExpiredRescueParams`: levels at 100, brightness toward a TARGET_MIDTONE midtone, contrast from the range."""
-    median = _clamp(analysis.leveled_median, 0.02, 0.98)
-    gamma_needed = math.log(TARGET_MIDTONE) / math.log(median)
-    brightness = _js_round(_clamp(-100 * math.log2(gamma_needed), -25, 60))
-    contrast = _js_round(_clamp(20 + (1 - (analysis.lum_high - analysis.lum_low)) * 30, 10, 45))
-    return ToneParams(100.0, brightness, contrast)
-
-
 def _soft_contrast(x: float, strength: float) -> float:
     s = 4
     shaped = 0.5 + math.tanh((x - 0.5) * s) / (2 * math.tanh(s / 2))
@@ -297,257 +277,32 @@ def apply_tone(values255: np.ndarray, offsets: Optional[np.ndarray], tone: np.nd
     return np.stack([lerp(r), lerp(g), lerp(b)], axis=1).reshape(np.shape(values255))
 
 
-def rescue(display: np.ndarray, colour: bool, tone: bool, fog: bool = False) -> np.ndarray:
-    """Their stages on a display-encoded (H, W, 3) positive in 0..1: the uneven-fog stage at 100 % when
-    *fog*, then the color table with Neutralise and Crossover at 100 % when *colour* and the default
-    tone curve when *tone*, both measured on the flattened frame. Unchanged with nothing to do."""
-    spatial = fog_stage(display) if fog else None
-    px = np.asarray(display, dtype=np.float64)[..., :3] * 255.0
-    if spatial is not None:
-        h, w = display.shape[:2]
-        u = np.broadcast_to(((np.arange(w) + 0.5) / w)[None, :], (h, w))
-        v = np.broadcast_to(((np.arange(h) + 0.5) / h)[:, None], (h, w))
-        px = apply_spatial(spatial, px.astype(np.float32), u, v).astype(np.float64)
-    analysis = analyze(display, spatial) if colour or tone else None
+def rescue(display: np.ndarray) -> np.ndarray:
+    """Their color table with Neutralise and Crossover at 100 % on a display-encoded (H, W, 3) positive
+    in 0..1. Unchanged with nothing to read."""
+    analysis = analyze(display)
     if analysis is None:
-        return display if spatial is None else (px / 255.0).astype(np.float32)
-    offsets = offsets_from_bands(analysis) if colour else None
-    curve = tone_curve(analysis, default_tone(analysis) if tone else IDENTITY_TONE)
-    out = apply_tone(px, offsets, curve) / 255.0
+        return display
+    px = np.asarray(display, dtype=np.float64)[..., :3] * 255.0
+    out = apply_tone(px, offsets_from_bands(analysis), tone_curve(analysis, IDENTITY_TONE)) / 255.0
     return out.astype(np.float32)
 
 
-# Uneven fog: the spatial stage's fog part.
-
-#: The area-averaged sample's width and the grid's, as `measureExpiredSpatialMaps` defaults them.
-FOG_WORKING_WIDTH = 160
-FOG_GRID_WIDTH = 32
-#: Erosion kernel width and blur sigma, as fractions of the sample's width.
-FOG_KERNEL = 0.22
-FOG_BLUR = 0.04
-FOG_SURFACE_LIMIT = 0.15
-FOG_SURFACE_PLAUSIBLE = 0.25
-
-
-class FogMaps(NamedTuple):
-    """`measureExpiredSpatialMapsFromSample`'s `low` grids (float32), grid size and placement."""
-
-    low: tuple[np.ndarray, np.ndarray, np.ndarray]
-    grid_width: int
-    grid_height: int
-    fraction: tuple[float, float, float, float]
-
-
-class SpatialStage(NamedTuple):
-    """`buildExpiredSpatialStage` for the fog alone: float32 coefficients and offsets, the fraction."""
-
-    coefficients: np.ndarray
-    offset: np.ndarray
-    fraction: tuple[float, float, float, float]
-
-
-def _odd(v: float) -> int:
-    n = max(3, int(_js_round(v)))
-    return n if n % 2 else n + 1
-
-
-def fog_sample(display: np.ndarray) -> tuple[np.ndarray, tuple[float, float, float, float]]:
-    """(uint8 RGB, fraction): `createBoundsSample` and `downsampleBoundsRows` of the 16-bit plane at
-    FOG_WORKING_WIDTH, and the region's placement in the frame."""
-    h, w = display.shape[:2]
-    left, top, bw, bh = _bounds(h, w)
-    width = FOG_WORKING_WIDTH
-    height = max(8, int(_js_round(bh * (width / bw))))
-    plane = _plane16(display)
-    sy0 = top + np.floor(np.arange(height) / height * bh).astype(np.int64)
-    sy1 = np.maximum(sy0 + 1, top + np.floor((np.arange(height) + 1) / height * bh).astype(np.int64))
-    sx0 = left + np.floor(np.arange(width) / width * bw).astype(np.int64)
-    sx1 = np.maximum(sx0 + 1, left + np.floor((np.arange(width) + 1) / width * bw).astype(np.int64))
-    # Exact integer block sums through a summed-area table.
-    sat = np.zeros((h + 1, w + 1, 3), dtype=np.int64)
-    sat[1:, 1:] = plane.astype(np.int64).cumsum(axis=0).cumsum(axis=1)
-    y0, y1, x0, x1 = sy0[:, None], sy1[:, None], sx0[None, :], sx1[None, :]
-    total = sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
-    n = ((y1 - y0) * (x1 - x0))[..., None]
-    # A Uint8ClampedArray store rounds half to even.
-    rgb = np.clip(np.round((total / n) * (1.0 / 257.0)), 0, 255).astype(np.uint8)
-    fraction = (left / w, top / h, bw / w, bh / h)
-    return rgb, fraction
-
-
-def fog_maps(display: np.ndarray) -> FogMaps:
-    """The OpenCV half: each channel of the sample eroded by an ellipse FOG_KERNEL of its width, blurred
-    with sigma FOG_BLUR of it (replicated border) and area-resized to the FOG_GRID_WIDTH grid."""
-    import negpy_core
-
-    rgb, fraction = fog_sample(display)
-    height, width = rgb.shape[:2]
-    grid_h = max(3, int(_js_round(FOG_GRID_WIDTH * height / width)))
-    f32 = (rgb.astype(np.float64) * (1.0 / 255.0)).astype(np.float32)
-    k = _odd(width * FOG_KERNEL)
-    kernel = negpy_core.ellipse_kernel((k, k))
-    low = []
-    for c in range(3):
-        eroded = negpy_core.morphology_ex(np.ascontiguousarray(f32[..., c]), negpy_core.MORPH_ERODE, kernel)
-        blurred = negpy_core.gaussian_blur(np.ascontiguousarray(eroded), (0, 0), width * FOG_BLUR, 0.0, 1)
-        low.append(np.asarray(negpy_core.resize_area(np.ascontiguousarray(blurred), (FOG_GRID_WIDTH, grid_h)), dtype=np.float32))
-    return FogMaps((low[0], low[1], low[2]), FOG_GRID_WIDTH, grid_h, fraction)
-
-
-def _quadratic(c, u, v):
-    return c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * v * v + c[5] * u * v
-
-
-def _solve_least_squares(rows: np.ndarray, values: np.ndarray, weights: np.ndarray, dof: int) -> Optional[list[float]]:
-    """`solveLeastSquares`: the normal equations summed in the source's order, a 1e-7 ridge and
-    Gauss-Jordan elimination with partial pivoting."""
-    live = weights > 0
-    r, val, wt = rows[live], values[live], weights[live]
-    m = [[0.0] * (dof + 1) for _ in range(dof)]
-    for p in range(dof):
-        rp = r[:, p] * wt
-        for q in range(dof):
-            m[p][q] = float(np.cumsum(rp * r[:, q])[-1]) if len(rp) else 0.0
-        m[p][dof] = float(np.cumsum(rp * val)[-1]) if len(rp) else 0.0
-    for p in range(dof):
-        m[p][p] += 1e-7
-    for col in range(dof):
-        pivot = col
-        for rr in range(col + 1, dof):
-            if abs(m[rr][col]) > abs(m[pivot][col]):
-                pivot = rr
-        if abs(m[pivot][col]) < 1e-12:
-            return None
-        if pivot != col:
-            m[pivot], m[col] = m[col], m[pivot]
-        for rr in range(dof):
-            if rr == col:
-                continue
-            factor = m[rr][col] / m[col][col]
-            if not factor:
-                continue
-            for q in range(col, dof + 1):
-                m[rr][q] -= factor * m[col][q]
-    out = [0.0] * 6
-    for p in range(dof):
-        out[p] = m[p][dof] / m[p][p]
-    return out if all(math.isfinite(v) for v in out) else None
-
-
-def _fit_floor(values: np.ndarray, us: np.ndarray, vs: np.ndarray, rows: np.ndarray, dof: int) -> Optional[list[float]]:
-    """`fitFloor`: an asymmetric robust fit to a grid of local minima, cells above it lose weight fast."""
-    median = float(np.sort(values)[len(values) >> 1])
-    weights = np.where(values <= median, 1.0, 0.25)
-    coefficients = _solve_least_squares(rows, values, weights, dof)
-    if coefficients is None:
-        return None
-    for _ in range(5):
-        residual = values - _quadratic(coefficients, us, vs)
-        scaled = np.where(residual > 0, residual / 0.012, residual / 0.04)
-        weights = 1.0 / (1.0 + scaled * scaled)
-        nxt = _solve_least_squares(rows, values, weights, dof)
-        if nxt is None:
-            break
-        coefficients = nxt
-    return coefficients
-
-
-def _surface_range(c, fraction) -> tuple[float, float]:
-    left, top, width, height = fraction
-    t = np.arange(9) / 8
-    u = (left + t * width)[None, :]
-    v = (top + t * height)[:, None]
-    value = _quadratic(c, u, v)
-    return float(value.min()), float(value.max())
-
-
-def _fit_fog_surface(values, us, vs, fraction) -> Optional[list[float]]:
-    rows = np.stack([np.ones_like(us), us, vs, us * us, vs * vs, us * vs], axis=1)
-    for dof in (6, 3):
-        fit = _fit_floor(values, us, vs, rows, dof)
-        if fit is None:
-            continue
-        lo, hi = _surface_range(fit, fraction)
-        if hi - lo <= FOG_SURFACE_PLAUSIBLE:
-            return fit
-    return None
-
-
-def fit_spatial(maps: FogMaps) -> dict:
-    """`fitExpiredSpatial`'s fog part: per channel, the rounded coefficients, offset and amplitude."""
-    gw, gh = maps.grid_width, maps.grid_height
-    left, top, width, height = maps.fraction
-    i = np.tile(np.arange(gw), gh)
-    j = np.repeat(np.arange(gh), gw)
-    # Held in Float32Arrays.
-    us = (left + ((i + 0.5) / gw) * width).astype(np.float32).astype(np.float64)
-    vs = (top + ((j + 0.5) / gh) * height).astype(np.float32).astype(np.float64)
-    coefficients, offset, amplitude = [], [], []
-    for c in range(3):
-        grid = np.asarray(maps.low[c], dtype=np.float32).reshape(-1).astype(np.float64)
-        fit = _fit_fog_surface(grid, us, vs, maps.fraction) if gw * gh >= 12 else None
-        if fit is None:
-            fit = [float(np.cumsum(grid)[-1]) / len(grid), 0.0, 0.0, 0.0, 0.0, 0.0]
-        lo, hi = _surface_range(fit, maps.fraction)
-        span = hi - lo
-        if not span >= 0.005:
-            fit = [lo, 0.0, 0.0, 0.0, 0.0, 0.0]
-        coefficients.append([_round4(v) for v in fit])
-        offset.append(_round4(lo))
-        amplitude.append(_round4(max(0.0, span if span >= 0.005 else 0.0)))
-    fraction = tuple(_round4(v) for v in maps.fraction)
-    return {"coefficients": coefficients, "offset": offset, "amplitude": amplitude, "fraction": fraction}
-
-
-def spatial_stage(spatial: dict) -> Optional[SpatialStage]:
-    """`sanitizeExpiredSpatial` then `buildExpiredSpatialStage` at Uneven fog 100 % and no local
-    contrast; None when no channel has an amplitude."""
-    coefficients = np.clip(np.asarray(spatial["coefficients"], dtype=np.float64), -20, 20)
-    offset = np.clip(np.asarray(spatial["offset"], dtype=np.float64), -1, 2)
-    amplitude = np.clip(np.asarray(spatial["amplitude"], dtype=np.float64), 0, 1)
-    if not (amplitude > 0).any():
-        return None
-    return SpatialStage(coefficients.astype(np.float32), offset.astype(np.float32), spatial["fraction"])
-
-
-def fog_stage(display: np.ndarray) -> Optional[SpatialStage]:
-    """The fog stage their app builds for a display-encoded positive, or None with no fog."""
-    return spatial_stage(fit_spatial(fog_maps(display)))
-
-
-def apply_spatial(stage: SpatialStage, px: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """`applyExpiredSpatial`'s fog part on float32 values in 0..255 at frame coordinates *u*, *v*."""
-    left, top, width, height = stage.fraction
-    u = np.clip(u, left, left + width)
-    v = np.clip(v, top, top + height)
-    out = np.array(px, dtype=np.float32, copy=True)
-    for ch in range(3):
-        c = stage.coefficients[ch].astype(np.float64)
-        fog = np.clip(_quadratic(c, u, v) - float(stage.offset[ch]), 0.0, FOG_SURFACE_LIMIT) * 255.0
-        value = (out[..., ch].astype(np.float64) - fog) / (1.0 - fog / 255.0)
-        out[..., ch] = np.where(fog > 0, np.maximum(value, 0.0), out[..., ch]).astype(np.float32)
-    return out
-
-
-def nc_stage_flags(process) -> tuple[bool, bool, bool]:
-    """(colour, tone, fog): the NegativeConverter stages a slide render runs (`FadeABModel`,
-    `FadeABTone`, `FadeABFog`)."""
-    from negpy.features.process.models import FadeABFog, FadeABModel, FadeABTone
+def nc_stage_active(process) -> bool:
+    """Whether a slide render runs their color table (`FadeABModel.NC`)."""
+    from negpy.features.process.models import FadeABModel
     from negpy.features.process.path import RenderPath, render_path
 
-    if render_path(process) is RenderPath.PRINT:
-        return False, False, False
-    return process.fade_ab_model == FadeABModel.NC, process.fade_ab_tone == FadeABTone.NC, process.fade_ab_fog == FadeABFog.NC
+    return render_path(process) is not RenderPath.PRINT and process.fade_ab_model == FadeABModel.NC
 
 
 def apply_nc_stage(img_linear: np.ndarray, process) -> np.ndarray:
-    """Their stages on a scene-linear working-space positive, read and written through the working TRC,
-    as their app reads a display-encoded positive. Unchanged when no stage acts."""
+    """Their color table on a scene-linear working-space positive, read and written through the working
+    TRC, as their app reads a display-encoded positive. Unchanged when it does not act."""
     from negpy.kernel.image.logic import working_oetf_decode, working_oetf_encode
 
-    colour, tone, fog = nc_stage_flags(process)
-    if not (colour or tone or fog):
+    if not nc_stage_active(process):
         return img_linear
     display = np.clip(working_oetf_encode(np.ascontiguousarray(img_linear[..., :3], dtype=np.float32)), 0.0, 1.0)
-    out = rescue(display, colour, tone, fog)
+    out = rescue(display)
     return np.ascontiguousarray(working_oetf_decode(np.ascontiguousarray(out, dtype=np.float32)), dtype=np.float32)

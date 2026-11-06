@@ -48,6 +48,9 @@ KEY_RENAMES: Dict[str, str] = {
 DROPPED_KEYS: frozenset[str] = frozenset(
     {
         "flare",  # veiling-glare floor
+        "fade_ab_tone",  # Fade Compare Tone choice, one Tone slider left
+        "fade_ab_fog",  # Fade Compare uneven fog
+        "fade_ab_neutrals",  # Fade Compare gray finder, one Neutrals slider left
         "ir_inpaint_radius",  # IR stroke synthesis, replaced by score-weighted fill
         "ir_method",  # one IR reconstruction method left
         "auto_cast_removal",  # cast removal became always-on
@@ -245,6 +248,13 @@ def migrate_flat_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
     if "export_fmt" in data:
         data["export_fmt"] = migrate_export_fmt(str(data["export_fmt"]))
+
+    # NC's gray finder alone is the Neutrals slider at its end.
+    if str(data.get("fade_ab_neutrals", "")) == "nc":
+        data["fade_neutrals_mix"] = 1.0
+    # A Tone strength with no Tone choice that wrote the sliders did nothing; under the one Tone slider it would.
+    if "fade_ab_tone" in data and str(data["fade_ab_tone"]) not in ("negpy", "adaptive"):
+        data["fade_tone_strength"] = 0.0
 
     for key in DROPPED_KEYS:
         data.pop(key, None)

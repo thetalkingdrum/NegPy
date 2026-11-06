@@ -266,3 +266,22 @@ def test_roll_pushes_the_strength_and_never_the_table():
     fields = ROLL_DEFAULT_FIELDS["fade"][1]
     assert "fade_crossover" in fields
     assert "fade_crossover_table" not in fields and "fade_crossover_space" not in fields
+
+
+def test_a_survival_set_by_hand_keeps_the_estimates_grays():
+    """With the Estimate's survivals the table is the Estimate's own; with NC's grays it keeps their zero,
+    where a render's measurement would take NegPy's."""
+    from fade_crossover_scene import estimate_grid
+
+    from negpy.features.process.fade import estimate_fade, gray_refs, survival_crossover
+
+    _, image, _ = _case("crossover")
+    grid = estimate_grid(image)
+    for mix in (0.0, 1.0):
+        est = estimate_fade(grid, mix=mix)
+        table = survival_crossover(grid, lambda g, m=mix: gray_refs(g, m), (est.red, est.green, est.blue))
+        assert table == est.crossover
+    lowered = (0.8 * est.red, est.green, est.blue)
+    nc = survival_crossover(grid, lambda g: gray_refs(g, 1.0), lowered)
+    negpy = survival_crossover(grid, lambda g: gray_refs(g, 0.0), lowered)
+    assert nc[1:] == negpy[1:] and nc[0] != negpy[0]

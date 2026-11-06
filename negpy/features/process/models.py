@@ -29,15 +29,6 @@ class ProcessMode(StrEnum):
 _LEGACY_MODES = {"C41": ProcessMode.C41, "B&W": ProcessMode.BW, "E-6": ProcessMode.E6}
 
 
-class FadeABNeutrals(StrEnum):
-    """Which cells Fade Estimate reads as gray: NegPy's neutral-axis meter, the same without its sky
-    sector, or NegativeConverter's soft neutral weight with a mean-shift per density band."""
-
-    NEGPY = "negpy"
-    NO_SKY = "no_sky"
-    NC = "nc"
-
-
 class FadeABModel(StrEnum):
     """The fade color model: the survivals, then the density-space crossover table at Crossover's
     strength, or NegativeConverter's display-space color table on the positive (survivals and Remove
@@ -54,26 +45,6 @@ class FadeABScannerZero(StrEnum):
     FULL_SCALE = "full_scale"
     CLEAR_FILM = "clear_film"
     CLEAR_NEUTRAL = "clear_neutral"
-
-
-class FadeABTone(StrEnum):
-    """Off, NegativeConverter's shared tone curve (levels, brightness, S-curve) on the positive,
-    NegPy's (their curve read in density and written into the slide's tone sliders), or Adaptive (the
-    frame's own density span and median written into the same sliders)."""
-
-    OFF = "off"
-    NC = "nc"
-    NEGPY = "negpy"
-    ADAPTIVE = "adaptive"
-
-
-class FadeABFog(StrEnum):
-    """Uneven fog: off, NegativeConverter's display-space floor surface on the positive, or NegPy's
-    shared density surface baked out of the linear source."""
-
-    OFF = "off"
-    NC = "nc"
-    NEGPY = "negpy"
 
 
 class SensorUnmix(StrEnum):
@@ -266,6 +237,8 @@ class ProcessConfig:
     # (`fade.unmix_with_fade`). The ratios describe one slide: green and
     # blue relative to red, and red's own survival. All three at 1.0 is the identity.
     fade_ratio_r: float = 1.0
+    # Density (D) added to every channel after the fade: Auto Red's even shift that keeps the median where it printed.
+    fade_density_shift: float = 0.0
     fade_ratio_g: float = 1.0
     fade_ratio_b: float = 1.0
     # Remove Stain (White Anchor): restore density above each channel's own white, (D - w) / a, for a slide whose
@@ -285,17 +258,13 @@ class ProcessConfig:
     fade_crossover_table: Optional[tuple] = None
     fade_crossover_space: str = ""
     # A/B against NegativeConverter's expired-film rescue (experiment). NegPy's own at the defaults.
-    fade_ab_neutrals: FadeABNeutrals = FadeABNeutrals.NEGPY
-    # Moves Estimate's grays from NegPy's (or No Sky's) reader at 0 to NegativeConverter's at 1.
+    # Neutrals: moves Estimate's grays from NegPy's reader at 0 to NegativeConverter's at 1.
     fade_neutrals_mix: float = 0.0
     fade_ab_model: FadeABModel = FadeABModel.NEGPY
-    fade_ab_tone: FadeABTone = FadeABTone.OFF
     fade_ab_scanner_zero: FadeABScannerZero = FadeABScannerZero.FULL_SCALE
-    fade_ab_fog: FadeABFog = FadeABFog.OFF
-    # How far Tone NegPy and Adaptive move Print Density and ISO-R Grade from the saved values (0) to
-    # the fitted ones (1).
-    fade_tone_strength: float = 1.0
-    # The tone sliders' values before Tone NegPy or Adaptive wrote its own, restored when Tone goes back to Off.
+    # How far Tone moves Print Density and ISO-R Grade from the saved values (0) to the fitted ones (1).
+    fade_tone_strength: float = 0.0
+    # The tone sliders' values before Tone wrote its own, restored when Tone goes back to 0.
     fade_tone_saved: Optional[tuple] = None
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
@@ -324,11 +293,8 @@ class ProcessConfig:
         object.__setattr__(self, "process_mode", ProcessMode(self.process_mode))
         object.__setattr__(self, "source_encoding", SourceEncoding(self.source_encoding))
         object.__setattr__(self, "sensor_unmix", SensorUnmix(self.sensor_unmix))
-        object.__setattr__(self, "fade_ab_neutrals", FadeABNeutrals(self.fade_ab_neutrals))
         object.__setattr__(self, "fade_ab_model", FadeABModel(migrate_fade_model(self.fade_ab_model)))
-        object.__setattr__(self, "fade_ab_tone", FadeABTone(self.fade_ab_tone))
         object.__setattr__(self, "fade_ab_scanner_zero", FadeABScannerZero(self.fade_ab_scanner_zero))
-        object.__setattr__(self, "fade_ab_fog", FadeABFog(self.fade_ab_fog))
         if self.fade_tone_saved is not None:
             object.__setattr__(self, "fade_tone_saved", tuple(self.fade_tone_saved))
         # Same reach for renamed crosstalk profiles: roll defaults overlay this field

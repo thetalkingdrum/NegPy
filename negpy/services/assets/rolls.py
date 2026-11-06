@@ -687,6 +687,7 @@ ROLL_DEFAULT_FIELDS: Dict[str, tuple] = {
         "process",
         (
             "fade_ratio_r",
+            "fade_density_shift",
             "fade_ratio_g",
             "fade_ratio_b",
             "fade_white_anchor",
@@ -695,13 +696,10 @@ ROLL_DEFAULT_FIELDS: Dict[str, tuple] = {
             "fade_white_b",
             "fade_white_space",
             "fade_crossover",
-            "fade_ab_neutrals",
             "fade_neutrals_mix",
             "fade_ab_model",
-            "fade_ab_tone",
             "fade_tone_strength",
             "fade_ab_scanner_zero",
-            "fade_ab_fog",
         ),
     ),
     # How the roll's camera RAWs decode: white balance, demosaic and highlight recovery.
@@ -778,14 +776,12 @@ def _without_decode_white(fields: Dict[str, Any]) -> Dict[str, Any]:
 # Fade card fields newer than some rolls' Fade defaults, at their ProcessConfig defaults. A roll that
 # holds Fade defaults without them means these values, or every frame would read as diverged.
 LATE_FADE_DEFAULTS = {
+    "fade_density_shift": 0.0,
     "fade_crossover": 0.0,
-    "fade_ab_neutrals": "negpy",
     "fade_neutrals_mix": 0.0,
     "fade_ab_model": "negpy",
-    "fade_ab_tone": "off",
-    "fade_tone_strength": 1.0,
+    "fade_tone_strength": 0.0,
     "fade_ab_scanner_zero": "full_scale",
-    "fade_ab_fog": "off",
 }
 
 

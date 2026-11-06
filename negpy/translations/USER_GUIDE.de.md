@@ -337,7 +337,7 @@ Für eine Kamera mit Schmalbandlicht, die von jedem Bild drei Aufnahmen macht: R
 
 Klicke mit der rechten Maustaste auf eine Hälfte für **Teilung für dieses Bild anpassen…** und **Teilung auf Rollenstandard zurücksetzen**. Wenn du Halbformat ausschaltest, bleiben bearbeitete Hälften als **Diptychon** nebeneinander. Schalte es wieder ein, um sie zu bearbeiten.
 
-<!-- panel:sensor src:c98695dd -->
+<!-- panel:sensor src:d352cde7 -->
 ### 10.3 Kalibrierung: Farben deines Scan-Aufbaus
 
 Korrigiert Farbfehler, die von Lichtquelle, Kamera und Film kommen.
@@ -362,10 +362,11 @@ Gibt einem ausgeblichenen Dia seine Farbstoffschichten zurück.
 
 *   **Rot-Erhalt**: wie viel roter Farbstoff übrig ist. Senke den Wert, bis der Kontrast zurückkommt.
 *   **Grün-Erhalt** / **Blau-Erhalt**: dasselbe für Grün und Blau, im Vergleich zu Rot.
-*   **Schleier entfernen**: macht gelb gewordene klare Bereiche weiß und führt Schätzen aus. Probiere es, wenn Schätzen sein Symbol gelb-orange färbt.
-*   **Schätzen**: stellt die Regler aus den Grautönen dieses Bildes ein. **Mitteltöne** passt zu einem stark ausgeblichenen Dia. **Grauumfang** passt zu einer leichten Ausbleichung mit tiefen Schatten.
+*   **Schleier entfernen**: macht gelb gewordene klare Bereiche weiß und führt Schätzen erneut aus, beim Ein- und beim Ausschalten. Probiere es, wenn Schätzen sein Symbol gelb-orange färbt.
+*   **Schätzen**: stellt die Regler aus den mittleren Grautönen dieses Bildes ein.
+*   **Neutraltöne**: liest die Grautöne nach Tonbändern statt mit der Grausuche und schätzt beim Ziehen neu.
 *   **Crossover** (Farbmodell **NegPy**): entfernt eine Farbverschiebung, die sich von den Schatten zu den Lichtern ändert. Nach Schätzen verfügbar.
-*   **Vergleichen**: A/B-Auswahlen gegen NegativeConverter (**NC**). **Mischung** verschiebt die Grautöne zu denen von NC; **Tonstärke** legt fest, wie weit Ton deine Regler bewegt.
+*   **Vergleichen**: A/B-Auswahlen gegen NegativeConverter (**NC**). **Ton** stellt Abzugsdichte und Gradation ein. **Auto-Rot** setzt Rot-Erhalt aus dem Umfang des Bildes.
 
 <!-- panel:process src:b1fdce87 -->
 ### 10.5 Messung: Negativ → Positiv

@@ -9,15 +9,14 @@ from negpy.features.exposure.normalization import prefilter_log_grid
 from negpy.features.process.fade import (
     RATIO_BOUNDS,
     SPREAD_FLOOR,
-    EstimateMethod,
     estimate_fade,
     fade_ratios_from_neutral_axis,
 )
 
 
 def _ratios(image: np.ndarray) -> tuple[float, float, str]:
-    """Gray Range's (green, blue, reason) on the meter grid of a linear capture."""
-    est = estimate_fade(prefilter_log_grid(image, None, 0.0))[EstimateMethod.SPREAD]
+    """Estimate's (green, blue, reason) on the meter grid of a linear capture."""
+    est = estimate_fade(prefilter_log_grid(image, None, 0.0))
     return est.green, est.blue, est.reason
 
 
@@ -123,25 +122,20 @@ def test_no_neutral_axis_found_fails_closed():
     assert reason
 
 
-def test_both_methods_recover_a_pure_fade_and_set_red():
-    """On a pure fade both methods read the same ratios and put the best-kept layer at 1.0."""
+def test_estimate_recovers_a_pure_fade_and_sets_red():
+    """On a pure fade Estimate reads the ratios and puts the best-kept layer at 1.0."""
     image = _synthetic_neutral_slide(1.4, 1.2, ratio_r=0.7)
-    estimates = estimate_fade(prefilter_log_grid(image, None, 0.0))
-    midtone, spread = estimates[EstimateMethod.MIDTONE], estimates[EstimateMethod.SPREAD]
-    for est in (midtone, spread):
-        assert est.reason == ""
-        assert abs(est.green - 1.4) < 2e-2 and abs(est.blue - 1.2) < 2e-2
-    for est in (midtone, spread):
-        assert abs(est.red - 1.0 / est.green) < 1e-9
+    est = estimate_fade(prefilter_log_grid(image, None, 0.0))
+    assert est.reason == ""
+    assert abs(est.green - 1.4) < 2e-2 and abs(est.blue - 1.2) < 2e-2
+    assert abs(est.red - 1.0 / est.green) < 1e-9
 
 
-def test_midtone_ignores_a_lifted_shadow_that_misleads_spread():
-    """A flat, lifted shadow in one channel compresses its spread; the midtone density does not move."""
+def test_estimate_ignores_a_lifted_shadow():
+    """A flat, lifted shadow in one channel does not move the midtone densities Estimate reads."""
     refs = ((-1.0, -1.2, -1.1), (-1.3, -1.5, -1.25), None, 0.9)
-    g_mid, b_mid, _ = fade_ratios_from_neutral_axis(refs, EstimateMethod.MIDTONE)
-    g_spread, b_spread, _ = fade_ratios_from_neutral_axis(refs, EstimateMethod.SPREAD)
-    assert abs(g_mid - 1.2) < 1e-9 and abs(b_mid - 1.1) < 1e-9
-    assert abs(b_spread - 0.5) < 1e-9 and g_spread == 1.0
+    g, b, _ = fade_ratios_from_neutral_axis(refs)
+    assert abs(g - 1.2) < 1e-9 and abs(b - 1.1) < 1e-9
 
 
 def test_estimate_meters_the_render_grid_before_the_fade():

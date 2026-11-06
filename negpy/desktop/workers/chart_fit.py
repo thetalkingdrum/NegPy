@@ -125,7 +125,13 @@ def fade_estimate_grid(source: ChartSource) -> Optional[np.ndarray]:
     identity and Remove Stain off, so Estimate never reads its own correction. None on a negative."""
     global _grid_memo
     process = replace(
-        source.config.process, fade_ratio_r=1.0, fade_ratio_g=1.0, fade_ratio_b=1.0, fade_white_anchor=False, fade_crossover=0.0
+        source.config.process,
+        fade_ratio_r=1.0,
+        fade_density_shift=0.0,
+        fade_ratio_g=1.0,
+        fade_ratio_b=1.0,
+        fade_white_anchor=False,
+        fade_crossover=0.0,
     )
     config = replace(source.config, process=process)
     # What Estimate and its render write does not reach this grid: Mix acts on the readings after it, at

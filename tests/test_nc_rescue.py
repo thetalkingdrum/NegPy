@@ -1,4 +1,4 @@
-"""The port of NegativeConverter's expired-film rescue (`nc_rescue`) against their own expiredRescue.js,
+"""The port of NegativeConverter's expired-film rescue color table (`nc_rescue`) against their own expiredRescue.js,
 run under Node by experiments/fade_crossover/port_check and stored in tests/fixtures/nc_rescue_port.json."""
 
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nc_rescue_fixtures import CASES, FOG_CASES, FOG_PROBES, FOG_VARIANTS, PROBES, VARIANTS
+from nc_rescue_fixtures import CASES, PROBES, VARIANTS
 from negpy.features.process import nc_rescue
 from negpy.features.process.models import ProcessMode
 
@@ -38,28 +38,21 @@ def test_the_analysis_matches(case):
             assert mine.share == pytest.approx(band["share"], abs=2e-4)
 
 
-def test_the_default_tone_params_match(case):
-    _, _, _, ours, theirs = case
-    params = nc_rescue.default_tone(ours)
-    assert (params.brightness, params.contrast) == (theirs["defaults"]["expiredBrightness"], theirs["defaults"]["expiredContrast"])
-
-
-@pytest.mark.parametrize("variant", sorted(VARIANTS))
-def test_the_stages_match_within_one_level(case, variant):
+def test_the_color_table_matches_within_one_level(case):
     _, img, display, ours, theirs = case
-    colour, tone = VARIANTS[variant]
+    # The port keeps their color table alone: the variant with no tone curve.
+    variant = next(v for v, (colour, tone) in VARIANTS.items() if colour and not tone)
     expected = theirs["variants"][variant]
-    offsets = nc_rescue.offsets_from_bands(ours) if colour else None
+    offsets = nc_rescue.offsets_from_bands(ours)
     assert (offsets is None) == (expected["offsets"] is None)
     if offsets is not None:
         assert np.abs(offsets.ravel() - np.asarray(expected["offsets"])).max() < 0.5
-    params = nc_rescue.default_tone(ours) if tone else nc_rescue.IDENTITY_TONE
-    curve = nc_rescue.tone_curve(ours, params)
+    curve = nc_rescue.tone_curve(ours, nc_rescue.IDENTITY_TONE)
     assert np.abs(curve - np.asarray(expected["tone"])).max() < 0.5
     values = np.array([[img[y, x, c] * 255.0 / 65535.0 for c in range(3)] for y, x in PROBES])
     out = nc_rescue.apply_tone(values, offsets, curve)
     assert np.abs(out - np.asarray(expected["probes"])).max() < 1.0
-    whole = nc_rescue.rescue(display, colour, tone)
+    whole = nc_rescue.rescue(display)
     probes = np.array([whole[y, x] for y, x in PROBES]) * 255.0
     assert np.abs(probes - np.asarray(expected["probes"])).max() < 1.0
 
@@ -89,15 +82,10 @@ def test_the_nc_model_renders_the_scan_without_survivals_or_stain():
     assert fade_matrix(replace(process, fade_ab_model="negpy")) is not None
 
 
-def test_each_stage_moves_the_render():
+def test_the_nc_model_moves_the_render():
     image, est = _crossover_case()
     survivals = dict(fade_ratio_r=est.red, fade_ratio_g=est.green, fade_ratio_b=est.blue)
-    base = _render(image, **survivals)
-    model = _render(image, **survivals, fade_ab_model="nc")
-    tone = _render(image, **survivals, fade_ab_tone="nc")
-    assert np.abs(model - base).max() > 0.05
-    assert np.abs(tone - base).max() > 0.05
-    assert not np.array_equal(_render(image, **survivals, fade_ab_model="nc", fade_ab_tone="nc"), model)
+    assert np.abs(_render(image, **survivals, fade_ab_model="nc") - _render(image, **survivals)).max() > 0.05
 
 
 def test_the_defaults_render_as_before():
@@ -105,7 +93,7 @@ def test_the_defaults_render_as_before():
     image, est = _crossover_case()
     survivals = dict(fade_ratio_r=est.red, fade_ratio_g=est.green, fade_ratio_b=est.blue)
     plain = _render(image, **survivals)
-    explicit = _render(image, **survivals, fade_ab_neutrals="negpy", fade_ab_model="negpy", fade_ab_tone="off", fade_crossover=0.0)
+    explicit = _render(image, **survivals, fade_neutrals_mix=0.0, fade_ab_model="negpy", fade_crossover=0.0)
     assert np.array_equal(plain, explicit)
 
 
@@ -118,7 +106,6 @@ def test_the_nc_stages_route_to_the_cpu():
     slide = replace(WorkspaceConfig(), process=replace(WorkspaceConfig().process, process_mode=ProcessMode.E6))
     assert not ImageProcessor._cpu_only(slide)
     assert ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_ab_model="nc")))
-    assert ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_ab_tone="nc")))
     assert not ImageProcessor._cpu_only(replace(slide, process=replace(slide.process, fade_crossover=1.0)))
     negative = replace(slide, process=replace(slide.process, process_mode=ProcessMode.C41, fade_ab_model="nc"))
     assert not ImageProcessor._cpu_only(negative)
@@ -126,50 +113,12 @@ def test_the_nc_stages_route_to_the_cpu():
 
 def test_nc_neutrals_read_the_survivals_too():
     from fade_crossover_scene import CROSSOVER, build_scene, estimate_grid, scan_image
-    from negpy.features.process.fade import EstimateMethod, estimate_fade
+    from negpy.features.process.fade import estimate_fade
 
     image = scan_image(CROSSOVER, build_scene())
     grid = estimate_grid(image)
-    ours = estimate_fade(grid)[EstimateMethod.MIDTONE]
-    theirs = estimate_fade(grid, neutrals="nc")[EstimateMethod.MIDTONE]
+    ours = estimate_fade(grid)
+    theirs = estimate_fade(grid, mix=1.0)
     assert theirs.red is not None and theirs.reason == ""
     assert theirs.blue < 0.95
     assert (theirs.green, theirs.blue) != (ours.green, ours.blue)
-
-
-_FOG_EXPECTED = json.loads((Path(__file__).parent / "fixtures" / "nc_fog_port.json").read_text())["cases"]
-
-
-@pytest.fixture(scope="module", params=sorted(FOG_CASES))
-def fog_case(request):
-    name = request.param
-    img = FOG_CASES[name]()
-    return name, img, img.astype(np.float64) / 65535.0, _FOG_EXPECTED[name]
-
-
-def test_the_fog_maps_match(fog_case):
-    _, _, display, theirs = fog_case
-    maps = nc_rescue.fog_maps(display)
-    assert (maps.grid_width, maps.grid_height) == (theirs["maps"]["gridWidth"], theirs["maps"]["gridHeight"])
-    fraction = theirs["maps"]["fraction"]
-    assert maps.fraction == pytest.approx((fraction["left"], fraction["top"], fraction["width"], fraction["height"]))
-    for mine, grid in zip(maps.low, theirs["maps"]["low"]):
-        assert np.abs(mine.ravel() - np.asarray(grid)).max() < 1e-6
-
-
-def test_the_fog_surface_matches(fog_case):
-    _, _, display, theirs = fog_case
-    ours = nc_rescue.fit_spatial(nc_rescue.fog_maps(display))
-    fog = theirs["spatial"]["fog"]
-    assert np.abs(np.asarray(ours["coefficients"]) - np.asarray(fog["coefficients"])).max() <= 1e-4
-    assert ours["offset"] == pytest.approx(fog["offset"], abs=1e-4)
-    assert ours["amplitude"] == pytest.approx(fog["amplitude"], abs=1e-4)
-
-
-@pytest.mark.parametrize("variant", sorted(FOG_VARIANTS))
-def test_the_fog_stage_matches_within_one_level(fog_case, variant):
-    _, _, display, theirs = fog_case
-    colour, tone = FOG_VARIANTS[variant]
-    whole = nc_rescue.rescue(display, colour, tone, fog=True)
-    probes = np.array([whole[y, x] for y, x in FOG_PROBES]) * 255.0
-    assert np.abs(probes - np.asarray(theirs["variants"][variant]["probes"])).max() < 1.0

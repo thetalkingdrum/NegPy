@@ -52,6 +52,16 @@ class TestGpuFadeCrossoverParity(unittest.TestCase):
         self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
         self.assertLess(float(np.abs(cpu - gpu).mean()), 0.002)
 
+    def test_a_density_shift_renders_alike(self):
+        changes = dict(survival_changes(self.est, 1.0), fade_density_shift=-0.3)
+        settings = _settings(changes)
+        cpu, _ = self._render(settings, False)
+        gpu, _ = self._render(settings, True)
+        plain, _ = self._render(_settings(survival_changes(self.est, 1.0)), False)
+        self.assertGreater(float(np.abs(cpu - plain).max()), 0.05, "the shift must move the render")
+        self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
+        self.assertLess(float(np.abs(cpu - gpu).mean()), 0.002)
+
     def test_half_strength_renders_alike(self):
         settings = _settings(survival_changes(self.est, 0.5))
         cpu, _ = self._render(settings, False)
@@ -158,25 +168,3 @@ class TestGpuFollowsCrossover(unittest.TestCase):
         finally:
             engine.destroy_all()
         self.assertGreater(float(np.abs(out[1] - out[0]).max()), 0.05)
-
-
-@unittest.skipUnless(GPUDevice.get().is_available, "GPU not available")
-class TestGpuFogBakeParity(unittest.TestCase):
-    """The NegPy fog bake runs on the source before either engine."""
-
-    def test_the_baked_source_renders_alike(self):
-        from fade_crossover_scene import fog_scene
-        from negpy.services.rendering.image_processor import ImageProcessor
-
-        processor = ImageProcessor()
-        if processor.engine_gpu is None:
-            self.skipTest("GPU engine not initialised")
-        img = fog_scene("fog").fogged
-        settings = _settings(dict(positive_source=True, fade_ab_fog="negpy"))
-        out = []
-        for prefer_gpu in (False, True):
-            result, _ = processor.run_pipeline(
-                img, settings, "fog-parity", render_size_ref=float(max(img.shape[:2])), prefer_gpu=prefer_gpu
-            )
-            out.append(np.asarray(result.readback() if hasattr(result, "readback") else result)[:, :, :3].astype(np.float64))
-        self.assertLess(float(np.abs(out[0] - out[1]).max()), 0.01)

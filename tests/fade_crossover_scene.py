@@ -222,11 +222,11 @@ def estimate_grid(image: np.ndarray, **process) -> np.ndarray:
 def estimate(image: np.ndarray, **process):
     """Fade Estimate (the Midtone method, the panel's default) on *image*'s analysis grid, with the
     render's white space as the panel passes it."""
-    from negpy.features.process.fade import EstimateMethod, estimate_fade, render_white_space
+    from negpy.features.process.fade import estimate_fade, render_white_space
     from negpy.features.process.models import ProcessConfig, ProcessMode
 
     space = render_white_space(replace(ProcessConfig(), process_mode=ProcessMode.E6, **process), ProcessMode.E6, None, None)
-    return estimate_fade(estimate_grid(image, **process), white_space=space)[EstimateMethod.MIDTONE]
+    return estimate_fade(estimate_grid(image, **process), white_space=space)
 
 
 def survival_changes(est, crossover: float, with_table: bool = True, **process_fields) -> dict:

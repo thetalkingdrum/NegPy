@@ -1,9 +1,6 @@
 from typing import Any, Dict, Optional, Sequence, TYPE_CHECKING, Tuple
 
-import math
-
 import negpy_core
-
 import numpy as np
 
 from negpy.domain.types import LUMA_B, LUMA_G, LUMA_R, ImageBuffer
@@ -240,13 +237,12 @@ def measure_neutral_axis_from_log(
     analysis_buffer: float = 0.0,
     *,
     exclude_subjects: bool = True,
-    sky_sector: bool = True,
 ) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float], Optional[Tuple[float, float, float]], float]]:
     """Per-channel neutral axis: median raw-log density of the lowest-chroma pixels in a highlight, midtone and shadow band.
     Pass 1 uses a loose cap so a strong but correctable cast keeps the axis; its mid+shadow correction re-ranks chroma for a
     strict pass 2. Returns (midtone, shadow, highlight or None, confidence in [0, 1]); None without a midtone or shadow set.
-    `exclude_subjects` drops foliage- and sky-sector cells first (`sky_sector` False keeps the sky sector's cells). Only a
-    per-channel stretch makes the window's neutral a gray, so a caller metering against the slide's fixed window passes False."""
+    `exclude_subjects` drops foliage- and sky-sector cells first. Only a per-channel stretch makes the window's neutral a
+    gray, so a caller metering against the slide's fixed window passes False."""
     from negpy.features.exposure.models import EXPOSURE_CONSTANTS
 
     if roi:
@@ -265,7 +261,7 @@ def measure_neutral_axis_from_log(
         tuple(float(v) for v in c["neutral_axis_mid_band"]),
         tuple(float(v) for v in c["neutral_axis_shadow_band"]),
         (float(c["neutral_axis_foliage_chroma"]), *(float(v) for v in c["neutral_axis_foliage_hue"])),
-        (float(c["neutral_axis_sky_chroma"]) if sky_sector else math.inf, *(float(v) for v in c["neutral_axis_sky_hue"])),
+        (float(c["neutral_axis_sky_chroma"]), *(float(v) for v in c["neutral_axis_sky_hue"])),
         float(c["neutral_axis_confidence_n0"]),
         (float(c["neutral_axis_agreement_deadzone"]), float(c["neutral_axis_agreement_scale"])),
         (float(c["neutral_axis_width_deadzone"]), float(c["neutral_axis_width_scale"])),

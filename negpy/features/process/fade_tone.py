@@ -1,29 +1,21 @@
-"""Tone NegPy and Adaptive: an automatic tone for a faded slide, written into the slide's own Print
-Density and ISO-R Grade sliders, so no hidden curve acts. NegPy fits the two sliders so the transfer
-curve shows the frame's tones as NegativeConverter's levels, brightness and S-curve would; Adaptive
-maps the frame's own density span onto a print range with its median at a midtone."""
+"""Tone and Auto Red: an automatic tone for a faded slide. Tone writes the slide's own Print Density
+and ISO-R Grade sliders, so no hidden curve acts: it maps the frame's density span onto a print range
+with its median at a midtone. Auto Red restores the span through Red Survival instead."""
 
 import math
 from dataclasses import replace
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
 from negpy.domain.types import ImageBuffer
 from negpy.features.exposure.models import EXPOSURE_CONSTANTS
-from negpy.features.process.models import FadeABTone
 from negpy.features.process.path import RenderPath, render_path
 from negpy.kernel.system.i18n import tr
 
 #: Percentiles of the mean density the fit reads, light end first: their 0.5 and 99.5 % levels
 #: points, their median and the quantiles between, so the fit weighs tones as the frame holds them.
 TONE_PCT = (0.5, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 95.0, 99.5)
-#: Their display midtone after levels.
-TONE_MIDTONE = 0.42
-#: Their contrast: 20 + (1 - range) * 30, held to 10..45, in percent of the S-curve.
-TONE_CONTRAST = (20.0, 30.0, 10.0, 45.0)
-#: Their brightness, -100 log2 of the display gamma that puts the median at TONE_MIDTONE, held to this range.
-TONE_BRIGHTNESS = (-25.0, 60.0)
 #: Below this density span a frame has no range to read.
 TONE_MIN_SPAN = 0.05
 #: Slider steps the fit searches: Print Density and ISO-R Grade.
@@ -41,6 +33,15 @@ ADAPTIVE_CONTRAST = (1.0, 1.5)
 #: Adaptive: the print density of the frame's median, about a normally exposed slide's mid gray. At the
 #: slide defaults (Print Density 1, ISO-R 115) the transfer curve prints each density as itself.
 ADAPTIVE_MIDTONE = 1.0
+#: Auto Red: the lowest Red Survival it sets. A slide that never held a full range (fog, a dull day) reads
+#: as a heavy fade, so the stretch stops here.
+AUTO_RED_MIN = 0.4
+#: Auto Red: the density span it maps the frame's 0.5 to 99.5 % span onto, below ADAPTIVE_SPAN because a
+#: stretch by Red Survival also steepens the transfer curve's shoulder and toe.
+AUTO_RED_SPAN = 1.6
+#: Auto Red: the lowest density its shift leaves the frame's 0.5 % point at. The points are grid-cell means,
+#: so the brightest pixels sit above them.
+AUTO_RED_LIGHT = 0.2
 
 
 def tone_points(density: ImageBuffer) -> Optional[tuple[float, ...]]:
@@ -68,58 +69,6 @@ def fade_tone_points(log_grid: ImageBuffer, process: Any) -> Optional[tuple[floa
     return tone_points(np.asarray(normalize_log_image(log_grid, bounds)) * TRANSFER_DENSITY_RANGE)
 
 
-def display(density: np.ndarray, positive_source: bool) -> np.ndarray:
-    """The display value of a neutral at output *density* on the transfer curve, through the working
-    TRC: the positive itself, or a camera RAW slide's baseline and display rendering."""
-    from negpy.features.transparency.logic import TRANSFER_CONSTANTS, display_rendering
-    from negpy.kernel.image.logic import working_oetf_encode
-
-    linear = np.power(10.0, -np.maximum(np.asarray(density, dtype=np.float64), 0.0)).astype(np.float32)
-    if not positive_source:
-        linear = display_rendering(linear * np.float32(2.0 ** float(TRANSFER_CONSTANTS["transfer_baseline_ev"])))
-    flat = np.ascontiguousarray(np.repeat(linear.reshape(-1, 1, 1), 3, axis=2))
-    return np.asarray(working_oetf_encode(flat), dtype=np.float64)[:, 0, 0].reshape(np.shape(density))
-
-
-def their_tone(x: np.ndarray, low: float, high: float, median: float) -> np.ndarray:
-    """`defaultExpiredRescueParams` and the shared tone curve of `buildExpiredRescueStages` on display
-    values *x*, with the frame's levels points and median in display."""
-    from negpy.features.process.nc_rescue import _js_round, _soft_contrast
-
-    span = max(0.02, high - low)
-    leveled = min(max((median - low) / (high - low) if high - low >= 0.02 else median, 0.02), 0.98)
-    brightness = _js_round(min(max(-100.0 * math.log2(math.log(TONE_MIDTONE) / math.log(leveled)), TONE_BRIGHTNESS[0]), TONE_BRIGHTNESS[1]))
-    base, per_range, lo, hi = TONE_CONTRAST
-    contrast = _js_round(min(max(base + (1.0 - (high - low)) * per_range, lo), hi)) / 100.0
-    t = np.clip((np.asarray(x, dtype=np.float64) - low) / span, 0.0, 1.0) ** (2.0 ** (-brightness / 100.0))
-    return np.clip(np.vectorize(lambda v: _soft_contrast(v, contrast))(t), 0.0, 1.0)
-
-
-def tone_values(points: Sequence[float], positive_source: bool) -> dict[str, float]:
-    """Print Density and ISO-R Grade, on the sliders' steps and ranges, whose transfer curve shows the
-    frame's tones closest (least squares in display) to their tone curve applied to the frame as the
-    slide's defaults show it."""
-    from negpy.features.transparency.logic import TRANSFER_CONSTANTS
-
-    d = np.asarray(points, dtype=np.float64)
-    shown = display(d, positive_source)
-    median = float(display(np.array([float(np.median(d))]), positive_source)[0])
-    target = their_tone(shown, float(shown[-1]), float(shown[0]), median)
-    pivot = float(TRANSFER_CONSTANTS["transfer_contrast_pivot"])
-    ref = float(TRANSFER_CONSTANTS["transfer_grade_ref"])
-    per_density = float(TRANSFER_CONSTANTS["transfer_density_stops"]) * math.log10(2.0)
-    grades = np.arange(
-        float(EXPOSURE_CONSTANTS["iso_r_min"]), float(EXPOSURE_CONSTANTS["iso_r_max"]) + 0.5 * TONE_GRADE_STEP, TONE_GRADE_STEP
-    )
-    densities = np.round(np.arange(0.0, 2.0 + 0.5 * TONE_DENSITY_STEP, TONE_DENSITY_STEP), 2)
-    contrast = ref / grades[:, None, None]
-    offset = ((1.0 - densities) * per_density)[None, :, None]
-    out = display(pivot + (d[None, None, :] - offset - pivot) * contrast, positive_source)
-    error = ((out - target[None, None, :]) ** 2).sum(axis=2)
-    gi, di = np.unravel_index(int(np.argmin(error)), error.shape)
-    return {"density": float(densities[di]), "grade": float(grades[gi])}
-
-
 def adaptive_values(points: Sequence[float], positive_source: bool) -> dict[str, float]:
     """Print Density and ISO-R Grade, on the sliders' steps and ranges, that map the frame's 0.5 to
     99.5 % density span onto ADAPTIVE_SPAN within ADAPTIVE_CONTRAST, and print its median at
@@ -139,8 +88,42 @@ def adaptive_values(points: Sequence[float], positive_source: bool) -> dict[str,
     return {"density": round(density, 2), "grade": float(grade)}
 
 
-#: The Tone choices that write the sliders, and their fit.
-TONE_FITS = {FadeABTone.NEGPY: tone_values, FadeABTone.ADAPTIVE: adaptive_values}
+def survival_points(
+    grid: ImageBuffer,
+    process: Any,
+    survivals: tuple[float, float, float],
+    white_anchor: bool,
+    camera_raw: bool,
+    white_space: str,
+    shift: float = 0.0,
+) -> Optional[tuple[float, ...]]:
+    """`fade_tone_points` of the Estimate *grid* after *survivals* and *shift*, as a render with them
+    reads it. The crossover table keeps each cell's mean density, so it does not move the points."""
+    from negpy.features.process.fade import measure_white, survival_density, through_density
+
+    density = survival_density(*survivals, measure_white(grid), white_anchor, camera_raw or bool(white_space), white_space, shift)
+    return fade_tone_points(through_density(grid, density), process)
+
+
+def auto_red(
+    points_at: Callable[[float], Optional[Sequence[float]]], red: float, shift: float = 0.0
+) -> tuple[Optional[dict[str, float]], str]:
+    """(changes, reason): the Red Survival that maps the frame's 0.5 to 99.5 % density span onto
+    AUTO_RED_SPAN, held to AUTO_RED_MIN and 1.0, and the density shift that keeps the median where it
+    printed, cut so the 0.5 % point prints no lighter than AUTO_RED_LIGHT or than before. *points_at* gives
+    the points at a red with *shift*. Every density scales by red / new red, so one reading finds it."""
+    from negpy.features.process.fade import RED_SURVIVAL_BOUNDS
+
+    points = points_at(red)
+    if points is None or float(points[-1] - points[0]) < TONE_MIN_SPAN:
+        return None, tr("No range to read on this frame.")
+    span = float(points[-1] - points[0])
+    new = round(min(max(float(red) * span / AUTO_RED_SPAN, AUTO_RED_MIN, RED_SURVIVAL_BOUNDS[0]), RED_SURVIVAL_BOUNDS[1]), 2)
+    after = points_at(new)
+    gain = 0.0
+    if after is not None:
+        gain = min(float(np.median(after)) - float(np.median(points)), float(after[0]) - min(AUTO_RED_LIGHT, float(points[0])))
+    return {"fade_ratio_r": new, "fade_density_shift": round(float(shift) - gain, 4)}, ""
 
 
 def _blend(start: dict[str, float], fit: dict[str, float], strength: float) -> dict[str, float]:
@@ -153,31 +136,28 @@ def _blend(start: dict[str, float], fit: dict[str, float], strength: float) -> d
     }
 
 
-def fade_tone_changes(
-    config: Any, tone: FadeABTone, metrics: Mapping[str, Any], strength: Optional[float] = None
-) -> tuple[Optional[Any], str]:
-    """(config, reason): *config* with Tone set to *tone* at *strength* (None keeps the frame's Tone
-    Strength). NegPy and Adaptive write their fit into the Tone sliders, moved from the values they
-    replace by the strength, and keep those values in `fade_tone_saved`; any other choice gives them
-    back first, so Off restores the sliders exactly. None with a reason when the frame has no reading."""
+def fade_tone_changes(config: Any, metrics: Mapping[str, Any], strength: float) -> tuple[Optional[Any], str]:
+    """(config, reason): *config* with Tone at *strength*. Above 0 it writes `adaptive_values` into the
+    Tone sliders, moved from the values they replace by the strength, and keeps those values in
+    `fade_tone_saved`; 0 gives them back exactly. None with a reason when the frame has no reading."""
     from negpy.features.transparency.logic import transfer_shown_values
 
     process, exposure = config.process, config.exposure
-    strength = process.fade_tone_strength if strength is None else float(strength)
+    strength = min(max(float(strength), 0.0), 1.0)
     saved = process.fade_tone_saved
-    if saved is not None and process.fade_ab_tone in TONE_FITS:
+    if saved is not None:
         exposure = replace(exposure, **dict(zip(TONE_FIELDS, saved)))
         saved = None
-    if tone in TONE_FITS:
+    if strength > 0.0:
         points = metrics.get("fade_tone_points")
         if points is None:
             return None, tr("No range to read on this frame.")
         saved = tuple(getattr(exposure, f) for f in TONE_FIELDS)
-        fit = TONE_FITS[tone](points, render_path(process) is RenderPath.POSITIVE)
+        fit = adaptive_values(points, render_path(process) is RenderPath.POSITIVE)
         # The values the sliders print now, an Auto Density or Auto Grade included.
         shown = transfer_shown_values(exposure, metrics)
         start = {f: float(shown.get(f, getattr(exposure, f))) for f in ("density", "grade")}
         values = fit if strength >= 1.0 else _blend(start, fit, strength)
         exposure = replace(exposure, **values, auto_exposure=False, auto_normalize_contrast=False)
-    process = replace(process, fade_ab_tone=tone, fade_tone_saved=saved, fade_tone_strength=strength)
+    process = replace(process, fade_tone_saved=saved, fade_tone_strength=strength)
     return replace(config, process=process, exposure=exposure), ""

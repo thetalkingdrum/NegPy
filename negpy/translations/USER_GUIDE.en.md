@@ -530,12 +530,13 @@ Corrects color errors that come from your light, camera and film.
 
 Gives a faded slide its dye layers back.
 
-*   **Red Survival**: how much red dye is left. Lower it until the contrast comes back.
+*   **Red Survival**: how much red dye is left. Lower it until contrast comes back.
 *   **Green Survival** / **Blue Survival**: the same for green and blue, against red.
-*   **Remove Stain**: whitens yellowed clear areas and runs Estimate. Try it when its icon turns amber.
-*   **Estimate**: sets the sliders from the grays in this frame. **Midtone** suits a badly faded slide, **Gray Range** a mild fade with deep shadows.
-*   **Crossover** (Color model **NegPy**): after Estimate, removes a color shift that changes from shadows to highlights.
-*   **Compare**: A/B choices against NegativeConverter (**NC**). **Mix** moves the grays toward NC's; **Tone Strength** sets how far Tone moves your sliders.
+*   **Remove Stain**: whitens yellowed clear areas and runs Estimate again, on or off. Try it when its icon turns amber.
+*   **Estimate**: sets the sliders from this frame's middle grays.
+*   **Neutrals**: reads the grays by tone bands instead of the gray finder, and estimates again as you drag.
+*   **Crossover** (Color model **NegPy**): removes a color shift between shadows and highlights.
+*   **Compare**: A/B against NegativeConverter (**NC**). **Tone** sets Print Density and Grade, **Auto Red** sets Red Survival from the range.
 
 <!-- panel:process -->
 ### 10.5 Metering: negative → positive

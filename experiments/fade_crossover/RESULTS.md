@@ -436,4 +436,4 @@ The source works on display-encoded 0..1 values. Near a mid gray (display ≈ 0.
 uv run python experiments/fade_crossover/compare.py ~/Pictures/Statue.NEF ~/Scans/faded/slide01.tif
 ```
 
-The sheets are listed under Phase 3, section 4. Options: `--long-edge 2000`, `--method midtone|spread`, `--gpu` (the NC stages still render on the CPU).
+The sheets are listed under Phase 3, section 4. Options: `--long-edge 2000`, `--gpu` (the NC stages still render on the CPU).

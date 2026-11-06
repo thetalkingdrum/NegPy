@@ -40,7 +40,6 @@ from negpy.features.process.sensor import apply_sensor_correction, effective_sen
 from negpy.features.exposure.analysis import COLOR_HIST_BINS
 from negpy.features.exposure.models import RenderIntent
 from negpy.features.flatfield.logic import apply_flatfield, flatfield_token
-from negpy.features.process.fade_fog import bake_fog_with_fit, fog_token
 from negpy.features.lab.logic import apply_resize_sharpening
 from negpy.services.rendering.lens import flatfield_source, lens_decode_token, metadata_lens_corrections, prepare_lens_source
 from negpy.features.geometry.logic import autocrop_detection_key, meter_detection_key, resolve_autocrop_rect, resolve_meter_rect
@@ -438,10 +437,6 @@ class ImageProcessor:
         # Flat-field + sensor-unmix corrected source: full-buffer passes that no
         # creative slider moves.
         self._precorrect_key: Optional[tuple] = None
-        # The fog bake's single slot, keyed on the precorrect key and the bake's token.
-        self._fog_key: Optional[tuple] = None
-        self._fog_value: Optional[np.ndarray] = None
-        self._fog_metrics: Optional[dict] = None
         self._precorrect_value: Optional[np.ndarray] = None
         self._meter_memo: Dict[Tuple[str, str], Any] = {}
 
@@ -524,9 +519,9 @@ class ImageProcessor:
     @staticmethod
     def _cpu_only(settings: WorkspaceConfig) -> bool:
         """A Flat master, or a slide with a NegativeConverter A/B stage on, which has no shader."""
-        from negpy.features.process.nc_rescue import nc_stage_flags
+        from negpy.features.process.nc_rescue import nc_stage_active
 
-        return ImageProcessor._is_flat(settings) or any(nc_stage_flags(settings.process))
+        return ImageProcessor._is_flat(settings) or nc_stage_active(settings.process)
 
     def _slow_step(self, label: str) -> None:
         if self.on_slow_step is not None:
@@ -825,20 +820,6 @@ class ImageProcessor:
                 self._precorrect_key = pre_key
                 self._precorrect_value = img
         timing.lap("flat-field/unmix")
-        # Uneven fog (Fade Restoration, NegPy) is measured and removed in density after Flat Field,
-        # before the defect repairs and before Estimate reads the frame.
-        fog_tok = fog_token(settings.process)
-        fog_metrics = None
-        if fog_tok:
-            fog_key = (pre_key, fog_tok)
-            if self._fog_key == fog_key and self._fog_value is not None:
-                img = self._fog_value
-            else:
-                img, fit = bake_fog_with_fit(img, settings.process)
-                self._fog_key, self._fog_value = fog_key, img
-                self._fog_metrics = None if fit is None else fit.metrics()
-            fog_metrics = self._fog_metrics
-            timing.lap("uneven fog")
         source_base = NOT_READ
         if film_base is None and render_path(settings.process) is RenderPath.PRINT:
             source_base = base_log_for(pre_key, img) if readback_metrics and cache_stages else cached_base_log(pre_key)
@@ -863,7 +844,6 @@ class ImageProcessor:
             + ir_bake_token(settings.retouch, ir_buffer is not None)
             + heal_token
             + luma_bake_token(settings.retouch)
-            + fog_tok
         )
         # Each bake keys only on what runs ahead of it, so a heal or clone stroke re-runs only its own pass.
         auto_hash = base_hash.replace(heal_token, "", 1) if heal_token else base_hash
@@ -928,9 +908,6 @@ class ImageProcessor:
             context.metrics["film_base"] = tuple(film_base)
         if source_base is not NOT_READ:
             context.metrics["source_base_log"] = source_base
-        if fog_metrics is not None:
-            # Measure-only: what the NegPy fog bake read on this frame.
-            context.metrics["fade_fog"] = fog_metrics
         # The crop this render detected, for the controller to freeze into the edit. The key
         # rides along so a freeze that lands after the user moved on is discarded.
         if resolved_crop is not None:
@@ -2038,9 +2015,6 @@ class ImageProcessor:
                 self._source_cache_value = None
                 self._precorrect_key = None
                 self._precorrect_value = None
-                self._fog_key = None
-                self._fog_value = None
-                self._fog_metrics = None
 
             # A Print/Target-px export setting sizes the paper from print_size x DPI, which
             # re-inflates the tile to full print resolution right after the downsample. Bound
@@ -2640,9 +2614,6 @@ class ImageProcessor:
         self._source_cache_value = None
         self._precorrect_key = None
         self._precorrect_value = None
-        self._fog_key = None
-        self._fog_value = None
-        self._fog_metrics = None
         self._prepare_slot = None
 
     def cleanup(self, release_source_cache: bool = True, collect: bool = True, retain: Any = None) -> None:

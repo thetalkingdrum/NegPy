@@ -1,7 +1,7 @@
-"""Phase 4 numbers on synthetic films: the cold lean of the gray finders, tone strength and Adaptive, and fog
-diagnostics.
+"""Phase 4 numbers on synthetic films: the cold lean of the gray finders. Its tone and fog parts measured
+choices the app no longer has; RESULTS.md keeps their numbers.
 
-uv run python experiments/fade_crossover/phase4.py [neutrals] [tone] [fog]
+uv run python experiments/fade_crossover/phase4.py
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from fade_crossover_scene import (  # noqa: E402
 )
 from neutral_finders import Finder, check_replica, find  # noqa: E402
 
-from negpy.features.process.fade import EstimateMethod, nc_neutral_refs  # noqa: E402
+from negpy.features.process.fade import nc_neutral_refs  # noqa: E402
 
 # ---------------------------------------------------------------------------------------------- neutrals
 
@@ -69,10 +69,10 @@ def reader(finder):
     """An `estimate_fade_with` gray reader: NegPy's own (with its fallbacks), NC's, or a `Finder`."""
     from negpy.features.process.fade import gray_refs
 
-    if finder in ("negpy", "no_sky", "nc"):
-        return lambda g: gray_refs(g, finder)
+    if finder in ("negpy", "nc"):
+        return lambda g: gray_refs(g, 1.0 if finder == "nc" else 0.0)
     if isinstance(finder, float):
-        return lambda g: gray_refs(g, "negpy", finder)
+        return lambda g: gray_refs(g, finder)
 
     def read(g):
         refs = find(g, finder)
@@ -83,11 +83,7 @@ def reader(finder):
     return read
 
 
-READERS = (
-    (("NegPy", "negpy"),)
-    + tuple((n, f) for n, f in FINDERS[1:])
-    + (("No Sky (sky sector off)", "no_sky"), ("NegPy, Mix 50 %", 0.5), ("NC", "nc"))
-)
+READERS = (("NegPy", "negpy"),) + tuple((n, f) for n, f in FINDERS[1:]) + (("Neutrals 50 %", 0.5), ("NC", "nc"))
 SCANNERS = (("Coolscan-like", lambda film: film, False), ("Plustek-like", plustek, True))
 
 
@@ -103,7 +99,7 @@ def estimate_with(image: np.ndarray, rd, positive: bool):
 
     fields = dict(positive_source=positive) if positive else {}
     space = render_white_space(replace(ProcessConfig(), process_mode=ProcessMode.E6, **fields), ProcessMode.E6, None, None)
-    return estimate_fade_with(estimate_grid(image, **fields), rd, white_space=space)[EstimateMethod.MIDTONE], fields
+    return estimate_fade_with(estimate_grid(image, **fields), rd, white_space=space), fields
 
 
 def neutrals_report() -> None:
@@ -169,167 +165,11 @@ def band_detail() -> None:
 # -------------------------------------------------------------------------------------------------- tone
 
 
-def render_tone(image: np.ndarray, changes: dict, tone: str, strength: float = 1.0) -> tuple[np.ndarray, dict]:
-    """(render, sliders): the render with Tone *tone* at *strength*, read from a first render's
-    `fade_tone_points` as the panel does."""
-    from negpy.domain.interfaces import PipelineContext
-    from negpy.domain.models import WorkspaceConfig
-    from negpy.features.process.fade_tone import fade_tone_changes
-    from negpy.features.process.models import FadeABTone, ProcessMode, mode_aware_exposure_reset
-    from negpy.services.rendering.engine import DarkroomEngine
-
-    base = WorkspaceConfig()
-    process = replace(base.process, process_mode=ProcessMode.E6, **changes)
-    settings = replace(base, process=process, exposure=mode_aware_exposure_reset(ProcessMode.E6, base.exposure))
-    ctx = PipelineContext(original_size=image.shape[:2], scale_factor=1.0, process_mode=ProcessMode.E6)
-    out = np.asarray(DarkroomEngine().process(image, settings, "fade-tone", ctx))
-    if tone == "off":
-        return out, {"density": settings.exposure.density, "grade": settings.exposure.grade, "span": _span(ctx.metrics)}
-    if tone == "nc":
-        settings = replace(settings, process=replace(settings.process, fade_ab_tone="nc"))
-    else:
-        settings, _ = fade_tone_changes(settings, FadeABTone(tone), ctx.metrics, strength)
-    out = np.asarray(DarkroomEngine().process(image, settings, "fade-tone"))
-    return out, {"density": settings.exposure.density, "grade": settings.exposure.grade, "span": _span(ctx.metrics)}
-
-
-def _span(metrics: dict) -> float:
-    p = metrics.get("fade_tone_points")
-    return float("nan") if p is None else float(p[-1] - p[0])
-
-
-def tone_report() -> None:
-    from fade_crossover_scene import build_scene, scan_image
-
-    print("\n# Tone: the Grade each choice picks\n")
-    print("Fresh Estimate (Midtone) at Crossover 100 %, then Tone at Strength 100 %. span is the frame's 0.5 to 99.5 %")
-    print("mean-density span after the fade (D). dE is the 9-patch mean against the unfaded film at tone Off,")
-    print("dL* the ramp's mean lightness error.\n")
-    scene = build_scene()
-    fades = [(f"uniform {s:g}", linear_fade(REFERENCE, (s, s, s))) for s in (1.0, 0.8, 0.6, 0.45, 0.3)]
-    fades += [("linear 1/.7/.5", linear_fade(REFERENCE, (1.0, 0.7, 0.5))), ("crossover", CROSSOVER)]
-    fades += [
-        ("low range .6/.45/.35", linear_fade(REFERENCE, (0.6, 0.45, 0.35))),
-        ("low range .4/.3/.25", linear_fade(REFERENCE, (0.4, 0.3, 0.25))),
-    ]
-    for scanner_name, scanner, positive in SCANNERS:
-        ref_lab = to_lab(render_tone(scan_image(scanner(REFERENCE), scene), dict(positive_source=True) if positive else {}, "off")[0])
-        print(f"\n## {scanner_name}\n")
-        print(
-            "| fade | span D | NegPy Density / Grade | Adaptive Density / Grade | dE off / NC / NegPy / Adaptive | dL* off / NC / NegPy / Adaptive |"
-        )
-        print("|---|---|---|---|---|---|")
-        for fade_name, film in fades:
-            image = scan_image(scanner(film), scene)
-            est, fields = estimate_with(image, reader("negpy"), positive)
-            changes = survival_changes(est, 1.0, **fields) if est.red is not None else dict(fields)
-            row, de, dl = {}, [], []
-            for tone in ("off", "nc", "negpy", "adaptive"):
-                out, sliders = render_tone(image, changes, tone)
-                row[tone] = sliders
-                lab = to_lab(out)
-                de.append(float(np.mean([np.linalg.norm(region_lab(lab, m) - region_lab(ref_lab, m)) for m in scene.patches.values()])))
-                dl.append(float(np.mean([abs(region_lab(lab, m)[0] - region_lab(ref_lab, m)[0]) for m in scene.ramp])))
-            n, a = row["negpy"], row["adaptive"]
-            print(
-                f"| {fade_name} | {row['off']['span']:.2f} | {n['density']:.2f} / {n['grade']:.0f} | {a['density']:.2f} / {a['grade']:.0f} "
-                f"| {' / '.join(f'{v:.1f}' for v in de)} | {' / '.join(f'{v:.1f}' for v in dl)} |"
-            )
-
-
-# --------------------------------------------------------------------------------------------------- fog
-
-
-def bright_fog_scene(bright: str, fog: str, width: int = 384, height: int = 256, seed: int = 1):
-    """(linear scan, true uneven fog (D, zero at its minimum), bright-area mask): a textured picture on
-    the unfaded film, Coolscan-like, with a bright picture area and optional real fog.
-
-    bright: "wall", a lit near-white wall over the right third; "sky", a pale sky band over the top
-    third; "none". fog: "left", density falling from the left edge (0.12 D across); "strong", the same at
-    0.25 D, past the cap; "corner", a bump in
-    the top-left; "none", an even 0.03 D only."""
-    from fade_crossover_scene import RAMP_RANGE
-
-    y, x = np.mgrid[0:height, 0:width]
-    t = ((x * 7 + y * 3) % 40) / 39.0
-    log_e = np.repeat((RAMP_RANGE[0] + 0.6 + t * (RAMP_RANGE[1] - RAMP_RANGE[0] - 1.2))[..., None], 3, axis=-1)
-    area = np.zeros((height, width), bool)
-    if bright == "wall":
-        area = x > width * 0.66
-        log_e[area] = (0.7, 0.7, 0.68)
-    elif bright == "sky":
-        area = y < height * 0.33
-        log_e[area] = (0.45, 0.55, 0.75)
-    density = -np.log10(REFERENCE.scan(log_e))
-    if fog == "left":
-        uneven = 0.12 * (1.0 - x / (width - 1))
-    elif fog == "strong":
-        uneven = 0.25 * (1.0 - x / (width - 1))
-    elif fog == "corner":
-        uneven = 0.14 * np.exp(-((x / (0.3 * width)) ** 2 + (y / (0.3 * width)) ** 2))
-    else:
-        uneven = np.zeros((height, width))
-    grain = np.random.default_rng(seed).normal(0.0, 0.004, density.shape)
-    scan = np.clip(np.power(10.0, -(density + 0.03 + uneven[..., None] + grain)), 1e-6, 1.0).astype(np.float32)
-    return scan, uneven - uneven.min(), area
-
-
-FOG_VARIANTS = (
-    ("default", {}),
-    ("plausible 0.20", dict(plausible=0.20)),
-    ("plausible 0.14", dict(plausible=0.14)),
-    ("clear band 0.14", dict(clear_band=0.14)),
-    ("clear band 0.10", dict(clear_band=0.10)),
-    ("min cells 64", dict(min_cells=64)),
-    ("min cells 160", dict(min_cells=160)),
-    ("clear both sides", dict(both_sides=True)),
-)
-FOG_SCENES = tuple((b, f) for b in ("none", "wall", "sky") for f in ("none", "left", "corner", "strong"))
-
-
-def fog_report() -> None:
-    from negpy.features.process.fade_fog import FOG_CAP, fit_fog, fog_map
-
-    print("\n# Fog diagnostics\n")
-    print("amp is the fitted surface's range before the 0.15 D cap; kept the share of grid cells the fit used.")
-    print("err is the RMS (D) of the removed map against the true uneven fog over the frame; bright the mean")
-    print("removed over the bright area minus the mean over the rest (true value in brackets); 0 when nothing is removed.\n")
-    print("| bright area | fog | variant | amp D | cap hit | kept | removed max D | err D | bright D |")
-    print("|---|---|---|---|---|---|---|---|---|")
-    summary: dict = {}
-    for bright, fog in FOG_SCENES:
-        scan, truth, area = bright_fog_scene(bright, fog)
-        true_bias = float(truth[area].mean() - truth[~area].mean()) if area.any() else 0.0
-        for name, kw in FOG_VARIANTS:
-            fit = fit_fog(scan, **kw)
-            removed = np.zeros_like(truth) if fit.surface is None else fog_map(scan, fit.surface)
-            err = float(np.sqrt(np.mean((removed - np.minimum(truth, FOG_CAP)) ** 2)))
-            bias = float(removed[area].mean() - removed[~area].mean()) if area.any() else 0.0
-            amp = "" if fit.amplitude is None else f"{fit.amplitude:.3f}"
-            summary.setdefault(name, []).append((fog != "none", err, abs(bias - true_bias) if area.any() else 0.0))
-            print(
-                f"| {bright} | {fog} | {name} | {amp} | {'yes' if fit.cap_hit else ''} | {fit.kept_share:.2f} | {removed.max():.3f} "
-                f"| {err:.3f} | {bias:+.3f} ({true_bias:+.3f}) |"
-            )
-    print("\n| variant | mean err, fog scenes | mean err, no-fog scenes | mean bright-area error |")
-    print("|---|---|---|---|")
-    for name, rows in summary.items():
-        fogged = [e for f, e, _ in rows if f]
-        clean = [e for f, e, _ in rows if not f]
-        print(f"| {name} | {np.mean(fogged):.3f} | {np.mean(clean):.3f} | {np.mean([b for *_, b in rows]):.3f} |")
-
-
 # --------------------------------------------------------------------------------------------------- main
 
 
 def main(argv: list[str]) -> None:
-    parts = set(argv) or {"neutrals", "tone", "fog"}
-    if "neutrals" in parts:
-        neutrals_report()
-    if "tone" in parts:
-        tone_report()
-    if "fog" in parts:
-        fog_report()
+    neutrals_report()
 
 
 if __name__ == "__main__":

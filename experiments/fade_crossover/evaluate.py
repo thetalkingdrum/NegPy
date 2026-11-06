@@ -70,21 +70,18 @@ def report(title: str, film, **scene_kw) -> None:
         print(f"| {name} | " + " | ".join(cells) + f" | {d0[0]:+.1f} | {d0[1]:+.0f} | {dr[0]:+.1f} | {dr[1]:+.0f} |")
 
 
-#: (label, process fields) of the model comparison: color model, tone and Estimate neutrals.
+#: (label, process fields) of the model comparison: color model and Estimate neutrals.
 VARIANTS = (
     ("NegPy, Crossover 0", dict(fade_ab_model="negpy", fade_crossover=0.0)),
     ("NegPy, Crossover 100 %", dict(fade_ab_model="negpy")),
     ("NC model", dict(fade_ab_model="nc")),
-    ("NegPy, Crossover 0 + NC tone", dict(fade_ab_model="negpy", fade_crossover=0.0, fade_ab_tone="nc")),
-    ("NegPy, Crossover 100 % + NC tone", dict(fade_ab_model="negpy", fade_ab_tone="nc")),
-    ("NC model + NC tone", dict(fade_ab_model="nc", fade_ab_tone="nc")),
 )
 
 
 def models(title: str, film, **scene_kw) -> None:
-    """Every color model and tone at crossover 1: the ramp's C* and the patches' distance from the unfaded film."""
+    """Every color model at crossover 1: the ramp's C* and the patches' distance from the unfaded film."""
     from fade_crossover_scene import estimate_grid
-    from negpy.features.process.fade import EstimateMethod, estimate_fade
+    from negpy.features.process.fade import estimate_fade
 
     scene = build_scene(**scene_kw)
     image = scan_image(film, scene)
@@ -93,7 +90,7 @@ def models(title: str, film, **scene_kw) -> None:
     print(f"\n## Models: {title}\n")
     print("| variant | neutrals | ramp C* max | ramp C* mean | patch dE76 mean | patch dE76 max |\n|---|---|---|---|---|---|")
     for neutrals in ("negpy", "nc"):
-        est = estimate_fade(grid, neutrals=neutrals)[EstimateMethod.MIDTONE]
+        est = estimate_fade(grid, mix=1.0 if neutrals == "nc" else 0.0)
         for label, fields in VARIANTS:
             if neutrals == "nc" and fields.get("fade_ab_model") == "nc":
                 continue  # the NC model ignores the survivals, so the neutrals do not reach it

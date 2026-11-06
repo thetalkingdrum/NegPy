@@ -76,6 +76,7 @@ _SENSOR_FIELDS = (
     "crosstalk_matrix",
     "crosstalk_process",
     "fade_ratio_r",
+    "fade_density_shift",
     "fade_ratio_g",
     "fade_ratio_b",
     "fade_white_anchor",
@@ -84,13 +85,10 @@ _SENSOR_FIELDS = (
     "fade_white_b",
     "fade_white_space",
     "fade_crossover",
-    "fade_ab_neutrals",
     "fade_neutrals_mix",
     "fade_ab_model",
-    "fade_ab_tone",
     "fade_tone_strength",
     "fade_ab_scanner_zero",
-    "fade_ab_fog",
     "fade_tone_saved",
     "hue_trim",
 )
@@ -817,29 +815,14 @@ class ControlsPanel(QWidget):
         )
         for btn, tip, action_id in (
             (
-                self.sensor_sidebar.fade_ab_neutrals_btn,
-                tr("Which pixels Estimate reads as gray: NegPy's gray finder, or the one from NegativeConverter."),
-                "fade_ab_neutrals_cycle",
-            ),
-            (
                 self.sensor_sidebar.fade_ab_model_btn,
                 tr("How the fade is corrected: Survival with Crossover, or NegativeConverter's color table."),
                 "fade_ab_model_cycle",
             ),
             (
-                self.sensor_sidebar.fade_ab_tone_btn,
-                tr("Automatic levels and contrast for a faded slide: NegativeConverter's curve, or NegPy's values in the tone sliders."),
-                "fade_ab_tone_cycle",
-            ),
-            (
                 self.sensor_sidebar.fade_ab_scanner_zero_btn,
                 tr("Where a scanner file's fade is measured from: full scale, the clear film per channel, or the clear film as a gray."),
                 "fade_ab_scanner_zero_cycle",
-            ),
-            (
-                self.sensor_sidebar.fade_ab_fog_btn,
-                tr("Removes fog that is denser in one part of the slide: NegativeConverter's method or NegPy's."),
-                "fade_ab_fog_cycle",
             ),
         ):
             btn.setToolTip(tooltip_with_shortcut(tip, action_id))

@@ -12,13 +12,10 @@ from negpy.desktop.view.widgets.fold import group_fold
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.desktop.view.widgets.segmented_choice import SegmentedChoice
 from negpy.desktop.view.widgets.step_combo import StepCombo
-from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS, EstimateMethod, FadeEstimate, fade_white_space, stain_suggested
+from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS, FadeEstimate, fade_white_space, stain_suggested
 from negpy.features.process.models import (
-    FadeABFog,
     FadeABModel,
-    FadeABNeutrals,
     FadeABScannerZero,
-    FadeABTone,
     ProcessMode,
     SensorUnmix,
     invalidate_local_bounds,
@@ -48,24 +45,23 @@ _UNMIX_CHOICES = (
 _CROSSTALK_FIELDS = ("crosstalk_profile", "crosstalk_matrix", "crosstalk_strength", "crosstalk_process")
 
 
-# The Estimate method the panel last used, kept across sessions.
-_ESTIMATE_METHOD_KEY = "fade_estimate_method"
 _REMOVE_STAIN_ICON = "fa5s.tint-slash"
 
 
-def _estimate_hint(method: "EstimateMethod", chosen: "FadeEstimate", other: "FadeEstimate") -> str:
-    """The result, or why there is none, then what the other method reads: a large gap says the
-    frame holds a cast the fade does not explain."""
+def _estimate_hint(chosen: "FadeEstimate") -> str:
+    """The result, or why there is none."""
     if chosen.reason and chosen.green == 1.0 and chosen.blue == 1.0:
         return chosen.reason
     red = chosen.red if chosen.red is not None else 1.0
     text = tr("Estimated: red {r}, green {g}, blue {b}.", r=f"{red:.2f}", g=f"{chosen.green:.2f}", b=f"{chosen.blue:.2f}")
     if chosen.reason:
         text = chosen.reason + " " + text
-    if not (other.reason and other.green == 1.0 and other.blue == 1.0):
-        name = tr("Gray Range") if method == EstimateMethod.MIDTONE else tr("Midtone")
-        text += " " + tr("{method} reads green {g}, blue {b}.", method=name, g=f"{other.green:.2f}", b=f"{other.blue:.2f}")
     return text
+
+
+def _estimated(conf) -> bool:
+    """Whether Estimate (or a hand setting) has set this frame's survivals."""
+    return conf.fade_crossover_table is not None or (conf.fade_ratio_r, conf.fade_ratio_g, conf.fade_ratio_b) != (1.0, 1.0, 1.0)
 
 
 class SensorSidebar(BaseSidebar):
@@ -184,19 +180,7 @@ class SensorSidebar(BaseSidebar):
             tr("Estimate"),
             tr("Sets the Survival sliders from the grays in this frame. If it finds no result, set them by hand."),
         )
-        self.estimate_method_combo = StepCombo.of(
-            [tr("Midtone"), tr("Gray Range")],
-            tr("How Estimate reads the grays: Midtone suits a badly faded slide, Gray Range a mild fade with deep shadows."),
-            [m.value for m in EstimateMethod],
-        )
-        self.estimate_method_combo.set_item_tooltip(0, tr("Midtone: from the color of the middle grays."))
-        self.estimate_method_combo.set_item_tooltip(1, tr("Gray Range: from how far the grays reach into the shadows."))
-        saved = self.controller.session.repo.get_global_setting(_ESTIMATE_METHOD_KEY, EstimateMethod.MIDTONE)
-        self.estimate_method_combo.setCurrentIndex(
-            max(0, self.estimate_method_combo.findData(str(saved) if isinstance(saved, str) else ""))
-        )
-        self.fade_estimate_row.addWidget(self.estimate_fade_btn)
-        self.fade_estimate_row.addWidget(self.estimate_method_combo, 1)
+        self.fade_estimate_row.addWidget(self.estimate_fade_btn, 1)
         self.fade_estimate_row.addWidget(self.fade_white_anchor_btn)
 
         # The estimate, or which fail-closed condition fired.
@@ -208,6 +192,8 @@ class SensorSidebar(BaseSidebar):
         self._fade_hint_hash: Optional[str] = None
         # (grid, key, gray readings) of the last Estimate, which a Mix drag blends again.
         self._gray_memo: Optional[tuple] = None
+        # The frame where only the tone-band reader found grays: Neutrals stays open there at every value.
+        self._nc_only_hash: Optional[str] = None
 
         self.fade_crossover_slider = CompactSlider(tr("Crossover"), 0.0, 100.0, conf.fade_crossover * 100.0, step=1.0, unit="%")
         self.fade_crossover_slider.setToolTip(
@@ -218,54 +204,22 @@ class SensorSidebar(BaseSidebar):
         self.fade_crossover_hint.setVisible(False)
 
         # A/B against NegativeConverter's expired-film rescue. The values are the stored enum values.
-        self.fade_ab_neutrals_btn = SegmentedChoice(
-            (("fa5s.film", tr("NegPy")), ("fa5s.cloud", tr("No Sky")), ("fa5s.exchange-alt", tr("NC"))),
-            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
-            data=tuple(m.value for m in FadeABNeutrals),
-        )
         self.fade_ab_model_btn = SegmentedChoice(
             (("fa5s.film", tr("NegPy")), ("fa5s.exchange-alt", tr("NC"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABModel),
-        )
-        self.fade_ab_tone_btn = SegmentedChoice(
-            (("fa5s.ban", tr("Off")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.film", tr("NegPy")), ("fa5s.arrows-alt-v", tr("Adaptive"))),
-            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
-            data=tuple(m.value for m in FadeABTone),
         )
         self.fade_ab_scanner_zero_btn = SegmentedChoice(
             (("fa5s.expand", tr("Full Scale")), ("fa5s.film", tr("Film")), ("fa5s.adjust", tr("Gray"))),
             "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
             data=tuple(m.value for m in FadeABScannerZero),
         )
-        self.fade_ab_fog_btn = SegmentedChoice(
-            (("fa5s.ban", tr("Off")), ("fa5s.exchange-alt", tr("NC")), ("fa5s.film", tr("NegPy"))),
-            "",  # set with its shortcut in controls_panel.apply_shortcut_tooltips
-            data=tuple(m.value for m in FadeABFog),
-        )
         for btn, tips in (
-            (
-                self.fade_ab_neutrals_btn,
-                (
-                    tr("NegPy: the gray finder Estimate always uses."),
-                    tr("No Sky: the NegPy gray finder, but it also reads bluish grays, such as shade lit by the sky."),
-                    tr("NC: NegativeConverter's gray finder."),
-                ),
-            ),
             (
                 self.fade_ab_model_btn,
                 (
                     tr("NegPy: the Survival sliders, then Crossover."),
                     tr("NC: NegativeConverter's color table on the image, with Survival and Remove Stain off."),
-                ),
-            ),
-            (
-                self.fade_ab_tone_btn,
-                (
-                    tr("Off: the tone sliders as you set them."),
-                    tr("NC: NegativeConverter's levels, brightness and contrast."),
-                    tr("NegPy: sets Print Density and ISO-R Grade from this frame. Off gives your values back."),
-                    tr("Adaptive: sets Print Density and ISO-R Grade so the frame fills a normal print range. Off gives your values back."),
                 ),
             ),
             (
@@ -276,37 +230,35 @@ class SensorSidebar(BaseSidebar):
                     tr("Gray: from the clear film's mean level, the same in each color."),
                 ),
             ),
-            (
-                self.fade_ab_fog_btn,
-                (
-                    tr("Off: no fog removal."),
-                    tr("NC: NegativeConverter's fog removal on the image."),
-                    tr("NegPy: removes the uneven part of the fog from the film's density."),
-                ),
-            ),
         ):
             for i, tip in enumerate(tips):
                 btn.set_choice_tooltip(i, tip)
         self._scanner_zero_row = field_row(tr("Scanner zero"), self.fade_ab_scanner_zero_btn)
-        self.fade_neutrals_mix_slider = CompactSlider(tr("Mix"), 0.0, 100.0, conf.fade_neutrals_mix * 100.0, step=1.0, unit="%")
+        self.fade_neutrals_mix_slider = CompactSlider(tr("Neutrals"), 0.0, 100.0, conf.fade_neutrals_mix * 100.0, step=1.0, unit="%")
         self.fade_neutrals_mix_slider.setToolTip(
-            tr("Moves the grays Estimate reads from the chosen gray finder toward NegativeConverter's, and estimates again as you drag.")
+            tr(
+                "Blends the grays Estimate reads from the gray finder toward tone bands, from shadows to highlights, and estimates again as you drag."
+            )
         )
-        self.fade_tone_strength_slider = CompactSlider(tr("Tone Strength"), 0.0, 100.0, conf.fade_tone_strength * 100.0, step=1.0, unit="%")
-        self.fade_tone_strength_slider.setToolTip(tr("How far Tone moves Print Density and ISO-R Grade from your values toward its own."))
-        # Why Tone NegPy has no values to write.
+        self.fade_tone_strength_slider = CompactSlider(tr("Tone"), 0.0, 100.0, conf.fade_tone_strength * 100.0, step=1.0, unit="%")
+        self.fade_tone_strength_slider.setToolTip(
+            tr("Moves Print Density and ISO-R Grade toward values that fill a normal print range. 0 gives your values back.")
+        )
+        self.fade_auto_red_btn = labeled_action(
+            "fa5s.magic",
+            tr("Auto Red"),
+            tr("Sets Red Survival so the frame fills a normal slide's range from its lightest to its darkest tones."),
+        )
+        # Why Tone or Auto Red has no values to write.
         self.fade_tone_hint = hint_label("")
         self.fade_tone_hint.setVisible(False)
         compare_header, self.fade_compare_fold = group_fold(
             "sensor_fade_compare",
             tr("Compare"),
-            field_row(tr("Neutrals"), self.fade_ab_neutrals_btn),
-            self.fade_neutrals_mix_slider,
             field_row(tr("Color model"), self.fade_ab_model_btn),
-            field_row(tr("Tone"), self.fade_ab_tone_btn),
             self.fade_tone_strength_slider,
+            self.fade_auto_red_btn,
             self._scanner_zero_row,
-            field_row(tr("Uneven fog"), self.fade_ab_fog_btn),
             self.fade_tone_hint,
         )
         self.fade_compare_fold.button.setToolTip(
@@ -322,6 +274,7 @@ class SensorSidebar(BaseSidebar):
             self.fade_estimate_row,
             self.fade_estimate_hint,
             self.fade_stain_hint,
+            self.fade_neutrals_mix_slider,
             self.fade_crossover_slider,
             self.fade_crossover_hint,
             compare_header,
@@ -436,13 +389,10 @@ class SensorSidebar(BaseSidebar):
         self.fade_crossover_slider.valueChanged.connect(lambda v: self._on_fade_crossover_changed(v, persist=False))
         self.fade_crossover_slider.valueCommitted.connect(lambda v: self._on_fade_crossover_changed(v, persist=True))
         for btn, field in (
-            (self.fade_ab_neutrals_btn, "fade_ab_neutrals"),
             (self.fade_ab_model_btn, "fade_ab_model"),
             (self.fade_ab_scanner_zero_btn, "fade_ab_scanner_zero"),
-            (self.fade_ab_fog_btn, "fade_ab_fog"),
         ):
             btn.currentChanged.connect(lambda _i, b=btn, f=field: self.controller.set_roll_default("fade", **{f: b.currentData()}))
-        self.fade_ab_tone_btn.currentChanged.connect(lambda _i: self._on_fade_tone_changed(self.fade_ab_tone_btn.currentData()))
         self.fade_neutrals_mix_slider.valueChanged.connect(lambda v: self._on_fade_neutrals_mix_changed(v, persist=False))
         self.fade_neutrals_mix_slider.valueCommitted.connect(lambda v: self._on_fade_neutrals_mix_changed(v, persist=True))
         self.fade_tone_strength_slider.valueChanged.connect(lambda v: self._on_fade_tone_strength_changed(v, persist=False))
@@ -463,9 +413,7 @@ class SensorSidebar(BaseSidebar):
         )
         self.fade_white_anchor_btn.toggled.connect(self._on_fade_white_anchor_toggled)
         self.estimate_fade_btn.clicked.connect(self._on_estimate_fade)
-        self.estimate_method_combo.currentIndexChanged.connect(
-            lambda _i: self.controller.session.repo.save_global_setting(_ESTIMATE_METHOD_KEY, str(self.estimate_method_combo.currentData()))
-        )
+        self.fade_auto_red_btn.clicked.connect(self._on_auto_red)
         self.hue_trim_slider.valueChanged.connect(lambda v: self._on_hue_trim_changed(v, persist=False))
         self.hue_trim_slider.valueCommitted.connect(lambda v: self._on_hue_trim_changed(v, persist=True))
 
@@ -623,21 +571,12 @@ class SensorSidebar(BaseSidebar):
         self.sync_ui()
 
     def _on_fade_ratio_r_changed(self, val: float, persist: bool = True) -> None:
-        self.controller.set_roll_default(
-            "fade",
-            persist=persist,
-            readback_metrics=persist,
-            fade_ratio_r=val,
-        )
+        changes = self._with_survival_crossover({"fade_ratio_r": val})
+        self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, **changes)
 
     def _on_fade_ratio_changed(self, ratio_g: float, ratio_b: float, persist: bool = True) -> None:
-        self.controller.set_roll_default(
-            "fade",
-            persist=persist,
-            readback_metrics=persist,
-            fade_ratio_g=ratio_g,
-            fade_ratio_b=ratio_b,
-        )
+        changes = self._with_survival_crossover({"fade_ratio_g": ratio_g, "fade_ratio_b": ratio_b})
+        self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, **changes)
 
     @staticmethod
     def cycle_choice(btn: SegmentedChoice) -> None:
@@ -646,19 +585,44 @@ class SensorSidebar(BaseSidebar):
 
     def _on_fade_neutrals_mix_changed(self, val: float, persist: bool = True) -> None:
         """Mix runs Estimate again: a drag blends the gray readings it has, and the release measures the crossover too."""
+        if not self._neutrals_open(self.state.config.process):
+            return
         self._run_estimate(self.state.config.process.fade_white_anchor, mix=val / 100.0, live=not persist)
 
-    def _on_fade_tone_strength_changed(self, val: float, persist: bool = True) -> None:
-        """Under a Tone that writes the sliders, the strength writes them again from the saved values;
-        under any other, it is only stored for the next time one is chosen."""
-        from negpy.features.process.fade_tone import TONE_FITS, fade_tone_changes
+    def _on_auto_red(self) -> None:
+        """Red Survival from the frame's range, with the density shift that keeps its median where it
+        printed, so the colors Estimate found stay."""
+        from negpy.desktop.workers.chart_fit import fade_estimate_grid
 
-        conf = self.state.config
-        tone = FadeABTone(conf.process.fade_ab_tone)
-        if tone not in TONE_FITS:
-            self.controller.set_roll_default("fade", persist=persist, readback_metrics=False, fade_tone_strength=val / 100.0)
-            return
-        changes, reason = fade_tone_changes(conf, tone, self.state.last_metrics, val / 100.0)
+        source = self.controller.chart_fit_source()
+        grid = None if source is None else fade_estimate_grid(source)
+        changes, reason = None, tr("No image loaded to estimate from.")
+        if grid is not None:
+            changes, reason = self._auto_red_changes(self.state.config.process, source, grid)
+        self.fade_tone_hint.setText(reason)
+        self.fade_tone_hint.setVisible(bool(reason))
+        if changes is not None:
+            self.controller.set_roll_default("fade", **self._with_survival_crossover(changes))
+
+    @staticmethod
+    def _auto_red_changes(conf, source, grid) -> tuple[Optional[dict], str]:
+        """`fade_tone.auto_red` for the survivals and shift in *conf*."""
+        from negpy.features.process.fade import render_white_space
+        from negpy.features.process.fade_tone import auto_red, survival_points
+
+        space = render_white_space(conf, conf.process_mode, source.cam_xyz, source.camera_wb)
+        g, b, shift = conf.fade_ratio_g, conf.fade_ratio_b, conf.fade_density_shift
+
+        def points_at(red: float):
+            return survival_points(grid, conf, (red, g, b), conf.fade_white_anchor, bool(space), space, shift)
+
+        return auto_red(points_at, conf.fade_ratio_r, shift)
+
+    def _on_fade_tone_strength_changed(self, val: float, persist: bool = True) -> None:
+        """Tone writes the Adaptive fit into Print Density and ISO-R Grade from the saved values; 0 gives them back."""
+        from negpy.features.process.fade_tone import fade_tone_changes
+
+        changes, reason = fade_tone_changes(self.state.config, self.state.last_metrics, val / 100.0)
         self.fade_tone_hint.setText(reason)
         self.fade_tone_hint.setVisible(bool(reason))
         if changes is not None:
@@ -683,20 +647,15 @@ class SensorSidebar(BaseSidebar):
             if not negpy:
                 text += " " + tr("Set Color model to NegPy to use Crossover.")
         self.fade_crossover_hint.setText(text)
-        # Mix is a NegPy color model setting that blends NegPy's (or No Sky's) grays with NC's.
+        # Neutrals is a NegPy color model setting that blends NegPy's grays with NC's. It runs
+        # Estimate again, so it waits for one on this frame.
         self.fade_neutrals_mix_slider.setValue(conf.fade_neutrals_mix * 100.0)
         self.fade_neutrals_mix_slider.setVisible(negpy)
-        self.fade_neutrals_mix_slider.setEnabled(conf.fade_ab_neutrals != FadeABNeutrals.NC)
-        from negpy.features.process.fade_tone import TONE_FITS
-
+        self.fade_neutrals_mix_slider.setEnabled(self._neutrals_open(conf))
         self.fade_tone_strength_slider.setValue(conf.fade_tone_strength * 100.0)
-        self.fade_tone_strength_slider.setVisible(FadeABTone(conf.fade_ab_tone) in TONE_FITS)
         for btn, value in (
-            (self.fade_ab_neutrals_btn, conf.fade_ab_neutrals),
             (self.fade_ab_model_btn, conf.fade_ab_model),
-            (self.fade_ab_tone_btn, conf.fade_ab_tone),
             (self.fade_ab_scanner_zero_btn, conf.fade_ab_scanner_zero),
-            (self.fade_ab_fog_btn, conf.fade_ab_fog),
         ):
             btn.setCurrentIndex(max(0, btn.findData(str(value))))
         # A camera RAW scales about its own white; only a scanner file has a zero to choose.
@@ -706,19 +665,6 @@ class SensorSidebar(BaseSidebar):
             widget = self._scanner_zero_row.itemAt(i).widget()
             if widget is not None:
                 widget.setVisible(scanner)
-
-    def _on_fade_tone_changed(self, tone: str) -> None:
-        """Tone NegPy writes this frame's tone into the sliders and keeps the values it replaced;
-        any other choice puts those values back first."""
-        from negpy.features.process.fade_tone import fade_tone_changes
-
-        changes, reason = fade_tone_changes(self.state.config, FadeABTone(tone), self.state.last_metrics)
-        self.fade_tone_hint.setText(reason)
-        self.fade_tone_hint.setVisible(bool(reason))
-        if changes is None:
-            self.sync_ui()
-            return
-        self.controller.set_fade_tone(changes)
 
     def _show_fade_hint(self, text: str, stain: str = "") -> None:
         """The hints belong to the frame they were written on; sync_ui clears them on another frame.
@@ -734,13 +680,68 @@ class SensorSidebar(BaseSidebar):
         set_toggle_suggested(self.fade_white_anchor_btn, _REMOVE_STAIN_ICON, bool(text))
 
     def _on_fade_white_anchor_toggled(self, checked: bool) -> None:
+        estimated = _estimated(self.state.config.process)
         self.controller.set_roll_default("fade", fade_white_anchor=checked)
-        if checked:
-            # The white is this frame's own, and the survivals read again above it.
-            self._run_estimate(white_anchor=True)
+        # The survivals were read with the other setting, so Estimate reads them again: on, above the
+        # frame's own white; off, on an estimated frame, without it.
+        if checked or estimated:
+            self._run_estimate(white_anchor=checked)
         else:
-            # An earlier Estimate's hint was read with the other setting.
             self._show_fade_hint("")
+
+    def _neutrals_open(self, conf) -> bool:
+        """Neutrals runs Estimate again, so it waits for one on this frame."""
+        return _estimated(conf) or (self._nc_only_hash is not None and self._nc_only_hash == self.state.current_file_hash)
+
+    def _nc_grays_only(self, grid) -> bool:
+        """Whether the last gray reading on *grid* found only NC's grays."""
+        from negpy.features.process.fade import nc_grays_only
+
+        memo = self._gray_memo
+        return memo is not None and memo[0] is grid and nc_grays_only(memo[2])
+
+    def _gray_reader(self, grid, anchor: bool, space: str, mix: float):
+        """Estimate's gray reader on *grid* at Neutrals *mix*. The readings depend on the grid and the
+        anchor, never on the mix, so they are kept for the next call."""
+        from negpy.features.process.fade import blend_gray_readings, gray_readings
+
+        memo_key = (anchor, space)
+
+        def reader(gray_grid):
+            memo = self._gray_memo
+            if memo is None or memo[0] is not grid or memo[1] != memo_key:
+                memo = self._gray_memo = (grid, memo_key, gray_readings(gray_grid))
+            return blend_gray_readings(memo[2], mix)
+
+        return reader
+
+    def _with_survival_crossover(self, survivals: dict, mix: Optional[float] = None) -> dict:
+        """*survivals* plus the crossover table Estimate measures after them, with the frame's Neutrals
+        and *mix* (the stored Mix when None). Without it a render measures the stale table again with
+        NegPy's grays, and the correction jumps."""
+        from negpy.desktop.workers.chart_fit import fade_estimate_grid
+        from negpy.features.process.fade import crossover_space, fade_density, render_white_space, survival_crossover
+
+        conf = self.state.config.process
+        mix = conf.fade_neutrals_mix if mix is None else mix
+        if conf.fade_crossover_table is None or conf.fade_ab_model != FadeABModel.NEGPY or render_path(conf) is RenderPath.PRINT:
+            return survivals
+        source = self.controller.chart_fit_source()
+        grid = None if source is None else fade_estimate_grid(source)
+        if grid is None:
+            return survivals
+        new_conf = replace(conf, **survivals)
+        space = render_white_space(new_conf, conf.process_mode, source.cam_xyz, source.camera_wb)
+        anchor = conf.fade_white_anchor
+        reader = self._gray_reader(grid, anchor, space, mix)
+        rgb = (new_conf.fade_ratio_r, new_conf.fade_ratio_g, new_conf.fade_ratio_b)
+        table = survival_crossover(
+            grid, reader, rgb, white_anchor=anchor, camera_raw=bool(space), white_space=space, shift=new_conf.fade_density_shift
+        )
+        if table is None:
+            return survivals
+        tag = crossover_space(fade_density(new_conf, conf.process_mode, space), space, new_conf)
+        return {**survivals, "fade_crossover_table": table, "fade_crossover_space": tag}
 
     def _on_estimate_fade(self) -> None:
         self._run_estimate(self.state.config.process.fade_white_anchor)
@@ -748,14 +749,7 @@ class SensorSidebar(BaseSidebar):
     def _run_estimate(self, white_anchor: bool, mix: Optional[float] = None, live: bool = False) -> None:
         """Estimate with *mix* (the stored Mix when None). *live* is a Mix drag: no crossover table, no undo step."""
         from negpy.desktop.workers.chart_fit import fade_estimate_grid
-        from negpy.features.process.fade import (
-            blend_gray_readings,
-            crossover_space,
-            estimate_fade_with,
-            fade_density,
-            gray_readings,
-            render_white_space,
-        )
+        from negpy.features.process.fade import crossover_space, estimate_fade_with, fade_density, render_white_space, toward_no_change
 
         conf = self.state.config.process
         mix_changes = {} if mix is None else {"fade_neutrals_mix": mix}
@@ -770,23 +764,21 @@ class SensorSidebar(BaseSidebar):
             if mix_changes:
                 self.controller.set_roll_default("fade", persist=persist, readback_metrics=False, **mix_changes)
             return
-        method = EstimateMethod(self.estimate_method_combo.currentData())
         anchor = white_anchor
         space = render_white_space(conf, conf.process_mode, source.cam_xyz, source.camera_wb)
-        neutrals = conf.fade_ab_neutrals
-        memo_key = (anchor, space, str(neutrals))
-
-        def reader(gray_grid):
-            # The readings depend on the grid and the anchor, never on Mix.
-            if neutrals == FadeABNeutrals.NC:
-                return gray_readings(gray_grid, neutrals)[1]
-            memo = self._gray_memo
-            if memo is None or memo[0] is not grid or memo[1] != memo_key:
-                memo = self._gray_memo = (grid, memo_key, gray_readings(gray_grid, neutrals))
-            return blend_gray_readings(memo[2], mix)
-
-        estimates = estimate_fade_with(grid, reader, white_anchor=anchor, camera_raw=bool(space), white_space=space, crossover=not live)
-        chosen, other = estimates[method], estimates[next(m for m in EstimateMethod if m != method)]
+        reader = self._gray_reader(grid, anchor, space, mix)
+        chosen = estimate_fade_with(grid, reader, white_anchor=anchor, camera_raw=bool(space), white_space=space, crossover=not live)
+        # Where NegPy's gray finder finds no grays, Estimate reads the tone bands' at full Neutrals, and
+        # Neutrals moves from no change to that estimate.
+        nc_only = self._nc_grays_only(grid)
+        if nc_only:
+            self._nc_only_hash = self.state.current_file_hash
+            if not mix_changes:
+                mix, mix_changes = 1.0, {"fade_neutrals_mix": 1.0}
+                self.fade_neutrals_mix_slider.blockSignals(True)
+                self.fade_neutrals_mix_slider.setValue(100.0)
+                self.fade_neutrals_mix_slider.blockSignals(False)
+            chosen = toward_no_change(chosen, mix)
         failed = bool(chosen.reason) and chosen.green == 1.0 and chosen.blue == 1.0
         # The white is stored with the survivals; a render measures one only for a stale camera RAW
         # white. A failed reading stores it only where it is plainly a stain on clear film. A camera
@@ -797,7 +789,9 @@ class SensorSidebar(BaseSidebar):
         stain = ""
         if not anchor and chosen.white is not None and stain_suggested(chosen.white):
             stain = tr("The clear areas have a yellow stain: turn on Remove Stain.")
-        hint = _estimate_hint(method, chosen, other)
+        hint = _estimate_hint(chosen)
+        if nc_only:
+            hint = tr("Grays found by tone bands.") + " " + hint
         if anchor and not white and (conf.fade_white_r, conf.fade_white_g, conf.fade_white_b) == (0.0, 0.0, 0.0):
             hint += " " + tr("No stain found to remove.")
         self._show_fade_hint(hint, stain)
@@ -817,11 +811,25 @@ class SensorSidebar(BaseSidebar):
             slider.blockSignals(True)
             slider.setValue(value)
             slider.blockSignals(False)
-        survivals = dict(fade_ratio_r=red, fade_ratio_g=chosen.green, fade_ratio_b=chosen.blue, **white, **mix_changes)
+        # Estimate's table is read with no shift, and a new red makes Auto Red's shift stale.
+        survivals = dict(
+            fade_ratio_r=red, fade_ratio_g=chosen.green, fade_ratio_b=chosen.blue, fade_density_shift=0.0, **white, **mix_changes
+        )
+        # A Mix change keeps Auto Red: it runs again on the new grays, and the table is measured after it.
+        auto = None
+        if mix_changes and conf.fade_density_shift != 0.0:
+            auto, _ = self._auto_red_changes(replace(conf, **survivals), source, grid)
+        if auto is not None:
+            survivals.update(auto)
+            self.fade_ratio_r_slider.blockSignals(True)
+            self.fade_ratio_r_slider.setValue(auto["fade_ratio_r"])
+            self.fade_ratio_r_slider.blockSignals(False)
         # The table was measured after these survivals; a frame keeps its own, so it locks no card.
         # A drag keeps the last table until the release measures it again.
         crossover = {}
-        if chosen.crossover is not None:
+        if (auto is not None or (nc_only and chosen.crossover is None)) and not live:
+            survivals = self._with_survival_crossover(survivals, mix)
+        elif chosen.crossover is not None:
             new_conf = replace(conf, **survivals)
             tag = crossover_space(fade_density(new_conf, conf.process_mode, space), space, new_conf)
             crossover = dict(fade_crossover_table=chosen.crossover, fade_crossover_space=tag)
@@ -910,11 +918,8 @@ class SensorSidebar(BaseSidebar):
             self.fade_crossover_slider,
             self.fade_neutrals_mix_slider,
             self.fade_tone_strength_slider,
-            self.fade_ab_neutrals_btn,
             self.fade_ab_model_btn,
-            self.fade_ab_tone_btn,
             self.fade_ab_scanner_zero_btn,
-            self.fade_ab_fog_btn,
             self.hue_trim_slider,
         ):
             w.blockSignals(blocked)
