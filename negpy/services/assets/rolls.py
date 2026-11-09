@@ -790,6 +790,24 @@ def set_roll_defaults(repo: Any, roll_id: str, **fields: Any) -> None:
     _write(repo, store)
 
 
+def set_roll_crossover_source(repo: Any, roll_id: str, name: str, table: Any) -> None:
+    """Records the frame *name* whose crossover *table* Share Crossover gave the roll. No-op for an unknown id."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    entry["fade_crossover_source"] = {"name": name, "table": list(table)}
+    _write(repo, store)
+
+
+def roll_crossover_source(repo: Any, roll_id: str, table: Any) -> str:
+    """The frame Share Crossover took *table* from, "" when the roll's table came from elsewhere since."""
+    source = (roll_for_id(repo, roll_id) or {}).get("fade_crossover_source")
+    if not isinstance(source, dict) or table is None or not same_value(tuple(source.get("table") or ()), tuple(table)):
+        return ""
+    return str(source.get("name", ""))
+
+
 # A snapshot value for a field the roll had no default for.
 _ABSENT = object()
 
@@ -904,6 +922,41 @@ def set_frame_override(
         baselines[file_hash] = frame
     else:
         baselines.pop(file_hash, None)
+    entry["frame_baselines"] = baselines
+    _write(repo, store)
+
+
+def card_locks_snapshot(repo: Any, roll_id: str, card_key: str, hashes) -> Dict[str, Any]:
+    """For each of *hashes* (unforked), the baseline its lock on *card_key* holds, or None where the
+    card follows the roll."""
+    entry = roll_for_id(repo, roll_id) or {}
+    overrides, baselines = entry.get("frame_overrides", {}), entry.get("frame_baselines", {})
+    return {h: dict(baselines.get(h, {}).get(card_key, {})) if card_key in overrides.get(h, ()) else None for h in hashes}
+
+
+def restore_card_locks(repo: Any, roll_id: str, card_key: str, snapshot: Dict[str, Any]) -> None:
+    """Puts back the locks and baselines of a card_locks_snapshot. No-op for an unknown roll id."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    overrides = dict(entry.get("frame_overrides", {}))
+    baselines = dict(entry.get("frame_baselines", {}))
+    for file_hash, baseline in snapshot.items():
+        cards = set(overrides.get(file_hash, ()))
+        frame = {c: v for c, v in baselines.get(file_hash, {}).items() if c != card_key}
+        if baseline is None:
+            cards.discard(card_key)
+        else:
+            cards.add(card_key)
+            if baseline:
+                frame[card_key] = dict(baseline)
+        for table, key, value in ((overrides, file_hash, sorted(cards)), (baselines, file_hash, frame)):
+            if value:
+                table[key] = value
+            else:
+                table.pop(key, None)
+    entry["frame_overrides"] = overrides
     entry["frame_baselines"] = baselines
     _write(repo, store)
 
