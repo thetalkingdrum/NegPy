@@ -3016,6 +3016,8 @@
   "The company that makes the film": "Der Hersteller des Films",
   "The contrast Auto Grade gives each frame.": "Der Kontrast, den die Auto-Gradation jedem Bild gibt.",
   "The country where the frame was shot.": "Das Land, in dem das Bild aufgenommen wurde.",
+  "The crosstalk profile has no neutral gray to measure against.": "Das Farbvermischungsprofil hat kein neutrales Grau, an dem gemessen werden kann.",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "Das Farbvermischungsprofil oder seine Stärke hat sich geändert, nachdem der Erhalt gesetzt wurde: Klicken Sie erneut auf Schätzen.",
   "The developer temperature, in degrees Celsius.": "Die Entwicklertemperatur in Grad Celsius.",
   "The developer that the film was processed in.": "Der Entwickler, in dem der Film entwickelt wurde.",
   "The developer the film was processed in": "Der Entwickler, in dem der Film entwickelt wurde",

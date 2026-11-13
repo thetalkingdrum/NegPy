@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 from negpy.domain.types import ImageBuffer
+from negpy.features.exposure.normalization import look_crosstalk_matrix
 from negpy.features.process.fade import (
     CROSSOVER_FLOOR,
     FadeEstimate,
@@ -15,6 +16,7 @@ from negpy.features.process.fade import (
     estimate_fade_with,
     fade_density,
     gray_readings,
+    look_tag,
     pick_neutrals,
     render_white_space,
     stain_suggested,
@@ -133,6 +135,7 @@ def measured_crossover(
         camera_raw=bool(space),
         white_space=space,
         shift=new_conf.fade_density_shift,
+        look=look_crosstalk_matrix(new_conf, conf.process_mode),
     )
     if table is None:
         return {}
@@ -159,10 +162,17 @@ def run_estimate(
     anchor = white_anchor
     space = render_white_space(conf, conf.process_mode, cam_xyz, camera_wb)
     reader = memo.reader(grid, anchor, space, mix)
+    look = look_crosstalk_matrix(conf, conf.process_mode)
     # A press of Estimate picks Gray Mix and measures the tables then; a drag measures none.
     pick = not live and not mix_changes
     chosen = estimate_fade_with(
-        grid, reader, white_anchor=anchor, camera_raw=bool(space), white_space=space, crossover=not live and not pick and not keep_table
+        grid,
+        reader,
+        white_anchor=anchor,
+        camera_raw=bool(space),
+        white_space=space,
+        crossover=not live and not pick and not keep_table,
+        look=look,
     )
     # Where the gray finder finds no grays, Estimate reads the tone bands at full Gray Mix, and Gray
     # Mix moves from no change to that estimate.
@@ -170,9 +180,9 @@ def run_estimate(
     picked, slider_mix = None, None
     if pick and chosen.red is not None:
         readings = memo.readings(grid)
-        found = None if tone_bands or readings is None else pick_neutrals(grid, readings, anchor, bool(space), space)
+        found = None if tone_bands or readings is None else pick_neutrals(grid, readings, anchor, bool(space), space, look)
         if found is None:
-            chosen = estimate_fade_with(grid, reader, white_anchor=anchor, camera_raw=bool(space), white_space=space)
+            chosen = estimate_fade_with(grid, reader, white_anchor=anchor, camera_raw=bool(space), white_space=space, look=look)
         else:
             picked, chosen = found
             mix, mix_changes, slider_mix = picked, {"fade_neutrals_mix": picked}, picked
@@ -203,7 +213,13 @@ def run_estimate(
     red = chosen.red if chosen.red is not None else conf.fade_ratio_r
     # Estimate's table is read with no shift, and a new red makes Restore Range's shift stale.
     survivals: dict[str, Any] = dict(
-        fade_ratio_r=red, fade_ratio_g=chosen.green, fade_ratio_b=chosen.blue, fade_density_shift=0.0, **white, **mix_changes
+        fade_ratio_r=red,
+        fade_ratio_g=chosen.green,
+        fade_ratio_b=chosen.blue,
+        fade_density_shift=0.0,
+        fade_survival_look=look_tag(conf, conf.process_mode),
+        **white,
+        **mix_changes,
     )
     # Restore Range keeps its Red: it runs again on the new grays, and the table is measured after it.
     short = not live and not conf.fade_auto_red and short_range(replace(conf, **survivals), cam_xyz, camera_wb, grid)

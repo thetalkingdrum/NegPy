@@ -147,7 +147,7 @@ FADE_RENDER_FIELDS = (
 #: The fade fields a frame's bounds measurement reads: the crossover table is set from them.
 FADE_METER_FIELDS = tuple(f for f in FADE_RENDER_FIELDS if f not in ("fade_crossover_table", "fade_crossover_space"))
 #: Every field of the Fade Restoration card.
-FADE_CARD_FIELDS = FADE_RENDER_FIELDS + ("fade_auto_red", "fade_red_trim", "fade_neutrals_mix")
+FADE_CARD_FIELDS = FADE_RENDER_FIELDS + ("fade_auto_red", "fade_red_trim", "fade_neutrals_mix", "fade_survival_look")
 
 
 @dataclass(frozen=True)
@@ -238,6 +238,13 @@ class ProcessConfig:
     # render can gate on it without disk access. The dye set differs between C-41 and
     # E-6, so a mismatch resolves to identity instead of mixing in the wrong matrix.
     crosstalk_process: str = ProcessMode.C41
+    # Per-channel density gain a Transparency profile carries (`gain` key), applied after the
+    # row-normalized matrix on slide paths. A scanner whose bands differ from the eye reads each
+    # dye's contrast differently; a row-normalized matrix keeps neutrals and cannot correct that.
+    crosstalk_gain: Optional[tuple] = None
+    # A Transparency profile's `stage = "look"`: its matrix maps scan channels to the eye and acts
+    # after Fade Restoration, else it separates the dyes and acts before it (`fade.fade_density`).
+    crosstalk_look: bool = False
 
     # Fade Restoration (`fade.fade_density`; docs/PIPELINE.md has the math). Survivals: red's own,
     # green and blue relative to red; all 1.0 is the identity. The shift is Restore Range's.
@@ -263,6 +270,8 @@ class ProcessConfig:
     fade_red_trim: float = 1.0
     # Gray Mix: Estimate's grays from the gray finder (0) to the tone bands (1) (`fade.gray_refs`).
     fade_neutrals_mix: float = 0.0
+    # The look profile the green and blue survivals were set against (`fade.look_tag`); "" for none.
+    fade_survival_look: str = ""
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion. A
     # per-setup property calibrated from three bare-light R/G/B exposures
@@ -308,6 +317,8 @@ class ProcessConfig:
             object.__setattr__(self, "locked_neutral_axis", neutral_axis_tuple(self.locked_neutral_axis))
         if self.crosstalk_matrix is not None:
             object.__setattr__(self, "crosstalk_matrix", tuple(self.crosstalk_matrix))
+        if self.crosstalk_gain is not None:
+            object.__setattr__(self, "crosstalk_gain", tuple(float(v) for v in self.crosstalk_gain))
         if self.sensor_matrix is not None:
             object.__setattr__(self, "sensor_matrix", tuple(self.sensor_matrix))
         if self.fade_crossover_table is not None:

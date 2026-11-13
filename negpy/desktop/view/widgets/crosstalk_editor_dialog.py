@@ -92,6 +92,8 @@ class CrosstalkEditorDialog(QDialog):
     def __init__(self, current_profile: str, current_strength: float, process_mode: Optional[str] = None, parent=None, *, repo=None):
         super().__init__(parent)
         self._selected_name: Optional[str] = None
+        self._gain: Optional[tuple] = None
+        self._look = False
         self._updating = False
         # What a new profile is for: the process being worked in, not a fixed default.
         self._default_process = str(process_mode or ProcessMode.C41)
@@ -299,6 +301,14 @@ class CrosstalkEditorDialog(QDialog):
     def selected_process(self) -> str:
         return self.process_combo.currentData() or str(ProcessMode.C41)
 
+    def selected_gain(self) -> Optional[tuple]:
+        """The selected profile's gain, which the editor keeps but does not show; None off Transparency."""
+        return self._gain if self.selected_process() == str(ProcessMode.E6) else None
+
+    def selected_look(self) -> bool:
+        """Whether the selected profile is a look profile, which the editor keeps but does not show."""
+        return self._look and self.selected_process() == str(ProcessMode.E6)
+
     def _set_process(self, value: str) -> None:
         idx = self.process_combo.findData(value)
         self.process_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -362,6 +372,7 @@ class CrosstalkEditorDialog(QDialog):
         self.name_edit.setText(name)
         self._set_type(CrosstalkProfiles.get_type(name))
         self._set_process(CrosstalkProfiles.get_process(name))
+        self._gain, self._look = CrosstalkProfiles.get_gain(name), CrosstalkProfiles.get_look(name)
         self._updating = False
 
         self.name_edit.setEnabled(editable)
@@ -401,7 +412,9 @@ class CrosstalkEditorDialog(QDialog):
         new_name = unique_copy_name(self._selected_name, self._all_names())
         # Takes the `tuned` default rather than inheriting a datasheet provenance claim. The
         # process IS inherited, because it says which dye set the numbers describe.
-        CrosstalkProfiles.save(new_name, self.working_matrix(), process=self.selected_process())
+        CrosstalkProfiles.save(
+            new_name, self.working_matrix(), process=self.selected_process(), gain=self.selected_gain(), look=self.selected_look()
+        )
         self.profiles_changed.emit()
         self._reload_list(select=new_name)
 
@@ -412,7 +425,9 @@ class CrosstalkEditorDialog(QDialog):
         old = self._selected_name
         if old and old != name and not CrosstalkProfiles.is_bundled(old):
             CrosstalkProfiles.delete(old)
-        CrosstalkProfiles.save(name, self.working_matrix(), self.selected_type(), self.selected_process())
+        CrosstalkProfiles.save(
+            name, self.working_matrix(), self.selected_type(), self.selected_process(), self.selected_gain(), self.selected_look()
+        )
         self.profiles_changed.emit()
         self._reload_list(select=name)
 

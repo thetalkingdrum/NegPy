@@ -245,6 +245,8 @@ class DarkroomEngine:
             settings.process.crosstalk_matrix,
             context.metrics.get("film_base"),  # the roll's picked base: the stage reads the densities above it
             settings.process.crosstalk_process,
+            settings.process.crosstalk_gain,
+            settings.process.crosstalk_look,
             *(getattr(settings.process, f) for f in FADE_RENDER_FIELDS),
             settings.process.lock_bounds,
             settings.process.use_cast_average,

@@ -32,7 +32,7 @@ _UNMIX_CHOICES = (
     ),
 )
 
-_CROSSTALK_FIELDS = ("crosstalk_profile", "crosstalk_matrix", "crosstalk_strength", "crosstalk_process")
+_CROSSTALK_FIELDS = ("crosstalk_profile", "crosstalk_matrix", "crosstalk_strength", "crosstalk_process", "crosstalk_gain", "crosstalk_look")
 
 
 class SensorSidebar(BaseSidebar):
@@ -283,6 +283,8 @@ class SensorSidebar(BaseSidebar):
             crosstalk_matrix=matrix,
             # Baked with the matrix so the render can gate on it without disk I/O.
             crosstalk_process=CrosstalkProfiles.get_process(name),
+            crosstalk_gain=CrosstalkProfiles.get_gain(name),
+            crosstalk_look=CrosstalkProfiles.get_look(name),
             **invalidate_local_bounds(self.state.config.process),
         )
 
@@ -331,6 +333,8 @@ class SensorSidebar(BaseSidebar):
             crosstalk_profile=name,
             crosstalk_matrix=CrosstalkProfiles.get_matrix(name),
             crosstalk_process=CrosstalkProfiles.get_process(name),
+            crosstalk_gain=None,
+            crosstalk_look=False,
             crosstalk_strength=1.0,
             **invalidate_local_bounds(self.state.config.process),
         )
@@ -344,6 +348,9 @@ class SensorSidebar(BaseSidebar):
             "crosstalk_strength": strength,
             "crosstalk_process": process,
         }
+        dlg = self._crosstalk_dialog
+        if dlg is not None:
+            self._crosstalk_previewed.update(crosstalk_gain=dlg.selected_gain(), crosstalk_look=dlg.selected_look())
         self.controller.set_roll_default(
             "sensor", persist=False, **self._crosstalk_previewed, **invalidate_local_bounds(self.state.config.process)
         )
@@ -384,6 +391,8 @@ class SensorSidebar(BaseSidebar):
                 # Preview strength is view-only; only adopt it if the edit had crosstalk off.
                 crosstalk_strength=dlg.preview_strength() if snap_strength == 0 else snap_strength,
                 crosstalk_process=dlg.selected_process(),
+                crosstalk_gain=dlg.selected_gain(),
+                crosstalk_look=dlg.selected_look(),
                 **invalidate_local_bounds(self.state.config.process),
             )
         else:

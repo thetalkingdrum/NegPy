@@ -42,6 +42,8 @@ separation control, not a correction. See [`../docs/CROSSTALK.md`](../docs/CROSS
    name = "Kodak Ektacolor Pro 400 (Noritsu)"   # optional display name; falls back to filename
    type = "measured"                     # measured | tuned | specsheet-based
    process = "Color Negative"            # Color Negative | Transparency; Color Negative when absent
+   # gain = [0.80, 0.91, 1.05]          # optional, Transparency only: per-channel density gain
+   # stage = "look"                     # optional, Transparency only: maps the scan to the eye, after Fade
    matrix = [                            # 3x3, row-major (out R/G/B × in R/G/B)
      [ 1.00, -0.05, -0.02],
      [-0.04,  1.00, -0.08],

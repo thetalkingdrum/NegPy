@@ -158,8 +158,38 @@ def effective_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[
 
     profile_mode = str(getattr(process, "crosstalk_process", ProcessMode.C41) or ProcessMode.C41)
     if process_mode is None or profile_mode == str(process_mode):
-        return resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix)
+        matrix = resolve_crosstalk_matrix(process.crosstalk_strength, process.crosstalk_matrix)
+        gain = getattr(process, "crosstalk_gain", None)
+        if matrix is None or gain is None:
+            return matrix
+        from negpy.features.process.path import RenderPath, render_path
+
+        if render_path(process) is RenderPath.PRINT:
+            return matrix
+        return resolve_crosstalk_gain(process.crosstalk_strength, gain)[:, None] * matrix
     return None
+
+
+def _look_stage(process: "ProcessConfig") -> bool:
+    from negpy.features.process.path import RenderPath, render_path
+
+    return bool(getattr(process, "crosstalk_look", False)) and render_path(process) is not RenderPath.PRINT
+
+
+def separation_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[str]) -> Optional[np.ndarray]:
+    """The profile's matrix when it acts before Fade Restoration, the grid Fade meters on; None for a look profile."""
+    return None if _look_stage(process) else effective_crosstalk_matrix(process, process_mode)
+
+
+def look_crosstalk_matrix(process: "ProcessConfig", process_mode: Optional[str]) -> Optional[np.ndarray]:
+    """The profile's matrix when it maps a slide's scan to the eye and acts after Fade Restoration, else None."""
+    return effective_crosstalk_matrix(process, process_mode) if _look_stage(process) else None
+
+
+def resolve_crosstalk_gain(strength: float, gain: tuple) -> np.ndarray:
+    """A profile's per-channel density gain blended with 1 by strength, as the matrix blends with identity."""
+    s = min(max(float(strength), 0.0), 1.0)
+    return 1.0 + (np.asarray(gain, dtype=np.float64).reshape(3) - 1.0) * s
 
 
 def resolve_crosstalk_matrix(strength: float, matrix: Optional[tuple]) -> Optional[np.ndarray]:

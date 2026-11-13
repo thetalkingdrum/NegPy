@@ -9,7 +9,7 @@ from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, hint_label, labeled_action, section_subheader, set_toggle_suggested
 from negpy.desktop.view.widgets.fold import rail_fold
 from negpy.desktop.view.widgets.sliders import CompactSlider
-from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS, estimate_red
+from negpy.features.process.fade import RATIO_BOUNDS, RED_SURVIVAL_BOUNDS, estimate_red, fade_survivals_stale, look_tag
 from negpy.features.process.fade_estimate import GrayMemo, auto_red_changes, run_estimate
 from negpy.features.process.path import RenderPath, render_path
 
@@ -85,6 +85,11 @@ class FadeSidebar(BaseSidebar):
         # The suggestion to turn on Restore Range on a frame with a short range, or why Restore Range found nothing to set.
         self.fade_red_hint = hint_label("", kind="warning")
         self.fade_red_hint.setVisible(False)
+        # The survivals were set against another crosstalk look profile or Strength.
+        self.fade_look_hint = hint_label(
+            tr("The crosstalk profile or its strength changed after the survivals were set: press Estimate again."), kind="warning"
+        )
+        self.fade_look_hint.setVisible(False)
         self._fade_hint_hash: Optional[str] = None
         # (grid, key, gray readings) of the last Estimate, which a Gray Mix drag blends again.
         self._gray_memo = GrayMemo()
@@ -111,6 +116,7 @@ class FadeSidebar(BaseSidebar):
             self.fade_estimate_row,
             self.fade_survival_fold,
             self.fade_estimate_hint,
+            self.fade_look_hint,
             self.fade_stain_hint,
             self.fade_red_hint,
             self.fade_neutrals_mix_slider,
@@ -173,7 +179,15 @@ class FadeSidebar(BaseSidebar):
         return auto_red_changes(base, source.cam_xyz, source.camera_wb, grid, target)
 
     def _on_fade_ratio_changed(self, ratio_g: float, ratio_b: float, persist: bool = True) -> None:
-        self.controller.set_roll_default("fade", persist=persist, readback_metrics=persist, fade_ratio_g=ratio_g, fade_ratio_b=ratio_b)
+        conf = self.state.config.process
+        self.controller.set_roll_default(
+            "fade",
+            persist=persist,
+            readback_metrics=persist,
+            fade_ratio_g=ratio_g,
+            fade_ratio_b=ratio_b,
+            fade_survival_look=look_tag(conf, conf.process_mode),
+        )
 
     def _on_fade_neutrals_mix_changed(self, val: float, persist: bool = True) -> None:
         """Gray Mix runs Estimate again on the gray readings it has, and leaves the crossover table as it is."""
@@ -379,6 +393,7 @@ class FadeSidebar(BaseSidebar):
             self.fade_red_hint.setVisible(bool(self.fade_red_hint.text()))
             self.fade_crossover_hint.setVisible(bool(self.fade_crossover_hint.text()))
             self.fade_stain_hint.setVisible(bool(self.fade_stain_hint.text()))
+            self.fade_look_hint.setVisible(fade_survivals_stale(conf))
         finally:
             self.block_signals(False)
 

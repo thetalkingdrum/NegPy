@@ -52,6 +52,22 @@ class TestGpuFadeCrossoverParity(unittest.TestCase):
         self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
         self.assertLess(float(np.abs(cpu - gpu).mean()), 0.002)
 
+    def test_a_look_profile_after_the_fade_renders_alike(self):
+        look = dict(
+            crosstalk_strength=0.6,
+            crosstalk_matrix=(1.0, 0.89, -0.2, 0.04, 1.0, -0.06, 0.0, -0.02, 1.0),
+            crosstalk_process=str(ProcessMode.E6),
+            crosstalk_gain=(0.81, 0.92, 1.04),
+            crosstalk_look=True,
+        )
+        changes = dict(survival_changes(self.est, 1.0), fade_white_anchor=True, **look)
+        cpu, _ = self._render(_settings(changes), False)
+        gpu, _ = self._render(_settings(changes), True)
+        sep, _ = self._render(_settings(dict(changes, crosstalk_look=False)), False)
+        self.assertGreater(float(np.abs(cpu - sep).max()), 0.01, "the stage must move the render")
+        self.assertLess(float(np.abs(cpu - gpu).max()), 0.01)
+        self.assertLess(float(np.abs(cpu - gpu).mean()), 0.002)
+
     def test_a_density_shift_renders_alike(self):
         changes = dict(survival_changes(self.est, 1.0), fade_density_shift=-0.3)
         settings = _settings(changes)

@@ -609,11 +609,11 @@ def fade_white_grid(
     log_grid: Optional[Callable[[], ImageBuffer]] = None,
 ) -> ImageBuffer:
     """The grid Fade Estimate meters and the render reads its white on: *image*'s white-balanced
-    camera channels (a Positive source's own) after the crosstalk unmix, with no fade or white.
+    camera channels (a Positive source's own) after a separation profile, with no fade, white or look profile.
     *log_grid* gives the prefiltered grid of *image* when the caller has it."""
-    from negpy.features.exposure.normalization import effective_crosstalk_matrix, unmix_log_image
+    from negpy.features.exposure.normalization import separation_crosstalk_matrix, unmix_log_image
 
-    crosstalk = effective_crosstalk_matrix(process, process_mode)
+    crosstalk = separation_crosstalk_matrix(process, process_mode)
     channels = density_channels(process, cam_xyz, camera_wb) if crosstalk is None else density_stage(process, cam_xyz, camera_wb, crosstalk)
     return unmix_log_image(_pre_log_grid(channels.pre, image, roi, analysis_buffer, log_grid), channels.unmix)
 

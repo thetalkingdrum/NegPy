@@ -267,3 +267,36 @@ def test_bundled_gallery_parses_with_small_cross_terms():
         m = np.reshape(parsed[1], (3, 3))
         m = m / np.diag(m)[:, None]
         assert np.abs(m[~np.eye(3, dtype=bool)]).max() < 0.2, f
+
+
+def test_gain_loads_only_for_transparency_profiles(tmp_path, monkeypatch):
+    monkeypatch.setattr(APP_CONFIG, "crosstalk_dir", str(tmp_path))
+    matrix = "matrix = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]\n"
+    _write(os.path.join(tmp_path, "slide.toml"), f'name = "Slide"\nprocess = "Transparency"\ngain = [0.8, 0.9, 1.05]\n{matrix}')
+    _write(os.path.join(tmp_path, "neg.toml"), f'name = "Neg"\ngain = [0.8, 0.9, 1.05]\n{matrix}')
+    _write(os.path.join(tmp_path, "bad.toml"), f'name = "Bad"\nprocess = "Transparency"\ngain = [0.8, -1.0, 1.0]\n{matrix}')
+    assert CrosstalkProfiles.get_gain("Slide") == (0.8, 0.9, 1.05)
+    assert CrosstalkProfiles.get_gain("Neg") is None
+    assert CrosstalkProfiles.get_gain("Bad") is None
+
+
+def test_gain_scales_rows_on_slides_only():
+    from dataclasses import replace
+
+    from negpy.features.exposure.normalization import effective_crosstalk_matrix
+    from negpy.features.process.models import ProcessConfig
+
+    matrix = (1.0, 0.8, -0.3, 0.0, 1.0, -0.1, 0.0, -0.1, 1.0)
+    slide = ProcessConfig(
+        process_mode=ProcessMode.E6,
+        crosstalk_strength=1.0,
+        crosstalk_matrix=matrix,
+        crosstalk_process=str(ProcessMode.E6),
+        crosstalk_gain=(0.8, 0.9, 1.05),
+    )
+    full = effective_crosstalk_matrix(slide, str(ProcessMode.E6))
+    np.testing.assert_allclose(full.sum(axis=1), [0.8, 0.9, 1.05])
+    half = effective_crosstalk_matrix(replace(slide, crosstalk_strength=0.5), str(ProcessMode.E6))
+    np.testing.assert_allclose(half.sum(axis=1), [0.9, 0.95, 1.025])
+    plain = effective_crosstalk_matrix(replace(slide, crosstalk_gain=None), str(ProcessMode.E6))
+    np.testing.assert_allclose(full, np.array([0.8, 0.9, 1.05])[:, None] * plain)

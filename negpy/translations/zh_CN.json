@@ -3016,6 +3016,8 @@
   "The company that makes the film": "生产此胶片的厂商",
   "The contrast Auto Grade gives each frame.": "自动反差为每帧设定的反差。",
   "The country where the frame was shot.": "拍摄此画面的国家。",
+  "The crosstalk profile has no neutral gray to measure against.": "串扰配置文件没有可作为测量基准的中性灰。",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "设置残留率后，串扰配置文件或其强度已更改：请再次点击“估算”。",
   "The developer temperature, in degrees Celsius.": "显影液温度，单位为摄氏度。",
   "The developer that the film was processed in.": "冲洗胶片所用的显影液。",
   "The developer the film was processed in": "冲洗胶片所用的显影液",

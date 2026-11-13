@@ -26,7 +26,37 @@ emulsion and nothing to unmix.
 > **Reversal film reads differently.** On a negative, unmixing moves the render *toward*
 > the scene. A transparency is the finished image, so unmixing moves the render *away* from
 > the slide. In Transparency, Crosstalk is a color-separation control, not a fidelity
-> correction. Leave Strength at 0 to match the slide.
+> correction. Leave Strength at 0 to match the slide. A profile fitted from the scanner's
+> bands to the eye's is the exception: it moves the render toward the slide.
+
+### Per-channel gain (Transparency only)
+
+A narrowband scanner can read one dye's contrast differently from the eye, so a gray slide
+scans with a cast that grows with density. A row-normalized matrix keeps grays and cannot
+correct this. A Transparency profile can carry a per-channel density gain:
+
+```toml
+gain = [0.80, 0.91, 1.05]    # R, G, B; three positive numbers
+```
+
+The render multiplies each row of the normalized matrix by its gain, blended with 1 by the
+Strength slider. The gain applies only on slide paths and is ignored on other profiles.
+The matrix editor does not show or save the gain.
+
+### Stage (Transparency only)
+
+Fade Restoration acts on the dye amounts, so it goes where the signal is closest to them.
+A Transparency profile names its place relative to Fade:
+
+```toml
+stage = "look"    # absent: the profile separates the dyes
+```
+
+- **Separation** (the default): the profile maps the scan to dye amounts, and Fade acts after it.
+  Fade's white and Estimate read the scan after the profile.
+- **Look**: the scan is already close to dye amounts, as on a narrowband LED scanner, and the
+  profile maps it to the eye. Fade acts before it, and Fade's white and Estimate read the scan
+  before it. A profile fitted from the scanner's bands to the eye is a look profile.
 
 ## What it does
 

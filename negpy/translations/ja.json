@@ -3016,6 +3016,8 @@
   "The company that makes the film": "フィルムのメーカー",
   "The contrast Auto Grade gives each frame.": "自動グレードが各フレームに与えるコントラスト。",
   "The country where the frame was shot.": "フレームを撮影した国。",
+  "The crosstalk profile has no neutral gray to measure against.": "クロストークプロファイルに、測定の基準となるニュートラルなグレーがありません。",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "残存率を設定した後にクロストークプロファイルまたはその強さが変わりました。もう一度「推定」を押してください。",
   "The developer temperature, in degrees Celsius.": "現像液の温度 (摂氏)。",
   "The developer that the film was processed in.": "フィルムの現像に使った現像液。",
   "The developer the film was processed in": "フィルムの現像に使った現像液",

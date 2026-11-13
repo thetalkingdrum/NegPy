@@ -3016,6 +3016,8 @@
   "The company that makes the film": "Firmaet som lager filmen",
   "The contrast Auto Grade gives each frame.": "Kontrasten autogradering gir hvert bilde.",
   "The country where the frame was shot.": "Landet der bildet ble tatt.",
+  "The crosstalk profile has no neutral gray to measure against.": "Krysstaleprofilen har ingen nøytral grå å måle mot.",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "Krysstaleprofilen eller styrken endret seg etter at overlevelsen ble satt: trykk Beregn igjen.",
   "The developer temperature, in degrees Celsius.": "Fremkallertemperaturen, i grader Celsius.",
   "The developer that the film was processed in.": "Fremkalleren filmen ble behandlet i.",
   "The developer the film was processed in": "Fremkalleren filmen ble behandlet i",

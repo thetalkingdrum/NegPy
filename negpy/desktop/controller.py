@@ -9334,6 +9334,8 @@ class AppController(QObject):
                         proc,
                         crosstalk_strength=sibling_ct,
                         crosstalk_matrix=sibling_params.process.crosstalk_matrix if sibling_params else proc.crosstalk_matrix,
+                        crosstalk_gain=sibling_params.process.crosstalk_gain if sibling_params else proc.crosstalk_gain,
+                        crosstalk_look=sibling_params.process.crosstalk_look if sibling_params else proc.crosstalk_look,
                     ),
                 )
         return params

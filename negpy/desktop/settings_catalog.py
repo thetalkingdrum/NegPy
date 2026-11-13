@@ -180,7 +180,7 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
     (mark("Calibration"), (
         # Strength, profile, the baked matrix and the process it was baked for copy atomically:
         # strength alone would leave the target on a stale or None matrix.
-        _row(mark("Crosstalk"), "process", "crosstalk_strength", "crosstalk_profile", "crosstalk_matrix", "crosstalk_process", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
+        _row(mark("Crosstalk"), "process", "crosstalk_strength", "crosstalk_profile", "crosstalk_matrix", "crosstalk_process", "crosstalk_gain", "crosstalk_look", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
         _row(mark("Sensor Crosstalk Profile"), "process", "sensor_profile", "sensor_matrix", "sensor_unmix", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
         # Absent from BOUNDS_INPUT_FIELDS: it acts after inversion, so it never feeds the meters.
         _row(mark("Hue Trim"), "process", "hue_trim", sticky=True),
@@ -392,6 +392,8 @@ BOUNDS_INPUT_FIELDS = frozenset(
         "crosstalk_strength",
         "crosstalk_profile",
         "crosstalk_matrix",
+        "crosstalk_gain",
+        "crosstalk_look",
         *FADE_METER_FIELDS,
         "sensor_profile",
         "sensor_matrix",

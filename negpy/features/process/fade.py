@@ -13,7 +13,8 @@ from negpy.domain.types import ImageBuffer
 from negpy.kernel.system.i18n import mark, tr
 from negpy.features.exposure.normalization import (
     LogNegativeBounds,
-    effective_crosstalk_matrix,
+    look_crosstalk_matrix,
+    separation_crosstalk_matrix,
     measure_neutral_axis_from_log,
 )
 from negpy.features.process.capture_color import camera_matrix_parts, is_source_profile
@@ -94,11 +95,11 @@ def fade_white_space(
 def render_white_space(
     process: ProcessConfig, process_mode: Optional[str], cam_xyz: Optional[Sequence[Sequence[float]]], camera_wb: Optional[Sequence[float]]
 ) -> str:
-    """`fade_white_space` of a render with *process*: its crosstalk unmix and highlight mode included,
-    "" on a negative, which takes no fade."""
+    """`fade_white_space` of a render with *process*: its separation profile and highlight mode included,
+    "" on a negative, which takes no fade. A look profile acts after the white, so it does not name it."""
     if render_path(process) is RenderPath.PRINT:
         return ""
-    crosstalk = effective_crosstalk_matrix(process, process_mode)
+    crosstalk = separation_crosstalk_matrix(process, process_mode)
     return fade_white_space(cam_xyz, camera_wb, crosstalk, effective_highlight_reconstruction(process))
 
 
@@ -114,11 +115,15 @@ class FadeDensity(NamedTuple):
 
 
 def fade_density(process: ProcessConfig, process_mode: Optional[str], white_space: str = "") -> FadeDensity:
-    """The log-density matrix a render applies, `F @ U` (the fade after the crosstalk unmix), and
-    the anchor it scales about. A stored white w, read after U, makes the matrix the affine
-    `F (U L - w) + t` about `a = U^-1 w`. The anchor is a camera RAW's a, else None
-    (docs/PIPELINE.md, Fade restoration). `fade_density_shift` adds density to every channel after it."""
-    density = _fade_density(process, process_mode, white_space)
+    """The log-density matrix a render applies, `V @ F @ U`: a separation profile U, the fade F, then
+    a look profile V. A stored white w, read after U, makes the matrix the affine `V F (U L - w) + t`
+    about `a = U^-1 w`. The anchor is a camera RAW's a, else None (docs/PIPELINE.md, Fade
+    restoration). `fade_density_shift` adds density to every channel after it."""
+    unmix = separation_crosstalk_matrix(process, process_mode)
+    return _shifted(process, _density_of(process, white_space, unmix, look_crosstalk_matrix(process, process_mode)))
+
+
+def _shifted(process: ProcessConfig, density: FadeDensity) -> FadeDensity:
     shift = float(process.fade_density_shift)
     if shift == 0.0 or render_path(process) is RenderPath.PRINT:
         return density
@@ -128,11 +133,9 @@ def fade_density(process: ProcessConfig, process_mode: Optional[str], white_spac
     return FadeDensity(affine, density.anchor)
 
 
-def _fade_density(process: ProcessConfig, process_mode: Optional[str], white_space: str) -> FadeDensity:
-    unmix = effective_crosstalk_matrix(process, process_mode)
-    fade = fade_matrix(process)
-    matrix = unmix if fade is None else (fade if unmix is None else fade @ unmix)
-    terms = _white_terms(process, white_space, fade is not None)
+def _density_of(process: ProcessConfig, white_space: str, unmix: Optional[np.ndarray], look: Optional[np.ndarray]) -> FadeDensity:
+    matrix = _chain(look, fade_matrix(process), unmix)
+    terms = _white_terms(process, white_space, not _keeps_neutral(matrix))
     if terms is None:
         return FadeDensity(matrix, None)
     white, target = terms
@@ -140,6 +143,47 @@ def _fade_density(process: ProcessConfig, process_mode: Optional[str], white_spa
     linear = np.eye(3) if matrix is None else matrix
     affine = np.hstack([linear, (target - linear @ a)[:, None]])
     return FadeDensity(affine, (float(a[0]), float(a[1]), float(a[2])) if white_space else None)
+
+
+def _chain(*matrices: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """The product of the matrices that act, the first one last; None when none acts."""
+    out: Optional[np.ndarray] = None
+    for m in matrices:
+        if m is not None:
+            out = np.asarray(m, dtype=np.float64) if out is None else out @ m
+    return out
+
+
+def _keeps_neutral(matrix: Optional[np.ndarray]) -> bool:
+    """Whether *matrix* maps equal densities to equal densities, so a camera RAW needs no anchor for it."""
+    return matrix is None or bool(np.allclose(matrix @ np.ones(3), 1.0, rtol=0.0, atol=1e-9))
+
+
+def look_neutral(look: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """The densities before a look profile that it maps to a neutral, `V^-1 1`; None with no look or none usable."""
+    if look is None:
+        return None
+    try:
+        u = np.linalg.solve(np.asarray(look, dtype=np.float64), np.ones(3))
+    except np.linalg.LinAlgError:
+        return None
+    return u if bool(np.all(np.isfinite(u)) and np.all(u > 0.0)) else None
+
+
+def look_tag(process: ProcessConfig, process_mode: Optional[str]) -> str:
+    """Names the look profile a render applies, its Strength and gain included; "" with none."""
+    look = look_crosstalk_matrix(process, process_mode)
+    if look is None:
+        return ""
+    return hashlib.sha1(b"look" + np.round(np.asarray(look, dtype=np.float64), 4).tobytes()).hexdigest()[:12]
+
+
+def fade_survivals_stale(process: ProcessConfig) -> bool:
+    """Whether the green and blue survivals were set against another look profile than the render's.
+    Estimate reads grays against the look's neutral (`look_neutral`), so they no longer fit it."""
+    if render_path(process) is RenderPath.PRINT or (process.fade_ratio_g, process.fade_ratio_b) == (1.0, 1.0):
+        return False
+    return process.fade_survival_look != look_tag(process, process.process_mode)
 
 
 def _unmixed_point(unmix: np.ndarray, point: np.ndarray) -> np.ndarray:
@@ -150,16 +194,16 @@ def _unmixed_point(unmix: np.ndarray, point: np.ndarray) -> np.ndarray:
         return point
 
 
-def _white_terms(process: ProcessConfig, white_space: str, fade_acts: bool) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    """(white, target) of the stored white's affine, both after the crosstalk unmix, or None when no
-    white acts. *fade_acts*: Fade Restoration applies. Crosstalk alone keeps a neutral neutral, so a
-    camera RAW needs no anchor for it."""
+def _white_terms(process: ProcessConfig, white_space: str, tilts: bool) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """(white, target) of the stored white's affine, both after the separation profile, or None when no
+    white acts. *tilts*: the matrix does not keep a neutral neutral (`_keeps_neutral`), so a camera RAW
+    scales density about its white."""
     white = _fade_white(process, white_space)
     if white is None:
         return None
     if process.fade_white_anchor:
         return white, np.full(3, _white_target(white))
-    if white_space and fade_acts:
+    if white_space and tilts:
         level = np.asarray(density_anchor(white, False), dtype=np.float64)
         return level, level
     return None
@@ -196,11 +240,15 @@ def fade_white_target(process: ProcessConfig, white_space: str = "") -> Optional
 
 
 def fade_white_stale(process: ProcessConfig, white_space: str) -> bool:
-    """Whether a camera RAW's fade needs its white measured again: Fade Restoration or Remove Stain
-    acts, and the stored white was measured in another space (or never)."""
+    """Whether a camera RAW's fade needs its white measured again: Remove Stain acts or the matrix
+    does not keep neutrals, and the stored white was measured in another space (or never)."""
     if not white_space or render_path(process) is RenderPath.PRINT or process.fade_white_space == white_space:
         return False
-    return process.fade_white_anchor or fade_matrix(process) is not None
+    if process.fade_white_anchor:
+        return True
+    mode = process.process_mode
+    unmix = separation_crosstalk_matrix(process, mode)
+    return not _keeps_neutral(_chain(look_crosstalk_matrix(process, mode), fade_matrix(process), unmix))
 
 
 #: A white a render measured for itself: (r, g, b, fade_white_space).
@@ -326,18 +374,23 @@ class FadeEstimate:
     crossover: Optional[tuple[float, ...]] = None
 
 
-def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs]) -> tuple[float, float, str]:
+def fade_ratios_from_neutral_axis(refs: Optional[NeutralAxisRefs], look: Optional[np.ndarray] = None) -> tuple[float, float, str]:
     """(ratio_g, ratio_b, reason) from the midtone grays' own densities in neutral references made by
-    `neutral_axis_from_grid`. Ratios are relative to red, the fade matrix's reference channel.
+    `neutral_axis_from_grid`. Ratios are relative to red, the fade matrix's reference channel. A *look*
+    profile renders `look_neutral` neutral, so each density is read against it.
     `reason` is "" for a real estimate, else the fail-closed condition that fired, with 1.0 for both."""
     if refs is None:
         return 1.0, 1.0, tr("No grays to measure.")
+    u = look_neutral(look)
+    if look is not None and u is None:
+        return 1.0, 1.0, tr("The crosstalk profile has no neutral gray to measure against.")
     # The refs are log transmittance, so density is the negative.
-    spreads = tuple(-float(refs[0][ch]) for ch in range(3))
+    raw = tuple(-float(refs[0][ch]) for ch in range(3))
+    if min(abs(v) for v in raw) < SPREAD_FLOOR:
+        return 1.0, 1.0, tr("The grays in one channel are too flat to measure.")
+    spreads = raw if u is None else tuple(v / float(u[ch]) for ch, v in enumerate(raw))
     r, g, b = spreads
     abs_spreads = (abs(r), abs(g), abs(b))
-    if min(abs_spreads) < SPREAD_FLOOR:
-        return 1.0, 1.0, tr("The grays in one channel are too flat to measure.")
     if max(abs_spreads) - min(abs_spreads) <= AGREEMENT_TOLERANCE * max(abs_spreads):
         return 1.0, 1.0, tr("The three layers faded equally, so there is nothing to estimate.")
     ratio_g = g / r
@@ -435,13 +488,15 @@ def estimate_fade_with(
     camera_raw: bool = False,
     white_space: str = "",
     crossover: bool = True,
+    look: Optional[np.ndarray] = None,
 ) -> FadeEstimate:
     """The estimate from the grays *reader* finds on `grid`, the transparency meter's grid with the
     crosstalk unmix, no fade and no Remove Stain (`TransparencyBaseProcessor`). Red Survival puts
     the best-kept layer at 1.0; a ratio above 1 says red faded most. With `white_anchor`, or on a
     `camera_raw` whose render scales density above its white, the grays are read above that point
     (`density_anchor`). It carries the crossover table measured after its survivals, zero at its
-    midtone; *crossover* False leaves the table out, the slowest step, for a live slider."""
+    midtone; *crossover* False leaves the table out, the slowest step, for a live slider. *look* is the
+    render's look profile, which acts after the fade."""
     white = measure_white(grid)
     if white_anchor and white is None:
         return FadeEstimate(None, 1.0, 1.0, tr("No clear area to measure the stain on this frame."))
@@ -449,13 +504,13 @@ def estimate_fade_with(
     refs, reason = reader(_gray_grid(grid, white, white_anchor, camera_raw))
     if refs is None:
         return FadeEstimate(None, 1.0, 1.0, reason, white)
-    g, b, why = fade_ratios_from_neutral_axis(refs)
+    g, b, why = fade_ratios_from_neutral_axis(refs, look)
     red = None
     if not (why and g == 1.0 and b == 1.0):
         red = estimate_red(g, b)
     table = None
     if red is not None and crossover:
-        table = _table_after(grid, refs, white, white_anchor, camera_raw, white_space, (red, g, b))
+        table = _table_after(grid, refs, white, white_anchor, camera_raw, white_space, (red, g, b), look=look)
     return FadeEstimate(red, g, b, why, white, table)
 
 
@@ -468,10 +523,11 @@ def _table_after(
     white_space: str,
     survivals: tuple[float, float, float],
     shift: float = 0.0,
+    look: Optional[np.ndarray] = None,
 ) -> Optional[tuple[float, ...]]:
-    """The crossover table measured on the Estimate *grid* after *survivals* and *shift*, zero at the
-    midtone of *refs* (read above the anchor when one acts) through the same fade."""
-    return measure_crossover(*_faded_after(grid, refs, white, white_anchor, camera_raw, white_space, survivals, shift))
+    """The crossover table measured on the Estimate *grid* after *survivals*, *shift* and *look*, zero at
+    the midtone of *refs* (read above the anchor when one acts) through the same fade."""
+    return measure_crossover(*_faded_after(grid, refs, white, white_anchor, camera_raw, white_space, survivals, shift, look))
 
 
 def _faded_after(
@@ -483,10 +539,11 @@ def _faded_after(
     white_space: str,
     survivals: tuple[float, float, float],
     shift: float = 0.0,
+    look: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, float]:
-    """(grid, zero): the Estimate *grid* through *survivals* and *shift*, and the mean log of the midtone
-    of *refs* through the same fade, where a table measured on it is zero."""
-    density = survival_density(*survivals, white, white_anchor, camera_raw, white_space, shift)
+    """(grid, zero): the Estimate *grid* through *survivals*, *shift* and *look*, and the mean log of the
+    midtone of *refs* through the same fade, where a table measured on it is zero."""
+    density = survival_density(*survivals, white, white_anchor, camera_raw, white_space, shift, look)
     mid = np.asarray(refs[0], dtype=np.float32).reshape(1, 1, 3)
     if white is not None and (white_anchor or camera_raw):
         mid = mid + np.asarray(density_anchor(white, white_anchor), dtype=np.float32)
@@ -502,6 +559,7 @@ def survival_faded(
     camera_raw: bool = False,
     white_space: str = "",
     shift: float = 0.0,
+    look: Optional[np.ndarray] = None,
 ) -> Optional[tuple[np.ndarray, float]]:
     """(grid, zero) that `survival_crossover` measures its table on; None where it measures none."""
     white = measure_white(grid)
@@ -509,7 +567,7 @@ def survival_faded(
         return None
     camera_raw = camera_raw or bool(white_space)
     refs, _ = reader(_gray_grid(grid, white, white_anchor, camera_raw))
-    return None if refs is None else _faded_after(grid, refs, white, white_anchor, camera_raw, white_space, survivals, shift)
+    return None if refs is None else _faded_after(grid, refs, white, white_anchor, camera_raw, white_space, survivals, shift, look)
 
 
 def _gray_grid(grid: ImageBuffer, white: Optional[tuple[float, float, float]], white_anchor: bool, camera_raw: bool) -> ImageBuffer:
@@ -527,10 +585,11 @@ def survival_crossover(
     camera_raw: bool = False,
     white_space: str = "",
     shift: float = 0.0,
+    look: Optional[np.ndarray] = None,
 ) -> Optional[tuple[float, ...]]:
     """The table Estimate would store with *survivals* and *shift* set by hand: the same grid, gray
     reader and zero, so a survival change keeps the Gray Mix the table was read with."""
-    faded = survival_faded(grid, reader, survivals, white_anchor, camera_raw, white_space, shift)
+    faded = survival_faded(grid, reader, survivals, white_anchor, camera_raw, white_space, shift, look)
     return None if faded is None else measure_crossover(*faded)
 
 
@@ -673,7 +732,12 @@ def neutral_spread(table: Sequence[float]) -> float:
 
 
 def pick_neutrals(
-    grid: ImageBuffer, readings: GrayReadings, white_anchor: bool = False, camera_raw: bool = False, white_space: str = ""
+    grid: ImageBuffer,
+    readings: GrayReadings,
+    white_anchor: bool = False,
+    camera_raw: bool = False,
+    white_space: str = "",
+    look: Optional[np.ndarray] = None,
 ) -> Optional[tuple[float, FadeEstimate]]:
     """(mix, estimate) for the NEUTRALS_CANDIDATES value whose estimate leaves the least
     `neutral_spread` in its crossover table, the first on a tie; None when none estimates. The
@@ -681,7 +745,7 @@ def pick_neutrals(
     from concurrent.futures import ThreadPoolExecutor
 
     def estimate(mix: float) -> FadeEstimate:
-        return estimate_fade_with(grid, lambda _: blend_gray_readings(readings, mix), white_anchor, camera_raw, white_space)
+        return estimate_fade_with(grid, lambda _: blend_gray_readings(readings, mix), white_anchor, camera_raw, white_space, look=look)
 
     with ThreadPoolExecutor(len(NEUTRALS_CANDIDATES)) as pool:
         estimates = list(pool.map(estimate, NEUTRALS_CANDIDATES))
@@ -889,8 +953,9 @@ def survival_density(
     camera_raw: bool,
     white_space: str = "",
     shift: float = 0.0,
+    look: Optional[np.ndarray] = None,
 ) -> FadeDensity:
-    """The fade a render with these survivals and *shift* applies after the crosstalk unmix, on the Estimate grid."""
+    """The fade a render with these survivals, *shift* and *look* profile applies after the separation profile, on the Estimate grid."""
     from negpy.features.process.models import ProcessMode
 
     space = white_space or (ESTIMATE_WHITE_SPACE if camera_raw else "")
@@ -908,7 +973,7 @@ def survival_density(
         fade_white_space=space,
         fade_density_shift=shift,
     )
-    return fade_density(process, ProcessMode.E6, space)
+    return _shifted(process, _density_of(process, space, None, look))
 
 
 def through_density(grid: ImageBuffer, density: FadeDensity) -> np.ndarray:

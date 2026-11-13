@@ -165,6 +165,57 @@ class CrosstalkProfiles:
         return out
 
     @staticmethod
+    def get_gain(name: str) -> Optional[tuple]:
+        """A Transparency profile's per-channel density gain (`gain`, three positive numbers), or None.
+
+        A negative's stretch measures each channel's own range, so a gain means nothing there."""
+        from negpy.features.process.models import ProcessMode
+
+        if name == DEFAULT_NAME or CrosstalkProfiles.get_process(name) != str(ProcessMode.E6):
+            return None
+        for directory in (get_resource_path("crosstalk"), APP_CONFIG.crosstalk_dir):
+            path = CrosstalkProfiles._path_with_name(directory, name)
+            if path is None:
+                continue
+            raw = (load_toml_cached(path) or {}).get("gain")
+            if not isinstance(raw, list) or len(raw) != 3:
+                return None
+            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in raw):
+                return None
+            gain = tuple(float(v) for v in raw)
+            return None if gain == (1.0, 1.0, 1.0) else gain
+        return None
+
+    @staticmethod
+    def get_look(name: str) -> bool:
+        """Whether a Transparency profile maps the scan to the eye (`stage = "look"`), so it acts after Fade Restoration."""
+        from negpy.features.process.models import ProcessMode
+
+        if name == DEFAULT_NAME or CrosstalkProfiles.get_process(name) != str(ProcessMode.E6):
+            return False
+        for directory in (get_resource_path("crosstalk"), APP_CONFIG.crosstalk_dir):
+            path = CrosstalkProfiles._path_with_name(directory, name)
+            if path is not None:
+                return (load_toml_cached(path) or {}).get("stage") == "look"
+        return False
+
+    @staticmethod
+    def _path_with_name(directory: str, name: str) -> Optional[str]:
+        """The valid profile file in *directory* whose display name is *name*."""
+        try:
+            fnames = os.listdir(directory)
+        except OSError:
+            return None
+        for fname in fnames:
+            if not fname.endswith(".toml"):
+                continue
+            path = os.path.join(directory, fname)
+            parsed = CrosstalkProfiles._parse_file(path)
+            if parsed is not None and (parsed[0] or fname[:-5]) == name:
+                return path
+        return None
+
+    @staticmethod
     def get_process(name: str) -> str:
         """The film process a profile was derived for; C-41 when unknown."""
         from negpy.features.process.models import ProcessMode
@@ -246,20 +297,36 @@ class CrosstalkProfiles:
         return os.path.join(directory, f"{base}.toml")
 
     @staticmethod
-    def save(name: str, matrix: List[float], profile_type: str = CrosstalkType.TUNED, process: Optional[str] = None) -> str:
+    def save(
+        name: str,
+        matrix: List[float],
+        profile_type: str = CrosstalkType.TUNED,
+        process: Optional[str] = None,
+        gain: Optional[tuple] = None,
+        look: bool = False,
+    ) -> str:
         """Write a user profile TOML (row-major 3×3) and return its path.
 
         Defaults to `tuned` so editor saves are not grouped with the spec-sheet estimates.
         `process` is always written: a matrix only reaches the render in the film process it
-        declares, so leaving it implicit is how a profile saved for a slide becomes invisible."""
+        declares, so leaving it implicit is how a profile saved for a slide becomes invisible.
+        *gain* and *look* are written for a Transparency profile only, where they act."""
         from negpy.features.process.models import ProcessMode
 
         os.makedirs(APP_CONFIG.crosstalk_dir, exist_ok=True)
+        mode = ProcessMode(process or ProcessMode.C41)
         rows = "\n".join("  [{:.6g}, {:.6g}, {:.6g}],".format(*matrix[i * 3 : i * 3 + 3]) for i in range(3))
+        extra = ""
+        if mode == ProcessMode.E6:
+            if look:
+                extra += 'stage = "look"\n'
+            if gain is not None and tuple(gain) != (1.0, 1.0, 1.0):
+                extra += "gain = [{:.6g}, {:.6g}, {:.6g}]\n".format(*gain)
         content = (
             f'name = "{escape_toml_string(name)}"\n'
             f'type = "{escape_toml_string(profile_type)}"\n'
-            f'process = "{escape_toml_string(str(ProcessMode(process or ProcessMode.C41)))}"\n'
+            f'process = "{escape_toml_string(str(mode))}"\n'
+            f"{extra}"
             f"matrix = [\n{rows}\n]\n"
         )
         path = CrosstalkProfiles.path_for_name(name)

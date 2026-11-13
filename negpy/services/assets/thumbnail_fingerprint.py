@@ -41,6 +41,7 @@ _UNHASHED_FIELDS: dict[str, frozenset[str]] = {
             "fade_auto_red",
             "fade_red_trim",
             "fade_neutrals_mix",
+            "fade_survival_look",
         }
     ),
     "lab": frozenset({"sharpen", "sharpen_method", "sharpen_radius", "sharpen_masking", "sharpen_auto_masking", "chroma_denoise"}),

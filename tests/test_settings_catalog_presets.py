@@ -40,7 +40,14 @@ def test_channel_grouped_row_stores_all_channels():
 
 def test_crosstalk_row_bundles_fields():
     data = selected_flat_dict(WorkspaceConfig(), [_row("Crosstalk")])
-    assert set(data) == {"crosstalk_strength", "crosstalk_profile", "crosstalk_matrix", "crosstalk_process"}
+    assert set(data) == {
+        "crosstalk_strength",
+        "crosstalk_profile",
+        "crosstalk_matrix",
+        "crosstalk_process",
+        "crosstalk_gain",
+        "crosstalk_look",
+    }
 
 
 def test_positive_source_row_is_catalogued():

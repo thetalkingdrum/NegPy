@@ -79,9 +79,12 @@ def survival_points(
 ) -> Optional[tuple[float, ...]]:
     """`fade_range_points` of the Estimate *grid* after *survivals* and *shift*, as a render with them
     reads it. The crossover table keeps each cell's mean density, so it does not move the points."""
+    from negpy.features.exposure.normalization import look_crosstalk_matrix
     from negpy.features.process.fade import survival_density, through_density
 
-    density = survival_density(*survivals, grid_white(grid), white_anchor, camera_raw or bool(white_space), white_space, shift)
+    look = look_crosstalk_matrix(process, process.process_mode)
+    raw = camera_raw or bool(white_space)
+    density = survival_density(*survivals, grid_white(grid), white_anchor, raw, white_space, shift, look)
     return fade_range_points(through_density(grid, density), process)
 
 

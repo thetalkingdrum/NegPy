@@ -3016,6 +3016,8 @@
   "The company that makes the film": "Công ty sản xuất phim",
   "The contrast Auto Grade gives each frame.": "Độ tương phản mà Tự động cấp đặt cho mỗi khung hình.",
   "The country where the frame was shot.": "Quốc gia nơi khung hình được chụp.",
+  "The crosstalk profile has no neutral gray to measure against.": "Hồ sơ nhiễu chéo không có màu xám trung tính để đo theo.",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "Hồ sơ nhiễu chéo hoặc cường độ của nó đã thay đổi sau khi đặt tỷ lệ còn lại: hãy nhấn Ước tính lại.",
   "The developer temperature, in degrees Celsius.": "Nhiệt độ thuốc tráng, tính bằng độ C.",
   "The developer that the film was processed in.": "Thuốc tráng đã dùng để xử lý phim.",
   "The developer the film was processed in": "Thuốc tráng đã dùng để xử lý phim",

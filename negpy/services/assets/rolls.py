@@ -723,6 +723,8 @@ ROLL_DEFAULT_FIELDS: Dict[str, tuple] = {
             # without disk I/O -- travels with them, or another frame's roll-derived
             # crosstalk would be read back through its own, unrelated film process.
             "crosstalk_process",
+            "crosstalk_gain",
+            "crosstalk_look",
             "hue_trim",
         ),
     ),

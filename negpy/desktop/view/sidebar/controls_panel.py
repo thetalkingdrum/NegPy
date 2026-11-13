@@ -80,6 +80,8 @@ _SENSOR_FIELDS = (
     "crosstalk_strength",
     "crosstalk_matrix",
     "crosstalk_process",
+    "crosstalk_gain",
+    "crosstalk_look",
     "hue_trim",
 )
 _FADE_FIELDS = (*FADE_METER_FIELDS, "fade_auto_red", "fade_red_trim", "fade_neutrals_mix")

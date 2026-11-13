@@ -3016,6 +3016,8 @@
   "The company that makes the film": "필름을 만드는 회사",
   "The contrast Auto Grade gives each frame.": "자동 등급이 각 프레임에 주는 대비입니다.",
   "The country where the frame was shot.": "프레임을 찍은 국가입니다.",
+  "The crosstalk profile has no neutral gray to measure against.": "크로스토크 프로필에 측정 기준이 될 중립 회색이 없습니다.",
+  "The crosstalk profile or its strength changed after the survivals were set: press Estimate again.": "잔존율을 설정한 뒤 크로스토크 프로필이나 강도가 바뀌었습니다. 추정을 다시 누르세요.",
   "The developer temperature, in degrees Celsius.": "현상액 온도(섭씨)입니다.",
   "The developer that the film was processed in.": "필름을 현상한 현상액입니다.",
   "The developer the film was processed in": "필름을 현상한 현상액",
