@@ -56,6 +56,10 @@ class NumberRow:
     scale: int = 1
 
 
+# Rows the app reads as it runs, so a change needs no restart.
+LIVE_NUMBER_KEYS: frozenset[str] = frozenset({"preview_disk_cache_max_bytes"})
+
+
 def row_recommendation(spec: "NumberRow", machine: Machine) -> int | None:
     """The safe setting for this machine in the row's shown units; None when unknown."""
     limit = cache_entry_limit(spec.key, machine, spec.scale)
@@ -121,6 +125,17 @@ NUMBER_ROWS: tuple[NumberRow, ...] = (
         tr(" frames"),
         tr("Rendered frames held for navigating back with no re-render."),
         tr("How many rendered frames stay in memory for going back."),
+    ),
+    NumberRow(
+        "preview_disk_cache_max_bytes",
+        tr("Disk cache limit"),
+        1,
+        1024,
+        1,
+        " GB",
+        tr("Disk space for previews kept on disk, shared by every photo. The photos opened longest ago go first."),
+        tr("The most disk space the previews kept on disk can use."),
+        scale=1024**3,
     ),
     NumberRow(
         "max_texture_size",
@@ -408,6 +423,20 @@ class PreferencesDialog(QDialog):
         self.vram_warning_box.toggled.connect(self._on_vram_warning_changed)
         self._add_toggles(grid, row, self.low_vram_tiling_box, self.vram_warning_box)
         row += 1
+
+        self.disk_cache_box = labeled_toggle(
+            "fa5s.hdd",
+            tr("Keep Previews on Disk"),
+            APP_CONFIG.preview_disk_cache,
+            tr("Store decoded previews on disk, so a photo opens again without a new decode, also after a restart."),
+        )
+        if "preview_disk_cache" in self._pinned:
+            self.disk_cache_box.setEnabled(False)
+            self.disk_cache_box.setToolTip(tr("Set in override.toml, which wins over this dialog"))
+        else:
+            self.disk_cache_box.toggled.connect(self._on_disk_cache_changed)
+        self._add_toggles(grid, row, self.disk_cache_box)
+        row += 1
         hint(
             tr("Reduce Export Memory Use applies to the next export started, no restart needed.")
             + (tr(" Set in override.toml.") if "low_vram_export_tiling" in self._pinned else "")
@@ -519,7 +548,11 @@ class PreferencesDialog(QDialog):
         self.repo.save_global_setting(spec.key, int(value) * spec.scale)
         for row in NUMBER_ROWS:
             self._refresh_hint(row)
-        self._mark_restart()
+        if spec.key in LIVE_NUMBER_KEYS:
+            # The next write evicts to it: evicting here would act on each digit as it is typed.
+            setattr(APP_CONFIG, spec.key, int(value) * spec.scale)
+        else:
+            self._mark_restart()
 
     def _on_ui_scale_changed(self, index: int) -> None:
         self.repo.save_global_setting("ui_scale", float(self.scale_combo.itemData(index)))
@@ -555,6 +588,10 @@ class PreferencesDialog(QDialog):
     def _on_low_vram_tiling_changed(self, checked: bool) -> None:
         APP_CONFIG.low_vram_export_tiling = bool(checked)
         self.repo.save_global_setting("low_vram_export_tiling", bool(checked))
+
+    def _on_disk_cache_changed(self, checked: bool) -> None:
+        APP_CONFIG.preview_disk_cache = bool(checked)
+        self.repo.save_global_setting("preview_disk_cache", bool(checked))
 
     def _on_vram_warning_changed(self, checked: bool) -> None:
         self.repo.save_global_setting("show_vram_capped_warning", bool(checked))
@@ -619,6 +656,8 @@ def _pinned_keys() -> set[str]:
     pinned = toml_pinned_keys(cfg)
     if cfg.low_vram_export_tiling is not None:
         pinned = pinned | {"low_vram_export_tiling"}
+    if cfg.preview_disk_cache is not None:
+        pinned = pinned | {"preview_disk_cache"}
     return pinned
 
 

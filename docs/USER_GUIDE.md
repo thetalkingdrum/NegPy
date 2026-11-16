@@ -905,11 +905,13 @@ Shows the whole strip, to place and pick the frames before the scan. **Apply Fra
 *   **GPU texture cap**: the largest image the GPU loads at once. At 0, an integrated GPU uses 6144 px and other GPUs have no limit. A value here replaces that limit. Lower it if exports run out of GPU memory.
 *   **Reduce Export Memory Use**: exports in smaller pieces, for a computer where exports run out of GPU memory.
 *   **Show GPU Memory Warning**: tells you when an HQ preview is reduced to fit.
+*   **Keep Previews on Disk** (on at first): saves each decoded preview, so a photo opens again without a new decode, also after a restart. This helps most with RGB triplets, brackets and stitches.
+*   **Disk cache limit**: the disk space for those previews, 4 GB at first, shared by every photo. When it is full, the photos opened longest ago go first.
 
 ### Session & Storage
 
 *   **Carry Settings Between Frames** and **Persistent Settings…**: what a new frame takes from the last one (§1).
-*   **Manage Database…**: sizes, clearing saved edits, and library folders.
+*   **Manage Database…**: sizes, clearing saved edits, thumbnails, previews on disk and library folders.
 
 ### Startup override (`override.toml`)
 
@@ -923,7 +925,7 @@ If NegPy crashes at launch or draws wrongly, edit `Documents/NegPy/override.toml
 | `performance.force_hq_preview` | `true` / `false` | Turns HQ Preview on or off. |
 | `logging.level` | `"debug"`, `"info"`, `"warning"`, `"error"` | How much NegPy logs. Use `"debug"` for a bug report. |
 
-The memory rows of Preferences can be set here too (`max_texture_size`, `preview_render_size`, `preview_cache_max_bytes`, `preview_cache_max_entries`, `preview_cache_max_full_res_entries`, `render_memo_max_entries`).
+The memory rows of Preferences can be set here too (`max_texture_size`, `preview_render_size`, `preview_cache_max_bytes`, `preview_cache_max_entries`, `preview_cache_max_full_res_entries`, `render_memo_max_entries`). So can the previews on disk: `preview_disk_cache` (`true` / `false`), `preview_disk_cache_max_bytes`, and `preview_disk_cache_dir`, a folder on a fast or larger drive.
 
 **Common fixes:**
 

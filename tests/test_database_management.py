@@ -143,6 +143,7 @@ def test_clear_library_forgets_the_rolls_only(tmp_path, qapp):
 
     controller = MagicMock()
     controller.asset_store.thumbnail_stats.return_value = (0, 0)
+    controller.preview_disk_cache_stats.return_value = (0, 0)
     dialog = DatabaseDialog(repo, controller)
     assert dialog.clear_library_btn.isEnabled()
 
@@ -155,3 +156,27 @@ def test_clear_library_forgets_the_rolls_only(tmp_path, qapp):
     assert tmp_path.is_dir()
     assert not dialog.clear_library_btn.isEnabled()
     controller.library_cleared.emit.assert_called_once_with()
+
+
+def test_clear_previews_empties_the_disk_cache_only(tmp_path, qapp):
+    from unittest.mock import MagicMock
+
+    from negpy.desktop.view.widgets.database_dialog import DatabaseDialog
+
+    repo = StorageRepository(str(tmp_path / "edits.db"), str(tmp_path / "settings.db"))
+    repo.initialize()
+    repo.save_file_settings("h1", WorkspaceConfig(), file_path="/a/1.nef")
+    controller = MagicMock()
+    controller.asset_store.thumbnail_stats.return_value = (0, 0)
+    controller.preview_disk_cache_stats.return_value = (3, 90 * 1024 * 1024)
+    dialog = DatabaseDialog(repo, controller)
+    assert dialog.clear_previews_btn.isEnabled()
+    assert "90" in dialog._size_label.text()
+
+    controller.preview_disk_cache_stats.return_value = (0, 0)
+    dialog._confirm = lambda *a, **k: True
+    dialog._on_clear_previews()
+
+    controller.clear_preview_disk_cache.assert_called_once_with()
+    assert not dialog.clear_previews_btn.isEnabled()
+    assert repo.load_file_settings("h1") is not None

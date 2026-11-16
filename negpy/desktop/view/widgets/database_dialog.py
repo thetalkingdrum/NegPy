@@ -39,10 +39,10 @@ _TOOLING_ROWS = (
 class DatabaseDialog(QDialog):
     """View what the app has stored in SQLite and clear it.
 
-    Four clear actions: 'Clear Saved Edits' drops per-image looks/history/marks so a
-    reloaded image starts from defaults; 'Clear Thumbnails' empties the on-disk
-    thumbnail cache; 'Clear Library' forgets the rolls; 'Reset Everything' wipes both
-    databases (also presets, rig profiles, preferences) but leaves thumbnails alone. All
+    Five clear actions: 'Clear Saved Edits' drops per-image looks/history/marks so a
+    reloaded image starts from defaults; 'Clear Thumbnails' and 'Clear Previews' empty the
+    on-disk caches; 'Clear Library' forgets the rolls; 'Reset Everything' wipes both
+    databases (also presets, rig profiles, preferences) but leaves the caches alone. All
     confirm first; the counts and sizes refresh in place after a clear.
     """
 
@@ -73,7 +73,7 @@ class DatabaseDialog(QDialog):
 
         note = hint_label(
             tr(
-                "Clearing only affects this app's database and its thumbnail cache. Source files are "
+                "Clearing only affects this app's database and its caches. Source files are "
                 "never touched. If you export .negpy sidecars, those still exist next to your images "
                 "and can restore an edit when that image is reloaded."
             )
@@ -96,6 +96,10 @@ class DatabaseDialog(QDialog):
         self.clear_thumbs_btn.setToolTip(tr("Delete the cached Film Strip thumbnails, which render again as images load"))
         self.clear_thumbs_btn.clicked.connect(self._on_clear_thumbnails)
 
+        self.clear_previews_btn = QPushButton(tr("Clear Previews…"))
+        self.clear_previews_btn.setToolTip(tr("Delete the previews kept on disk, which decode again as photos open"))
+        self.clear_previews_btn.clicked.connect(self._on_clear_previews)
+
         self.clear_library_btn = QPushButton(tr("Clear Library…"))
         self.clear_library_btn.setToolTip(tr("Forget the rolls in your library, but keep the folders and their files"))
         self.clear_library_btn.clicked.connect(self._on_clear_library)
@@ -111,12 +115,15 @@ class DatabaseDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         # Enter must not fire a wipe: Close is the default, and the filled button is the one exception
         # to "filled = default" because the wipe is the dialog's reason to exist.
-        pin_dialog_default(None, self.clear_edits_btn, self.clear_thumbs_btn, self.clear_library_btn, self.reset_all_btn)
+        pin_dialog_default(
+            None, self.clear_edits_btn, self.clear_thumbs_btn, self.clear_previews_btn, self.clear_library_btn, self.reset_all_btn
+        )
         close_btn.setDefault(True)
         close_btn.setAutoDefault(True)
 
         row.addWidget(self.clear_edits_btn)
         row.addWidget(self.clear_thumbs_btn)
+        row.addWidget(self.clear_previews_btn)
         row.addWidget(self.clear_library_btn)
         row.addWidget(self.reset_all_btn)
         row.addStretch(1)
@@ -155,10 +162,12 @@ class DatabaseDialog(QDialog):
                 r += 1
             self._add_separator(r)
             self._stat_row(r + 1, "thumbnails", tr("Cached thumbnails"))
+            self._stat_row(r + 2, "previews", tr("Previews on disk"))
         self._refresh()
 
     def _refresh(self) -> None:
         thumb_count, thumb_bytes = self.controller.asset_store.thumbnail_stats()
+        preview_count, preview_bytes = self.controller.preview_disk_cache_stats()
         try:
             stats = self.repo.database_stats()
         except Exception:
@@ -167,12 +176,18 @@ class DatabaseDialog(QDialog):
             self._size_label.setText(tr("Could not read the database."))
             return
         stats["thumbnails"] = thumb_count
+        stats["previews"] = preview_count
         stats["library_rolls"] = len(saved_rolls(self.repo))
         for key, lbl in self._value_labels.items():
             lbl.setText(f"{stats.get(key, 0):,}")
         db_bytes = stats.get("edits_db_bytes", 0) + stats.get("settings_db_bytes", 0)
         self._size_label.setText(
-            tr("On disk: {value} databases + {value1} thumbnails", value=human_bytes(db_bytes), value1=human_bytes(thumb_bytes))
+            tr(
+                "On disk: {value} databases + {value1} thumbnails + {value2} previews",
+                value=human_bytes(db_bytes),
+                value1=human_bytes(thumb_bytes),
+                value2=human_bytes(preview_bytes),
+            )
         )
         self._update_enabled(stats)
 
@@ -182,6 +197,7 @@ class DatabaseDialog(QDialog):
         self.clear_edits_btn.setEnabled(edits > 0)
         self.reset_all_btn.setEnabled(total > 0)
         self.clear_thumbs_btn.setEnabled(stats.get("thumbnails", 0) > 0)
+        self.clear_previews_btn.setEnabled(stats.get("previews", 0) > 0)
         self.clear_library_btn.setEnabled(stats.get("library_rolls", 0) > 0)
 
     def _confirm(self, title: str, text: str, ok_label: str, informative: str = tr("This cannot be undone.")) -> bool:
@@ -215,6 +231,20 @@ class DatabaseDialog(QDialog):
             self.controller.clear_thumbnail_cache()
         except Exception as exc:
             QMessageBox.critical(self, tr("Manage Database"), tr("Could not clear the thumbnail cache:\n{exc}", exc=exc))
+        self._refresh()
+
+    def _on_clear_previews(self) -> None:
+        if not self._confirm(
+            tr("Clear Previews"),
+            tr("Delete every preview kept on disk?\n\nEach photo decodes again the next time it opens."),
+            tr("Clear Previews"),
+            tr("Your edits and your files stay as they are."),
+        ):
+            return
+        try:
+            self.controller.clear_preview_disk_cache()
+        except Exception as exc:
+            QMessageBox.critical(self, tr("Manage Database"), tr("Could not clear the previews on disk:\n{exc}", exc=exc))
         self._refresh()
 
     def _on_clear_library(self) -> None:

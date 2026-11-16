@@ -301,6 +301,8 @@ def main() -> None:
         # skips bool values (see its docstring).
         if override_cfg.low_vram_export_tiling is None:
             APP_CONFIG.low_vram_export_tiling = bool(repo.get_global_setting("low_vram_export_tiling", False))
+        if override_cfg.preview_disk_cache is None:
+            APP_CONFIG.preview_disk_cache = bool(repo.get_global_setting("preview_disk_cache", True))
 
         # Resolve flat-field gains by profile id from the on-disk store, which keeps the numpy
         # logic layer free of any storage dependency, then migrate any legacy DB-backed profiles

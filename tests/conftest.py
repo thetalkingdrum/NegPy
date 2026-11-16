@@ -48,6 +48,14 @@ def _own_camera_files(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_preview_disk_cache(monkeypatch):
+    """The disk tier writes to the user's cache folder and outlives a test; a test that needs it opts in."""
+    from negpy.kernel.system.config import APP_CONFIG
+
+    monkeypatch.setattr(APP_CONFIG, "preview_disk_cache", False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_base_reads():
     """The base-read cache is process-wide and keyed by source hash, which tests reuse across images."""
     from negpy.services.rendering import base_read

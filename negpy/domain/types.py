@@ -55,6 +55,11 @@ class AppConfig:
     # inside the LRU: enough to make navigating back to the previous frame instant, without
     # letting HQ buffers push every small preview out.
     preview_cache_max_full_res_entries: int = 2
+    # Disk tier of that cache: preview-size buffers only, under one global cap.
+    preview_disk_cache: bool = True
+    preview_disk_cache_max_bytes: int = 4 * 1024**3
+    # Empty is <cache_dir>/previews.
+    preview_disk_cache_dir: str = ""
     # Rendered frames kept for instant navigate-back, tens of MB of VRAM each at
     # preview_render_size=1600. HQ frames stay on the full-res budget above.
     render_memo_max_entries: int = 8

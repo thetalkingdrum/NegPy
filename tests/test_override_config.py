@@ -100,6 +100,37 @@ class TestOverrideConfigParsing(unittest.TestCase):
         for value in (0, -1, "eight", None):
             self.assertIsNone(_parse({"performance": {"render_memo_max_entries": value}}).render_memo_max_entries)
 
+    def test_parse_preview_disk_cache(self):
+        cfg = _parse(
+            {
+                "performance": {
+                    "preview_disk_cache": False,
+                    "preview_disk_cache_max_bytes": 8 * 1024**3,
+                    "preview_disk_cache_dir": "~/fast/previews",
+                }
+            }
+        )
+        app = _make_app_config()
+        apply(cfg, app)
+        self.assertFalse(app.preview_disk_cache)
+        self.assertEqual(app.preview_disk_cache_max_bytes, 8 * 1024**3)
+        self.assertEqual(app.preview_disk_cache_dir, os.path.expanduser("~/fast/previews"))
+
+    def test_parse_preview_disk_cache_rejects_nonsense(self):
+        for value in ("yes", 1, None):
+            self.assertIsNone(_parse({"performance": {"preview_disk_cache": value}}).preview_disk_cache)
+        for value in (0, -1, True, "4GB", None):
+            self.assertIsNone(_parse({"performance": {"preview_disk_cache_max_bytes": value}}).preview_disk_cache_max_bytes)
+        for value in ("", "  ", 3, None):
+            self.assertIsNone(_parse({"performance": {"preview_disk_cache_dir": value}}).preview_disk_cache_dir)
+
+    def test_an_unset_disk_cache_keeps_the_defaults(self):
+        app = _make_app_config()
+        apply(_parse({}), app)
+        self.assertTrue(app.preview_disk_cache)
+        self.assertEqual(app.preview_disk_cache_max_bytes, 4 * 1024**3)
+        self.assertEqual(app.preview_disk_cache_dir, "")
+
     def test_parse_preview_render_size(self):
         cfg = _parse({"performance": {"preview_render_size": 3000}})
         self.assertEqual(cfg.preview_render_size, 3000)

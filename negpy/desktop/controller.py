@@ -1441,6 +1441,18 @@ class AppController(QObject):
         if changed:
             self.session.asset_model.refresh()
 
+    def preview_disk_cache_stats(self) -> tuple[int, int]:
+        """(entries, bytes) of the previews kept on disk."""
+        from negpy.services.rendering.preview_disk_cache import shared_disk_cache
+
+        return shared_disk_cache(APP_CONFIG).usage()
+
+    def clear_preview_disk_cache(self) -> None:
+        """Deletes the previews kept on disk; the ones in memory stay until evicted."""
+        from negpy.services.rendering.preview_disk_cache import shared_disk_cache
+
+        shared_disk_cache(APP_CONFIG).clear()
+
     def clear_thumbnail_cache(self) -> None:
         """Drops cached thumbnails on disk and in memory, then regenerates loaded ones."""
         self.thumb_worker.cancel_pending()

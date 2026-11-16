@@ -10,6 +10,7 @@ import numpy as np
 from negpy.domain.types import AppConfig, Dimensions, ImageBuffer
 from negpy.kernel.system.config import APP_CONFIG
 from negpy.kernel.system.logging import get_logger
+from negpy.services.rendering.preview_disk_cache import PreviewDiskCache
 
 logger = get_logger(__name__)
 
@@ -83,13 +84,17 @@ class PreviewBufferCache:
     """
     In-memory LRU for decoded linear preview buffers. Evicts by entry count and approximate RSS.
 
+    A preview-size entry is also written to ``disk``, which serves a RAM miss. Full-resolution
+    entries stay in RAM only.
+
     One manager is shared by batch workers that decode several frames at once, so every
     public method holds the lock: the LRU list and the entry map must move together, and
     an unguarded ``_order.remove`` raises when two threads recycle the same key.
     """
 
-    def __init__(self, app_config: Optional[AppConfig] = None) -> None:
+    def __init__(self, app_config: Optional[AppConfig] = None, disk: Optional[PreviewDiskCache] = None) -> None:
         self._app = app_config or APP_CONFIG
+        self._disk = disk
         self._order: list[Hashable] = []
         self._data: dict[Hashable, _Entry] = {}
         self._lock = threading.RLock()
@@ -98,11 +103,28 @@ class PreviewBufferCache:
         t = key.as_tuple()
         with self._lock:
             ent = self._data.get(t)
-            if ent is None:
-                return None
-            self._order.remove(t)
-            self._order.append(t)
-            return ent.buffer, ent.dims, ent.metadata
+            if ent is not None:
+                self._order.remove(t)
+                self._order.append(t)
+                return ent.buffer, ent.dims, ent.metadata
+        return self.promote_from_disk(key)
+
+    def promote_from_disk(
+        self,
+        key: PreviewCacheKey,
+        *,
+        protected_file_hashes: Collection[str] = (),
+        preserve_full_resolution: bool = False,
+    ) -> Optional[tuple[ImageBuffer, Dimensions, dict]]:
+        """The disk entry for ``key``, now also held in RAM; None on a miss."""
+        if self._disk is None or key.full_resolution:
+            return None
+        hit = self._disk.get(key.as_tuple())
+        if hit is None:
+            return None
+        buffer, dims, metadata = hit
+        self._put_ram(key, buffer, dims, metadata, protected_file_hashes, preserve_full_resolution)
+        return buffer, dims, metadata
 
     def peek(self, key: PreviewCacheKey) -> Optional[tuple[ImageBuffer, Dimensions, dict]]:
         """Like ``get``, but leaves the LRU order as it is."""
@@ -119,6 +141,19 @@ class PreviewBufferCache:
         *,
         protected_file_hashes: Collection[str] = (),
         preserve_full_resolution: bool = False,
+    ) -> None:
+        if self._disk is not None and not key.full_resolution:
+            self._disk.put_async(key.as_tuple(), buffer, dims, dict(metadata))
+        self._put_ram(key, buffer, dims, metadata, protected_file_hashes, preserve_full_resolution)
+
+    def _put_ram(
+        self,
+        key: PreviewCacheKey,
+        buffer: ImageBuffer,
+        dims: Dimensions,
+        metadata: dict,
+        protected_file_hashes: Collection[str],
+        preserve_full_resolution: bool,
     ) -> None:
         t = key.as_tuple()
         b = _entry_bytes(buffer, metadata)

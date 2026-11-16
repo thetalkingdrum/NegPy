@@ -118,6 +118,13 @@ max_texture_size = "auto"
 # A preview-size frame is ~27 MB of VRAM; HQ frames follow the full-res budget above.
 # render_memo_max_entries = 8
 
+# Keep decoded previews on disk, so opening a photo again skips the decode, also after a
+# restart. One limit covers every photo; the least recently opened go first.
+# preview_disk_cache = true
+# preview_disk_cache_max_bytes = 4294967296
+# Folder for those previews. Empty uses the cache folder in the NegPy user directory.
+# preview_disk_cache_dir = ""
+
 [logging]
 # Verbosity: "debug", "info", "warning", "error"
 level = "info"
@@ -143,6 +150,9 @@ class OverrideConfig:
     preview_cache_max_entries: int | None = None
     preview_cache_max_full_res_entries: int | None = None
     render_memo_max_entries: int | None = None
+    preview_disk_cache: bool | None = None
+    preview_disk_cache_max_bytes: int | None = None
+    preview_disk_cache_dir: str | None = None
     log_level: str = "info"
 
     @property
@@ -222,6 +232,15 @@ def _parse(data: dict) -> OverrideConfig:
     raw_memo_n = performance.get("render_memo_max_entries")
     memo_n: int | None = int(raw_memo_n) if isinstance(raw_memo_n, int) and raw_memo_n > 0 else None
 
+    raw_disk = performance.get("preview_disk_cache")
+    disk_cache: bool | None = bool(raw_disk) if isinstance(raw_disk, bool) else None
+
+    raw_disk_b = performance.get("preview_disk_cache_max_bytes")
+    disk_b: int | None = int(raw_disk_b) if isinstance(raw_disk_b, int) and not isinstance(raw_disk_b, bool) and raw_disk_b > 0 else None
+
+    raw_disk_dir = performance.get("preview_disk_cache_dir")
+    disk_dir: str | None = os.path.expanduser(raw_disk_dir) if isinstance(raw_disk_dir, str) and raw_disk_dir.strip() else None
+
     log_level = str(logging_section.get("level", "info")).lower()
     if log_level not in ("debug", "info", "warning", "error"):
         log_level = "info"
@@ -238,6 +257,9 @@ def _parse(data: dict) -> OverrideConfig:
         preview_cache_max_entries=cache_n,
         preview_cache_max_full_res_entries=cache_fr,
         render_memo_max_entries=memo_n,
+        preview_disk_cache=disk_cache,
+        preview_disk_cache_max_bytes=disk_b,
+        preview_disk_cache_dir=disk_dir,
         log_level=log_level,
     )
 
@@ -316,6 +338,15 @@ def apply(cfg: OverrideConfig, app_config: AppConfig) -> None:
     if cfg.render_memo_max_entries is not None:
         app_config.render_memo_max_entries = cfg.render_memo_max_entries
 
+    if cfg.preview_disk_cache is not None:
+        app_config.preview_disk_cache = cfg.preview_disk_cache
+
+    if cfg.preview_disk_cache_max_bytes is not None:
+        app_config.preview_disk_cache_max_bytes = cfg.preview_disk_cache_max_bytes
+
+    if cfg.preview_disk_cache_dir is not None:
+        app_config.preview_disk_cache_dir = cfg.preview_disk_cache_dir
+
 
 def effective_max_texture_size(app_config: AppConfig, gpu: Any) -> int | None:
     """The texture-size budget to enforce for a full-resolution GPU load.
@@ -342,6 +373,7 @@ STORED_PERF_KEYS: tuple[str, ...] = (
     "preview_cache_max_full_res_entries",
     "render_memo_max_entries",
     "max_texture_size",
+    "preview_disk_cache_max_bytes",
 )
 
 

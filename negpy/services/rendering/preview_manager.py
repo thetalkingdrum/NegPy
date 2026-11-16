@@ -42,6 +42,8 @@ from negpy.kernel.system.memory import available_system_memory_bytes
 from negpy.features.process.logic import highlight_reconstruction_bright_gain
 from negpy.features.process.models import DemosaicMode
 from negpy.services.rendering.preview_cache import PreviewBufferCache, PreviewCacheKey
+from negpy.services.rendering.preview_disk_cache import shared_disk_cache
+from negpy.kernel.system import config as app_config_module
 from negpy.services.rendering.prefetch_policy import decide_prefetch
 
 logger = get_logger(__name__)
@@ -113,7 +115,8 @@ class PreviewManager:
     """
 
     def __init__(self) -> None:
-        self._cache = PreviewBufferCache(APP_CONFIG)
+        # The disk tier reads the process configuration itself, whatever this module's is set to.
+        self._cache = PreviewBufferCache(APP_CONFIG, shared_disk_cache(app_config_module.APP_CONFIG))
 
     def prefetch_linear_preview(
         self,
@@ -151,12 +154,15 @@ class PreviewManager:
         )
         if self._cache.contains(key):
             return True
+        protected_hashes = frozenset(protected_file_hashes)
+        # A disk entry costs a read, not a decode, so the decode's memory budget does not gate it.
+        if self._cache.promote_from_disk(key, protected_file_hashes=protected_hashes, preserve_full_resolution=True) is not None:
+            return True
         if should_cancel is not None and should_cancel():
             raise InterruptedError("preview load cancelled")
 
         estimate = loader_factory.estimate_linear_preview_prefetch_memory(file_path, APP_CONFIG.preview_render_size)
 
-        protected_hashes = frozenset(protected_file_hashes)
         decision = decide_prefetch(
             estimate,
             self._cache.usage(

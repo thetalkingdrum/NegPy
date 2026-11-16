@@ -89,6 +89,31 @@ class TestPreferencesDialog(unittest.TestCase):
         dlg._spins["preview_cache_max_bytes"].setValue(256)
         self.assertEqual(dlg.repo.data["preview_cache_max_bytes"], 256 * 1024 * 1024)
 
+    def test_the_disk_cache_limit_is_shown_in_gb_and_applies_without_a_restart(self):
+        from negpy.kernel.system.config import APP_CONFIG
+
+        dlg = _dlg()
+        spin = dlg._spins["preview_disk_cache_max_bytes"]
+        self.assertEqual(spin.value(), APP_CONFIG.preview_disk_cache_max_bytes // 1024**3)
+        with patch.object(APP_CONFIG, "preview_disk_cache_max_bytes", APP_CONFIG.preview_disk_cache_max_bytes):
+            spin.setValue(10)
+            self.assertEqual(dlg.repo.data["preview_disk_cache_max_bytes"], 10 * 1024**3)
+            self.assertEqual(APP_CONFIG.preview_disk_cache_max_bytes, 10 * 1024**3)
+        self.assertTrue(dlg._restart_hint.isHidden())
+
+    def test_the_disk_cache_toggle_applies_at_once_and_is_saved(self):
+        from negpy.kernel.system.config import APP_CONFIG
+
+        with patch.object(APP_CONFIG, "preview_disk_cache", True):
+            dlg = _dlg()
+            self.assertTrue(dlg.disk_cache_box.isChecked())
+            dlg.disk_cache_box.setChecked(False)
+            self.assertFalse(APP_CONFIG.preview_disk_cache)
+        self.assertIs(dlg.repo.data["preview_disk_cache"], False)
+
+    def test_an_override_toml_disk_cache_setting_disables_the_toggle(self):
+        self.assertFalse(_dlg(pinned={"preview_disk_cache"}).disk_cache_box.isEnabled())
+
     def test_a_plain_number_row_is_stored_as_it_reads(self):
         dlg = _dlg()
         dlg._spins["render_memo_max_entries"].setValue(12)
