@@ -11,10 +11,12 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from negpy.desktop.workers.chart_fit import ChartSource, fade_estimate_grid
 from negpy.desktop.workers.render import _decode_asset_preview_with_meta, gain_slices_for_asset
 from negpy.domain.models import WorkspaceConfig
+from negpy.features.exposure.normalization import look_crosstalk_matrix
 from negpy.features.process.fade import (
     blend_gray_readings,
     estimate_red,
     gray_readings,
+    look_tag,
     measure_crossover,
     pick_neutrals,
     render_white_space,
@@ -57,7 +59,7 @@ class FadeRollResult:
 
 
 class _Frame(NamedTuple):
-    """One frame with clear grays: its asset, Estimate grid, white space, gray reader and reading."""
+    """One frame with clear grays: its asset, Estimate grid, white space, gray reader, reading and look matrix."""
 
     info: dict
     config: WorkspaceConfig
@@ -65,6 +67,7 @@ class _Frame(NamedTuple):
     space: str
     reader: Callable
     reading: FrameReading
+    look: Optional[np.ndarray]
 
 
 class FadeRollWorker(QObject):
@@ -131,7 +134,8 @@ class FadeRollWorker(QObject):
                 result.no_grays.append(info["name"])
                 continue
 
-            picked = pick_neutrals(grid, readings, camera_raw=bool(space), white_space=space)
+            look = look_crosstalk_matrix(config.process, config.process.process_mode)
+            picked = pick_neutrals(grid, readings, camera_raw=bool(space), white_space=space, look=look)
             if picked is None:
                 result.no_grays.append(info["name"])
                 continue
@@ -144,7 +148,7 @@ class FadeRollWorker(QObject):
             def reader(_grid, readings=readings, mix=mix):
                 return blend_gray_readings(readings, mix)
 
-            frames.append(_Frame(info, config, grid, space, reader, FrameReading(info["hash"], est.green, est.blue)))
+            frames.append(_Frame(info, config, grid, space, reader, FrameReading(info["hash"], est.green, est.blue), look))
 
         pooled = pool_survivals([f.reading for f in frames])
         if pooled is None:
@@ -182,7 +186,9 @@ class FadeRollWorker(QObject):
         for f in kept:
             if self._cancel.is_set():
                 return None
-            faded = survival_faded(f.grid, f.reader, (red, green, blue), camera_raw=bool(f.space), white_space=f.space, shift=shift)
+            faded = survival_faded(
+                f.grid, f.reader, (red, green, blue), camera_raw=bool(f.space), white_space=f.space, shift=shift, look=f.look
+            )
             if faded is not None:
                 candidates.append((f.reading.key, faded[0], faded[1], measure_crossover(*faded)))
         pick = pick_crossover(candidates)
@@ -196,5 +202,6 @@ class FadeRollWorker(QObject):
             fade_auto_red=ranged,
             fade_red_trim=1.0,
             fade_white_anchor=False,
+            fade_survival_look=look_tag((kept or frames)[0].config.process, (kept or frames)[0].config.process.process_mode),
         )
         return result

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import numpy as np
 
 from negpy.features.process.fade import measure_crossover
@@ -118,14 +119,15 @@ def test_the_roll_remembers_which_frame_its_table_came_from():
     assert rolls.roll_crossover_source(repo, "unknown", table) == ""
 
 
-def _roll_worker(grids):
+def _roll_worker(grids, process=None):
     """A worker whose frames read as *grids* (name -> Estimate grid, None for an unreadable frame)."""
     from negpy.desktop.workers.fade_roll import FadeRollTask, FadeRollWorker
     from negpy.domain.models import WorkspaceConfig
 
     worker = FadeRollWorker(preview_service=None)
     worker._read = lambda info, config, task: (grids[info["name"]], "")
-    task = FadeRollTask([({"name": name, "hash": name}, WorkspaceConfig()) for name in grids], "Adobe RGB")
+    config = WorkspaceConfig() if process is None else replace(WorkspaceConfig(), process=process)
+    task = FadeRollTask([({"name": name, "hash": name}, config) for name in grids], "Adobe RGB")
     return worker, task
 
 
@@ -153,9 +155,37 @@ def test_the_roll_worker_pools_the_frames_and_names_the_ones_it_leaves_out():
         "fade_auto_red",
         "fade_red_trim",
         "fade_white_anchor",
+        "fade_survival_look",
     }
+    assert result.changes["fade_survival_look"] == ""
     assert result.changes["fade_red_trim"] == 1.0
     assert abs(result.changes["fade_ratio_g"] - 0.8) < 0.03 and abs(result.changes["fade_ratio_b"] - 0.65) < 0.03
+
+
+def test_the_roll_worker_reads_a_look_profile_s_frames_against_its_neutral():
+    from negpy.features.exposure.normalization import look_crosstalk_matrix
+    from negpy.features.process.fade import gray_readings, look_tag, pick_neutrals
+    from negpy.features.process.models import ProcessConfig, ProcessMode
+
+    look = ProcessConfig(
+        process_mode=ProcessMode.E6,
+        crosstalk_strength=1.0,
+        crosstalk_matrix=(1.0, 0.89, -0.2, 0.04, 1.0, -0.06, 0.0, -0.02, 1.0),
+        crosstalk_process=str(ProcessMode.E6),
+        crosstalk_gain=(0.81, 0.92, 1.04),
+        crosstalk_look=True,
+    )
+    grids = {f"f{i}.tif": _faded_grid((1.0, 0.8, 0.65), seed=i) for i in range(4)}
+    plain = _roll_worker(grids)
+    worker, task = _roll_worker(grids, look)
+
+    result, before = worker._run(task), plain[0]._run(plain[1])
+
+    m = look_crosstalk_matrix(look, look.process_mode)
+    own = [pick_neutrals(g, gray_readings(g), look=m)[1].green for g in grids.values()]
+    assert result.changes["fade_survival_look"] == look_tag(look, look.process_mode) != ""
+    assert abs(result.changes["fade_ratio_g"] - float(np.median(own))) < 0.01
+    assert abs(result.changes["fade_ratio_g"] - before.changes["fade_ratio_g"]) > 0.03
 
 
 def test_the_roll_worker_gives_a_reason_with_too_few_readable_frames():
