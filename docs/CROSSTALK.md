@@ -41,7 +41,7 @@ gain = [0.80, 0.91, 1.05]    # R, G, B; three positive numbers
 
 The render multiplies each row of the normalized matrix by its gain, blended with 1 by the
 Strength slider. The gain applies only on slide paths and is ignored on other profiles.
-The matrix editor does not show or save the gain.
+The matrix editor's Channel Contrast fold sets the gain and the stage of a Transparency profile.
 
 ### Stage (Transparency only)
 

@@ -391,7 +391,7 @@ Entfernt ungleichmäßiges Licht, zum Beispiel dunklere Ecken, mit einer Aufnahm
 
 Ein Bild behält sein eigenes Profil, solange es nicht seiner Rolle folgt. So kann jedes Licht und jedes Filmformat eines haben. Ein neues Kamerabild oder ein Kamerabild mit fehlendem Profil nimmt das Profil, das du zuletzt bei einem Kamerabild gewählt hast. Ein neues Bild vom Filmscanner beginnt ohne Optik-Korrekturen. Mit der Einstellung Filmscanner erscheint diese Karte nur bei einem Bild, das eine Korrektur hat.
 
-<!-- panel:sensor src:5722a58e -->
+<!-- panel:sensor src:adcc3f87 -->
 ### 10.7 Kalibrierung: Farben deines Scan-Aufbaus
 
 Korrigiert Farbfehler, die von Lichtquelle, Kamera und Film kommen.
@@ -404,7 +404,7 @@ Korrigiert Farbfehler, die von Lichtquelle, Kamera und Film kommen.
 
 **Farbvermischung** (Farbfilm): Filmfarbstoffe, deine Lichtquelle und dein Sensor mischen die Farben leicht. Eine Matrix trennt sie wieder. Führe nach einer Änderung die **Rollenanalyse** erneut aus.
 
-*   **Matrix**: die Matrizen für diesen Filmtyp. Eine Matrix mit *(approx)* stammt aus einem Datenblatt. Eigene `.toml`-Dateien gehören in `<Documents>/NegPy/crosstalk/` (siehe CROSSTALK.md). Die Regler-Schaltfläche öffnet den Editor. **+** erstellt eine neue Matrix. NegPy enthält keine Dia-Matrix.
+*   **Matrix**: die Matrizen für diesen Filmtyp. Eine Matrix mit *(approx)* stammt aus einem Datenblatt. Eigene `.toml`-Dateien gehören in `<Documents>/NegPy/crosstalk/` (siehe CROSSTALK.md). Die Regler-Schaltfläche öffnet den Editor. **+** erstellt eine neue Matrix. Bei einer Dia-Matrix stellt der Abschnitt Kanalkontrast im Editor den Kontrast jedes Kanals und die Stufe ein: Look für einen Schmalband-Scanner, sonst Trennung. NegPy enthält keine Dia-Matrix.
 *   **Stärke**: wie stark die Matrix wirkt.
 *   Die Farbfeld-Schaltfläche öffnet **Aus Testtafel messen** (Farbnegative): Sie misst eine Matrix aus einer Aufnahme eines ColorChecker 24, SpyderCheckr 24 oder DKC-Pro auf dem Film. Ziehe die vier Punkte auf die Eckfelder.
 

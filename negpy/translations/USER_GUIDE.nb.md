@@ -391,7 +391,7 @@ Fjerner ujevnt lys, for eksempel mørkere hjørner, med et bilde av den bare lys
 
 Et bilde beholder sin egen profil med mindre det følger rullen, så hvert lys og filmformat kan ha én. Et nytt kamerabilde, eller et kamerabilde der profilen mangler, får den siste profilen du valgte på et kamerabilde. Et nytt bilde fra filmskanneren starter uten Optikk-korreksjoner. Med Filmskanner valgt vises dette kortet bare på et bilde som har en korreksjon.
 
-<!-- panel:sensor src:5722a58e -->
+<!-- panel:sensor src:adcc3f87 -->
 ### 10.7 Kalibrering: farger fra skanneoppsettet ditt
 
 Korrigerer fargefeil som kommer fra lyset, kameraet og filmen din.
@@ -404,7 +404,7 @@ Korrigerer fargefeil som kommer fra lyset, kameraet og filmen din.
 
 **Krysstale** (fargefilm): fargestoffene i filmen, lyset ditt og sensoren din blander fargene litt, og en matrise skiller dem igjen. Kjør **Rullanalyse** på nytt etter en endring.
 
-*   **Matrise**: matrisene for denne filmtypen. En *(omtrentlig)* matrise kommer fra et datablad. Dine egne `.toml`-filer legges i `<Documents>/NegPy/crosstalk/` (se CROSSTALK.md). Glidebryterknappen åpner redigeringsverktøyet; **+** lager en ny matrise. NegPy har ingen medfølgende matrise for dias.
+*   **Matrise**: matrisene for denne filmtypen. En *(omtrentlig)* matrise kommer fra et datablad. Dine egne `.toml`-filer legges i `<Documents>/NegPy/crosstalk/` (se CROSSTALK.md). Glidebryterknappen åpner redigeringsverktøyet; **+** lager en ny matrise. For en diasmatrise stiller redigeringsverktøyets Kanalkontrast inn hver kanals kontrast og trinnet: Utseende for en smalbåndsskanner, ellers Separasjon. NegPy har ingen medfølgende matrise for dias.
 *   **Styrke**: hvor mye av matrisen som brukes.
 *   Fargeprøveknappen åpner **Mål fra kart** (fargenegativer): den måler en matrise fra et ColorChecker 24, SpyderCheckr 24 eller DKC-Pro fotografert på filmen. Dra de fire prikkene til hjørnefeltene.
 

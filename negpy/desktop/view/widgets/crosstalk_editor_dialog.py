@@ -29,6 +29,8 @@ from negpy.desktop.view.styles.templates import (
     section_subheader,
 )
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.fold import group_fold
+from negpy.desktop.view.widgets.segmented_choice import SegmentedChoice
 from negpy.desktop.view.widgets.sliders import CompactSlider, align_slider_columns
 from negpy.desktop.view.widgets.step_combo import StepCombo
 from negpy.features.process.models import DEFAULT_CROSSTALK_MATRIX, ProcessMode
@@ -49,6 +51,8 @@ _TYPE_CHOICES: tuple[tuple[str, str], ...] = (
 _CHANNELS = (mark("Red"), mark("Green"), mark("Blue"))
 #: A term's slider range. Rows are normalized, so a term past ±1 only rescales the row.
 _TERM_RANGE = 1.0
+#: A channel's contrast (gain) range, around 1.0.
+_GAIN_RANGE = (0.5, 1.5)
 
 #: Film processes a matrix can describe. A B&W negative has one emulsion, so there is
 #: nothing to unmix.
@@ -92,8 +96,6 @@ class CrosstalkEditorDialog(QDialog):
     def __init__(self, current_profile: str, current_strength: float, process_mode: Optional[str] = None, parent=None, *, repo=None):
         super().__init__(parent)
         self._selected_name: Optional[str] = None
-        self._gain: Optional[tuple] = None
-        self._look = False
         self._updating = False
         # What a new profile is for: the process being worked in, not a fixed default.
         self._default_process = str(process_mode or ProcessMode.C41)
@@ -103,6 +105,8 @@ class CrosstalkEditorDialog(QDialog):
         self.resize(760, 640)
         self.setMinimumSize(520, 560)
         self._init_ui()
+        if repo is not None:
+            self.contrast_fold.bind(repo)
 
         self._reload_list(
             select=current_profile if current_profile in CrosstalkProfiles.list_profiles() else CrosstalkProfiles.DEFAULT_NAME
@@ -176,7 +180,7 @@ class CrosstalkEditorDialog(QDialog):
         for value, label in _PROCESS_CHOICES:
             self.process_combo.addItem(label, value)
         self.process_combo.setToolTip(tr("The film type these numbers describe, and the only one the matrix shows and works for."))
-        self.process_combo.currentIndexChanged.connect(lambda _i: self._emit_preview())
+        self.process_combo.currentIndexChanged.connect(lambda _i: self._on_process_changed())
         rl.addLayout(field_row(tr("Process"), self.process_combo))
 
         info = hint_label(
@@ -193,6 +197,9 @@ class CrosstalkEditorDialog(QDialog):
         rl.addWidget(self.readonly_hint)
 
         rl.addWidget(self._build_matrix_rows())
+        contrast_header, self.contrast_fold = self._build_contrast_fold()
+        rl.addLayout(contrast_header)
+        rl.addWidget(self.contrast_fold)
 
         self.preview_strength_slider = CompactSlider(tr("Preview Strength"), 0.0, 1.0, 1.0, has_neutral=False)
         self.preview_strength_slider.setToolTip(
@@ -272,6 +279,46 @@ class CrosstalkEditorDialog(QDialog):
                 self._cells[r][c] = sld
         return container
 
+    def _build_contrast_fold(self):
+        """Transparency only: the Stage choice and one contrast (gain) slider per channel."""
+        self.stage_choice = SegmentedChoice(
+            (("fa5s.layer-group", tr("Separation")), ("fa5s.eye", tr("Look"))),
+            tr("Where Fade Restoration acts: after a Separation matrix, or before a Look matrix made for a narrowband scanner."),
+            data=(False, True),
+        )
+        self.stage_choice.currentChanged.connect(lambda _i: self._emit_preview())
+        self._gain_sliders: List[CompactSlider] = []
+        for c, name in enumerate(_CHANNELS):
+            sld = CompactSlider(
+                tr("{value} Contrast", value=tr(name)),
+                *_GAIN_RANGE,
+                1.0,
+                step=0.0001,
+                precision=10000,
+                color=_CH_COLORS[c],
+                has_neutral=True,
+            )
+            sld.spin.setDecimals(4)
+            sld.setToolTip(
+                tr(
+                    "How steeply the {value} density renders, for a scanner that reads one dye stronger than the eye.",
+                    value=tr(name).lower(),
+                )
+            )
+            sld.valueChanged.connect(lambda _v: self._emit_preview())
+            self._gain_sliders.append(sld)
+        return group_fold(
+            "crosstalk_editor_contrast",
+            tr("Channel Contrast"),
+            field_row(tr("Stage"), self.stage_choice),
+            *self._gain_sliders,
+        )
+
+    def _on_process_changed(self) -> None:
+        # Gate the content, never the fold: its header hides with it.
+        self.contrast_fold.content.setVisible(self.selected_process() == str(ProcessMode.E6))
+        self._emit_preview()
+
     # ------------------------------------------------------------- helpers
 
     def working_matrix(self) -> List[float]:
@@ -302,12 +349,20 @@ class CrosstalkEditorDialog(QDialog):
         return self.process_combo.currentData() or str(ProcessMode.C41)
 
     def selected_gain(self) -> Optional[tuple]:
-        """The selected profile's gain, which the editor keeps but does not show; None off Transparency."""
-        return self._gain if self.selected_process() == str(ProcessMode.E6) else None
+        """The Channel Contrast gains; None off Transparency or at 1.0 on every channel."""
+        if self.selected_process() != str(ProcessMode.E6):
+            return None
+        gain = tuple(round(s.value(), 4) for s in self._gain_sliders)
+        return None if gain == (1.0, 1.0, 1.0) else gain
 
     def selected_look(self) -> bool:
-        """Whether the selected profile is a look profile, which the editor keeps but does not show."""
-        return self._look and self.selected_process() == str(ProcessMode.E6)
+        """Whether Stage is Look, on Transparency only."""
+        return bool(self.stage_choice.currentData()) and self.selected_process() == str(ProcessMode.E6)
+
+    def _set_contrast(self, gain: Optional[tuple], look: bool) -> None:
+        for s, g in zip(self._gain_sliders, gain or (1.0, 1.0, 1.0)):
+            s.setValue(float(g))
+        self.stage_choice.setCurrentIndex(self.stage_choice.findData(bool(look)))
 
     def _set_process(self, value: str) -> None:
         idx = self.process_combo.findData(value)
@@ -372,13 +427,17 @@ class CrosstalkEditorDialog(QDialog):
         self.name_edit.setText(name)
         self._set_type(CrosstalkProfiles.get_type(name))
         self._set_process(CrosstalkProfiles.get_process(name))
-        self._gain, self._look = CrosstalkProfiles.get_gain(name), CrosstalkProfiles.get_look(name)
+        self._set_contrast(CrosstalkProfiles.get_gain(name), CrosstalkProfiles.get_look(name))
         self._updating = False
+        self.contrast_fold.content.setVisible(self.selected_process() == str(ProcessMode.E6))
 
         self.name_edit.setEnabled(editable)
         self.type_combo.setEnabled(editable)
         self.process_combo.setEnabled(editable)
         self._set_grid_enabled(editable)
+        self.stage_choice.setEnabled(editable)
+        for s in self._gain_sliders:
+            s.setEnabled(editable)
         self.save_btn.setEnabled(editable)
         self.delete_btn.setEnabled(editable)
         self.readonly_hint.setVisible(not editable)

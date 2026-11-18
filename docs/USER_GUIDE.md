@@ -602,7 +602,7 @@ Corrects color errors that come from your light, camera and film.
 
 **Crosstalk** (color film): film dyes, light and sensor mix the colors a little, and a matrix separates them. Run **Roll Analysis** again after a change.
 
-*   **Matrix**: the matrices for this film type. An *(approx)* matrix comes from a data sheet. Your own `.toml` files go in `<Documents>/NegPy/crosstalk/` (see CROSSTALK.md). The slider button opens the editor; **+** makes a new matrix. No slide matrix comes with NegPy.
+*   **Matrix**: the matrices for this film type. An *(approx)* matrix comes from a data sheet. Your own `.toml` files go in `<Documents>/NegPy/crosstalk/` (see CROSSTALK.md). The slider button opens the editor; **+** makes a new matrix. For a slide matrix, the editor's Channel Contrast fold sets each channel's contrast and the Stage: Look for a narrowband scanner, else Separation. No slide matrix comes with NegPy.
 *   **Strength**: how strongly the matrix applies.
 *   The swatch button opens **Measure from Chart** (color negatives): it measures a matrix from a ColorChecker 24, SpyderCheckr 24 or DKC-Pro shot on the film. Drag the four dots onto the corner patches.
 

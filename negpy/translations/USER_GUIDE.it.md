@@ -589,7 +589,7 @@ Rimuove la luce non uniforme, come gli angoli più scuri, con uno scatto della s
 
 Un fotogramma mantiene il proprio profilo a meno che non segua il suo rullino, così ogni luce e ogni formato di pellicola può averne uno. Un nuovo fotogramma da fotocamera, o un fotogramma da fotocamera il cui profilo manca, prende l'ultimo profilo che hai scelto su un fotogramma da fotocamera. Un nuovo fotogramma da scanner per pellicola parte senza correzioni di Ottica. Con Scanner per pellicola impostato, questo riquadro compare solo su un fotogramma che ne ha una.
 
-<!-- panel:sensor src:5722a58e -->
+<!-- panel:sensor src:adcc3f87 -->
 ### 10.7 Calibrazione: i colori della tua configurazione di scansione
 
 Corregge gli errori di colore dovuti alla luce, alla fotocamera e alla pellicola.
@@ -602,7 +602,7 @@ Corregge gli errori di colore dovuti alla luce, alla fotocamera e alla pellicola
 
 **Diafonia** (pellicola a colori): i coloranti della pellicola, la luce e il sensore mescolano un poco i colori, e una matrice li separa. Esegui di nuovo l'**Analisi del rullino** dopo una modifica.
 
-*   **Matrice**: le matrici per questo tipo di pellicola. Una matrice *(approssimativa)* proviene da una scheda tecnica. I tuoi file `.toml` vanno in `<Documents>/NegPy/crosstalk/` (vedi CROSSTALK.md). Il pulsante con i cursori apre l'editor; **+** crea una nuova matrice. NegPy non fornisce alcuna matrice per diapositive.
+*   **Matrice**: le matrici per questo tipo di pellicola. Una matrice *(approssimativa)* proviene da una scheda tecnica. I tuoi file `.toml` vanno in `<Documents>/NegPy/crosstalk/` (vedi CROSSTALK.md). Il pulsante con i cursori apre l'editor; **+** crea una nuova matrice. Per una matrice per diapositive, il Contrasto dei canali dell'editor imposta il contrasto di ogni canale e la Fase: Aspetto per uno scanner a banda stretta, altrimenti Separazione. NegPy non fornisce alcuna matrice per diapositive.
 *   **Intensità**: quanto intensamente si applica la matrice.
 *   Il pulsante con il campione di colore apre **Misura dalla tabella** (negativi a colori): misura una matrice da una ColorChecker 24, una SpyderCheckr 24 o una DKC-Pro fotografata sulla pellicola. Trascina i quattro punti sulle tacche d'angolo.
 
