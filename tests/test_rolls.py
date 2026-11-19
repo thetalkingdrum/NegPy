@@ -14,6 +14,7 @@ from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets.rolls import (
     add_to_scene,
     baseline_label,
+    card_fields,
     create_scene,
     delete_scene,
     next_scene_name,
@@ -1115,9 +1116,9 @@ def test_copy_roll_settings_takes_the_roll_level_parts_and_the_named_locks():
     from negpy.services.assets.rolls import add_frame_seed, copy_roll_settings, set_frame_override, set_roll_defaults
 
     repo = _repo()
-    source = recognize_folder(repo, "/scans/portra")
+    source = create_virtual_roll(repo, "Portra", ["/scans/portra/1.tif"])
     target = create_virtual_roll(repo, "Picks", ["/scans/portra/1.tif"])
-    set_roll_defaults(repo, source, film_stock_id="portra400")
+    set_roll_defaults(repo, source, film_stock_id="portra400", use_luma_average=True)
     add_frame_seed(repo, source, cast_removal_strength=0.5)
     set_frame_override(repo, source, "h1", "film", True)
     set_frame_override(repo, source, "h2", "film", True)
@@ -1126,12 +1127,31 @@ def test_copy_roll_settings_takes_the_roll_level_parts_and_the_named_locks():
     set_roll_defaults(repo, source, film_stock_id="hp5")
 
     entry = roll_for_id(repo, target)
-    assert entry["defaults"] == {"film_stock_id": "portra400"}
+    assert entry["defaults"] == {"film_stock_id": "portra400", "use_luma_average": True}
     assert entry["frame_seed"] == {"cast_removal_strength": 0.5}
     assert entry["frame_overrides"] == {"h1": ["film"]}
     assert entry["member_paths"] == ["/scans/portra/1.tif"]
     copy_roll_settings(repo, "not-a-roll", target, {"h1"})
     assert roll_for_id(repo, target) == entry
+
+
+def test_copy_roll_settings_from_a_folder_roll_leaves_its_fallback_cards_behind():
+    from negpy.services.assets.rolls import copy_roll_settings, frame_defaults, set_frame_override, set_roll_defaults
+
+    repo = _repo()
+    source = recognize_folder(repo, "/scans/portra")
+    target = create_virtual_roll(repo, "Picks", ["/scans/portra/1.tif"])
+    set_roll_defaults(repo, source, film_stock_id="portra400", use_luma_average=True)
+    set_frame_override(repo, source, "h1", "film", True)
+    set_frame_override(repo, source, "h1", "baseline", True)
+
+    copy_roll_settings(repo, source, target, {"h1"})
+    set_roll_defaults(repo, source, film_stock_id="hp5")
+
+    entry = roll_for_id(repo, target)
+    assert entry["defaults"] == {"use_luma_average": True}
+    assert entry["frame_overrides"] == {"h1": ["baseline"]}
+    assert frame_defaults(repo, target, "h2", "/scans/portra/2.tif") == {"film_stock_id": "hp5", "use_luma_average": True}
 
 
 def test_home_roll_lookup_answers_as_home_roll(tmp_path):
@@ -1227,3 +1247,69 @@ def test_a_roll_red_with_no_trim_reads_as_no_trim():
     other = create_virtual_roll(repo, "Negatives", ["/n/a.tif"])
     set_roll_defaults(repo, other, film_stock_id="portra400")
     assert "fade_red_trim" not in roll_defaults(repo, other)
+
+
+def test_a_virtual_roll_falls_back_to_each_frames_folder_roll_per_card():
+    from negpy.services.assets.rolls import frame_defaults, remove_members
+
+    repo = _repo()
+    folder = recognize_folder(repo, "/scans/kentmere")
+    picks = create_virtual_roll(repo, "Picks", ["/scans/kentmere/1.tif", "/scans/other/2.tif"])
+    set_roll_defaults(repo, folder, film_stock_id="kentmere200", process_mode="BW", use_luma_average=True)
+
+    assert frame_defaults(repo, picks, "h1", "/scans/kentmere/1.tif") == {"film_stock_id": "kentmere200", "process_mode": "BW"}
+    assert frame_defaults(repo, picks, "h2", "/scans/other/2.tif") == {}
+    assert frame_defaults(repo, folder, "h1", "/scans/kentmere/1.tif") == roll_defaults(repo, folder)
+
+    set_roll_defaults(repo, picks, process_mode="C41", positive_source=False)
+    assert frame_defaults(repo, picks, "h1", "/scans/kentmere/1.tif") == {
+        "film_stock_id": "kentmere200",
+        "process_mode": "C41",
+        "positive_source": False,
+    }
+
+    set_frame_override(repo, folder, "h1", "metadata_gear", True)
+    assert "film_stock_id" not in frame_defaults(repo, picks, "h1#roll:" + picks, "/scans/kentmere/1.tif")
+
+    remove_members(repo, folder, ["/scans/kentmere/1.tif"], ["h1"])
+    assert frame_defaults(repo, picks, "h1", "/scans/kentmere/1.tif") == roll_defaults(repo, picks)
+
+
+def test_a_virtual_roll_resolves_and_locks_against_its_folder_roll():
+    from negpy.services.assets.rolls import settle_card_lock
+
+    repo = _repo()
+    folder = recognize_folder(repo, "/scans/kentmere")
+    picks = create_virtual_roll(repo, "Picks", ["/scans/kentmere/1.tif"])
+    set_roll_defaults(repo, folder, film_stock_id="kentmere200")
+    stale = WorkspaceConfig()
+    stale = replace(stale, metadata=replace(stale.metadata, film_stock_id="kentmere400"))
+
+    resolved = resolve_roll_config(repo, picks, "h1", stale, "/scans/kentmere/1.tif")
+    assert resolved.metadata.film_stock_id == "kentmere200"
+    assert resolve_roll_config(repo, picks, "h1", stale).metadata.film_stock_id == "kentmere400"
+
+    values = {n: getattr(resolved.metadata, n) for n in card_fields("metadata_gear")}
+    settle_card_lock(repo, picks, "h1", "metadata_gear", values, values, path="/scans/kentmere/1.tif")
+    assert frame_override_cards(repo, picks, "h1") == set()
+    settle_card_lock(repo, picks, "h1", "metadata_gear", {**values, "film_stock_id": "hp5"}, values, path="/scans/kentmere/1.tif")
+    assert frame_override_cards(repo, picks, "h1") == {"metadata_gear"}
+
+
+def test_card_roll_names_the_roll_a_frame_follows_on_a_card():
+    from negpy.services.assets.rolls import card_roll
+
+    repo = _repo()
+    folder = recognize_folder(repo, "/scans/kentmere")
+    picks = create_virtual_roll(repo, "Picks", ["/scans/kentmere/1.tif"])
+    path = "/scans/kentmere/1.tif"
+    assert card_roll(repo, picks, "h1", path, "fade") == picks
+
+    set_roll_defaults(repo, folder, fade_ratio_r=0.8)
+    assert card_roll(repo, picks, "h1", path, "fade") == folder
+    assert card_roll(repo, picks, "h1", path, "baseline") == picks
+    set_frame_override(repo, folder, "h1", "fade", True)
+    assert card_roll(repo, picks, "h1", path, "fade") == picks
+    set_frame_override(repo, folder, "h1", "fade", False)
+    set_roll_defaults(repo, picks, fade_ratio_r=0.9)
+    assert card_roll(repo, picks, "h1", path, "fade") == picks

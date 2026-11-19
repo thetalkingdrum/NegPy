@@ -2107,6 +2107,9 @@ class AppController(QObject):
             hashes = {rolls.unforked_hash(f["hash"]) for f in self.state.uploaded_files if f.get("hash")}
             rolls.copy_roll_settings(self.session.repo, source, roll_id, hashes)
             moved = self._carry_roll_edits(roll_id)
+            if (rolls.roll_for_id(self.session.repo, source) or {}).get("kind") == "folder":
+                kept = self._keep_loose_frames(source, roll_id)
+                moved = (moved[0] or kept[0], moved[1] or kept[1])
         self.state.active_roll_id = roll_id
         self.session.persist_session()
         if moved[0]:
@@ -2117,6 +2120,55 @@ class AppController(QObject):
         self.config_updated.emit()
         self.set_status(tr("Saved as virtual roll “{name}”", name=name), 3000)
         return roll_id
+
+    def _rolls_loaded_frames_follow(self) -> set:
+        """Every roll a loaded frame takes card values from: its own, and a virtual roll's folder rolls."""
+        repo = self.session.repo
+        followed = set()
+        for asset in self.session.state.uploaded_files:
+            roll_id = rolls.frame_roll(repo, self.state.active_roll_id, asset)
+            followed.update(r for r in (roll_id, rolls.fallback_roll(repo, roll_id, asset.get("path") or "")) if r)
+        return followed
+
+    def _keep_loose_frames(self, source: str, roll_id: str) -> tuple[bool, bool]:
+        """Each frame in no folder roll keeps what it showed in the folder roll *source*: where a card
+        would change in the new virtual roll *roll_id*, the frame gets its own edit there with the shown
+        values. A frame of another folder roll follows that roll. The shared edit stays as it is.
+        Returns (any frame moved, the open frame moved)."""
+        repo = self.session.repo
+        loose = [
+            a
+            for a in self.state.uploaded_files
+            if a.get("path") and a.get("hash") and rolls.fallback_roll(repo, roll_id, a["path"]) is None
+        ]
+        if not loose:
+            return False, False
+        current = self.state.current_file_hash
+        shown = {a["hash"]: self.state.config if a["hash"] == current else self.session.config_for_asset(a) for a in loose}
+        changed = []
+        self.state.active_roll_id = roll_id
+        try:
+            for asset in loose:
+                before, after = shown[asset["hash"]], self.session.config_for_asset(asset)
+                if any(not self._same_card(before, after, c) for c in rolls.FALLBACK_CARDS):
+                    changed.append((asset, before))
+        finally:
+            self.state.active_roll_id = source
+        any_moved = moved = False
+        for asset, before in changed:
+            forked = asset["hash"]
+            if rolls.unforked_hash(forked) != forked:
+                repo.save_file_settings(forked, before, file_path=asset["path"])
+                continue
+            asset["hash"] = rolls.fork_edit(repo, roll_id, forked, asset["path"], before)
+            any_moved = True
+            moved = moved or forked == current
+        return any_moved, moved
+
+    @classmethod
+    def _same_card(cls, a: WorkspaceConfig, b: WorkspaceConfig, card_key: str) -> bool:
+        values = cls._card_values(b, card_key)
+        return all(rolls.same_value(v, values[n]) for n, v in cls._card_values(a, card_key).items())
 
     def _seed_roll_modes(self, roll_id: str, source: Optional[str]) -> None:
         """Half Frame and RGB Scan for a new roll: the open roll's, or the no-roll ones without one,
@@ -2345,7 +2397,7 @@ class AppController(QObject):
         )
         # Before the reload: an unlocked Raw Decode takes the roll's decode on load, so a roll on the old one undoes the rig.
         repo = self.session.repo
-        for roll_id in {r for a in self.session.state.uploaded_files if (r := rolls.frame_roll(repo, self.state.active_roll_id, a))}:
+        for roll_id in self._rolls_loaded_frames_follow():
             if "linear_raw" in rolls.roll_defaults(repo, roll_id):
                 self._set_roll_cards(roll_id, self.state.config, linear_raw=linear_raw)
 
@@ -6710,15 +6762,25 @@ class AppController(QObject):
         asset = files[idx] if 0 <= idx < len(files) else {}
         return rolls.frame_roll(self.session.repo, self.state.active_roll_id, asset)
 
+    def _open_frame_fade_roll(self) -> Optional[str]:
+        """The roll whose Fade card the open frame follows (rolls.card_roll), None with no frame or no roll."""
+        roll_id = self._open_frame_roll()
+        if roll_id is None:
+            return None
+        idx = self.state.selected_file_idx
+        files = self.state.uploaded_files
+        path = files[idx].get("path") or "" if 0 <= idx < len(files) else ""
+        return rolls.card_roll(self.session.repo, roll_id, self.state.current_file_hash or "", path, "fade")
+
     def roll_crossover_table(self) -> Optional[tuple]:
         """The crossover table the active frame's roll holds, None with no roll or no table."""
-        roll_id = self._open_frame_roll()
+        roll_id = self._open_frame_fade_roll()
         table = None if roll_id is None else rolls.roll_defaults(self.session.repo, roll_id).get("fade_crossover_table")
         return None if table is None else tuple(table)
 
     def roll_crossover_source(self) -> str:
         """The frame Share Crossover took the roll's crossover table from, "" when none or since replaced."""
-        roll_id = self._open_frame_roll()
+        roll_id = self._open_frame_fade_roll()
         return "" if roll_id is None else rolls.roll_crossover_source(self.session.repo, roll_id, self.roll_crossover_table())
 
     def diverged_roll_cards(self) -> List[str]:
@@ -6748,8 +6810,22 @@ class AppController(QObject):
             return
         old = None if before is None else self._card_values(before, card_key)
         rolls.settle_card_lock(
-            repo, roll_id, rolls.unforked_hash(file_hash), card_key, self._card_values(config, card_key), old, process=config.process
+            repo,
+            roll_id,
+            rolls.unforked_hash(file_hash),
+            card_key,
+            self._card_values(config, card_key),
+            old,
+            process=config.process,
+            path=asset.get("path") or "",
         )
+
+    def _open_frame_defaults(self, roll_id: str) -> dict:
+        """The roll values the open frame is resolved against in *roll_id* (rolls.frame_defaults)."""
+        idx = self.state.selected_file_idx
+        files = self.state.uploaded_files
+        path = files[idx].get("path") or "" if 0 <= idx < len(files) else ""
+        return rolls.frame_defaults(self.session.repo, roll_id, self.state.current_file_hash or "", path)
 
     def _roll_baseline(self, config: WorkspaceConfig, card_key: str, defaults: dict) -> dict:
         """*card_key*'s values on *config* for the fields the roll has no value for."""
@@ -7031,7 +7107,7 @@ class AppController(QObject):
 
     def roll_survivals(self) -> dict:
         """The survivals and shift the open frame's roll holds, {} for the fields it has none of."""
-        roll_id = self._open_frame_roll()
+        roll_id = self._open_frame_fade_roll()
         defaults = {} if roll_id is None else rolls.roll_defaults(self.session.repo, roll_id)
         names = ("fade_ratio_r", "fade_ratio_g", "fade_ratio_b", "fade_density_shift")
         return {n: defaults[n] for n in names if n in defaults}
@@ -7122,7 +7198,7 @@ class AppController(QObject):
         roll_id = self.state.active_roll_id
         if roll_id is None or not self.state.current_file_hash:
             return set()
-        defaults = rolls.roll_defaults(self.session.repo, roll_id)
+        defaults = self._open_frame_defaults(roll_id)
         locked = self.locked_roll_cards()
         return {
             key
@@ -7139,7 +7215,7 @@ class AppController(QObject):
             return 0
         roll_id = self.state.active_roll_id
         file_hash = rolls.unforked_hash(self.state.current_file_hash)
-        defaults = rolls.roll_defaults(self.session.repo, roll_id)
+        defaults = self._open_frame_defaults(roll_id)
         config = self.state.config
         for key in cards:
             config = self._with_roll_card(config, key, defaults)
@@ -7186,7 +7262,7 @@ class AppController(QObject):
         if locked:
             frozen = self._card_values(self.state.config, card_key)
             self.session.update_config(self._with_card_values(self.state.config, card_key, frozen), persist=True, render=False)
-            baseline = self._roll_baseline(self.state.config, card_key, rolls.roll_defaults(self.session.repo, roll_id))
+            baseline = self._roll_baseline(self.state.config, card_key, self._open_frame_defaults(roll_id))
         file_hash = rolls.unforked_hash(self.state.current_file_hash)
         rolls.set_frame_override(self.session.repo, roll_id, file_hash, card_key, locked, baseline=baseline)
         if not locked:

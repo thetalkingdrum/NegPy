@@ -1552,7 +1552,7 @@ class DesktopSessionManager(QObject):
         if fresh and (seed := rolls.frame_seed(self.repo, roll_id)):
             config = with_frame_seed(config, seed)
         file_hash = unforked_hash(asset["hash"])
-        config = rolls.resolve_roll_config(self.repo, roll_id, file_hash, config)
+        config = rolls.resolve_roll_config(self.repo, roll_id, file_hash, config, asset.get("path") or "")
         return rolls.resolve_roll_baseline(self.repo, roll_id, file_hash, config)
 
     @staticmethod
@@ -1618,7 +1618,7 @@ class DesktopSessionManager(QObject):
     def _roll_sets_positive(self, asset: dict) -> bool:
         """The frame's roll holds a Positive value on its Film card, which beats the scanner default."""
         roll_id = rolls.frame_roll(self.repo, self.state.active_roll_id, asset)
-        return roll_id is not None and "positive_source" in rolls.roll_defaults(self.repo, roll_id)
+        return roll_id is not None and "positive_source" in rolls.frame_defaults(self.repo, roll_id, asset["hash"], asset.get("path") or "")
 
     def config_for_asset(self, asset: dict) -> WorkspaceConfig:
         """Return an asset's hydrated config without changing the active session state.
@@ -2316,7 +2316,9 @@ class DesktopSessionManager(QObject):
                     section, names = rolls.ROLL_DEFAULT_FIELDS[card_key]
                     values = {n: getattr(getattr(undone, section), n) for n in names}
                     old = {n: getattr(getattr(now, section), n) for n in names}
-                    rolls.settle_card_lock(self.repo, roll_id, base, card_key, values, old, process=undone.process)
+                    rolls.settle_card_lock(
+                        self.repo, roll_id, base, card_key, values, old, process=undone.process, path=paths.get(file_hash, "")
+                    )
         if changed:
             self.frames_edited_offscreen.emit(changed)
         return moved, kept
@@ -2397,15 +2399,16 @@ class DesktopSessionManager(QObject):
         roll_id = rolls.frame_roll(self.repo, self.state.active_roll_id, asset)
         if roll_id is None:
             return
-        defaults = rolls.frame_roll_defaults(rolls.roll_defaults(self.repo, roll_id), config.process)
         base = unforked_hash(asset["hash"])
+        path = asset.get("path") or ""
+        defaults = rolls.frame_roll_defaults(rolls.frame_defaults(self.repo, roll_id, base, path), config.process)
         locked = rolls.frame_override_cards(self.repo, roll_id, base)
         for card_key, (section, names) in rolls.ROLL_DEFAULT_FIELDS.items():
             values = {n: getattr(getattr(config, section), n) for n in names}
             old = None if before is None else {n: getattr(getattr(before, section), n) for n in names}
             # A pin on a card the step did not touch stays.
             if old is not None and not all(rolls.same_value(values[n], old[n]) for n in names):
-                rolls.settle_card_lock(self.repo, roll_id, base, card_key, values, old, process=config.process)
+                rolls.settle_card_lock(self.repo, roll_id, base, card_key, values, old, process=config.process, path=path)
             elif card_key not in locked and any(n in defaults and not rolls.same_value(values[n], defaults[n]) for n in names):
                 rolls.set_frame_override(self.repo, roll_id, base, card_key, True)
 

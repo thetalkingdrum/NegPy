@@ -142,21 +142,21 @@ Per un fotogramma di questo tipo, la scheda Esporta nasconde le impostazioni fis
 
 ## 2. Libreria e Striscia pellicola
 
-<!-- panel:library src:401ca42f -->
+<!-- panel:library src:1a28b958 -->
 ### Libreria
 
 La scheda **Libreria** (`Ctrl+L`) elenca i tuoi **rullini**. Un rullino è un gruppo di fotogrammi con un nome, di solito una pellicola: un **rullino-cartella** o un **rullino virtuale**. L'importazione registra la cartella; NegPy non sposta, rinomina né elimina mai i tuoi file.
 
 *   **+**: **Importa cartella come rullino…** crea un rullino da una cartella e lo apre. **Importa sottocartelle come rullini…** crea un rullino da ogni sottocartella che contiene immagini. Anche trascinare delle cartelle sulla Libreria le importa.
 *   **Fai doppio clic** su un rullino (o premi Invio) per aprirlo.
-*   **⋮** o clic destro su un rullino: **Apri**, **Chiudi tutti…** (il rullino aperto), **Analisi del rullino**, **Rinomina…**, **Individua cartella…**, **Rimuovi fotogrammi mancanti…**, **Salva nel rullino-cartella**, **Ripristina fotogrammi rimossi…**, **Reimposta rullino…** (con i suoi fotogrammi) ed **Elimina…**. Ripristina fotogrammi rimossi riporta i fotogrammi che Rimuovi dal rullino ha tolto. Elimina conserva i file e le modifiche condivise. Perde le impostazioni del rullino, il riferimento, la base della pellicola, le scene, i blocchi dei riquadri e le modifiche proprie, e Aggiorna non aggiunge di nuovo un rullino-cartella eliminato.
+*   **⋮** o clic destro su un rullino: **Apri**, **Chiudi tutti…** (il rullino aperto), **Analisi del rullino**, **Rinomina…**, **Individua cartella…**, **Rimuovi fotogrammi mancanti…**, **Salva nel rullino-cartella**, **Ripristina fotogrammi rimossi…**, **Reimposta rullino…** (con i suoi fotogrammi) ed **Elimina…**. Ripristina fotogrammi rimossi riporta i fotogrammi che Rimuovi dal rullino ha tolto. Elimina conserva i file e le modifiche condivise e dimentica il resto; Aggiorna non aggiunge di nuovo un rullino-cartella eliminato.
 *   **Filtra i rullini…** e **Ordina** ti aiutano a trovare un rullino. **⋮ → Aggiorna** trova nuove sottocartelle e riconta i fotogrammi. **⋮ → Filtri di ricerca…** elenca i nomi di cartella da saltare (inizialmente `export`).
 
 Un rullino la cui cartella o i cui fotogrammi sono stati spostati fuori da NegPy mostra **cartella mancante** o **file mancanti**. **Individua cartella…** trova la nuova cartella. Un nome di cartella che corrisponde alla tua attrezzatura ("penf" per "Pen F") apre le Impostazioni del rullino già compilate.
 
 Un rullino-cartella contiene solo i file della propria cartella. Un file che aggiungi da un'altra cartella resta solo per questa sessione.
 
-Per salvare come rullino i fotogrammi della Striscia pellicola, usa la Striscia pellicola. **Salva nel rullino-cartella** rende i fotogrammi che provengono tutti da una cartella il rullino di quella cartella; gli altri suoi file risultano rimossi. **Salva come rullino virtuale…** conserva esattamente questi fotogrammi, da qualsiasi cartella. Salva nel rullino-cartella trasforma anche un rullino virtuale di una sola cartella nel rullino di quella cartella. Il nuovo rullino parte con le impostazioni, i blocchi dei riquadri e le modifiche fatte solo nel rullino aperto. Un fotogramma ha un'unica modifica in ogni rullino che lo contiene; clic destro → **Modifica in modo indipendente in questo rullino** gli dà una modifica propria in un rullino.
+Per salvare come rullino i fotogrammi della Striscia pellicola, usa la Striscia pellicola. **Salva nel rullino-cartella** rende i fotogrammi che provengono tutti da una cartella il rullino di quella cartella; gli altri suoi file risultano rimossi. **Salva come rullino virtuale…** conserva esattamente questi fotogrammi, da qualsiasi cartella. Salva nel rullino-cartella trasforma anche un rullino virtuale di una sola cartella nel rullino di quella cartella. Il nuovo rullino conserva le modifiche fatte solo nel rullino aperto. Un rullino virtuale prende ogni riquadro della scheda Rullino dal rullino-cartella di ciascun fotogramma, finché non imposti quel riquadro. Un fotogramma ha un'unica modifica in ogni rullino che lo contiene; clic destro → **Modifica in modo indipendente in questo rullino** gli dà una modifica propria in un rullino.
 
 <!-- panel:frames src:c1f54a29 -->
 ### Striscia pellicola

@@ -777,6 +777,11 @@ def card_fields(card_key: str) -> tuple:
     return ROLL_DEFAULT_FIELDS[card_key][1]
 
 
+# The cards a virtual roll's frame takes from its folder roll: every card but the baseline, which
+# rides the open roll's own Roll Analysis.
+FALLBACK_CARDS = tuple(card for card in ROLL_DEFAULT_FIELDS if card != "baseline")
+
+
 def config_value(value: Any) -> Any:
     """*value* read back from this store with its tuples restored. The store is JSON, so
     a tuple comes back as a list at every depth."""
@@ -807,6 +812,44 @@ def frame_roll_defaults(defaults: Dict[str, Any], process: Any) -> Dict[str, Any
     if not getattr(process, "fade_white_space", ""):
         return defaults
     return {k: v for k, v in defaults.items() if k not in DECODE_WHITE_FIELDS}
+
+
+def fallback_roll(repo: Any, roll_id: Optional[str], path: str) -> Optional[str]:
+    """The folder roll that holds *path*, for a frame of the virtual roll *roll_id*. None for a folder roll."""
+    entry = roll_for_id(repo, roll_id)
+    if not path or not entry or entry.get("kind") == "folder":
+        return None
+    return next((r for r in rolls_containing_path(repo, path) if (roll_for_id(repo, r) or {}).get("kind") == "folder"), None)
+
+
+def frame_defaults(repo: Any, roll_id: str, file_hash: str, path: str = "") -> Dict[str, Any]:
+    """The roll values a frame of *roll_id* is resolved and compared against. A virtual roll adds its
+    folder roll's values for each card it holds none of and the frame has not locked there."""
+    defaults = roll_defaults(repo, roll_id)
+    home = fallback_roll(repo, roll_id, path)
+    if home is None:
+        return defaults
+    held = roll_defaults(repo, home)
+    locked = frame_override_cards(repo, home, unforked_hash(file_hash))
+    inherited = {
+        name: held[name]
+        for card in FALLBACK_CARDS
+        if card not in locked and not any(n in defaults for n in card_fields(card))
+        for name in card_fields(card)
+        if name in held
+    }
+    return {**inherited, **defaults}
+
+
+def card_roll(repo: Any, roll_id: str, file_hash: str, path: str, card_key: str) -> str:
+    """The roll whose values a frame of *roll_id* follows on *card_key*: *roll_id*, or the folder
+    roll frame_defaults takes that card from."""
+    if card_key not in FALLBACK_CARDS or any(n in roll_defaults(repo, roll_id) for n in card_fields(card_key)):
+        return roll_id
+    home = fallback_roll(repo, roll_id, path)
+    if home is None or card_key in frame_override_cards(repo, home, unforked_hash(file_hash)):
+        return roll_id
+    return home if any(n in roll_defaults(repo, home) for n in card_fields(card_key)) else roll_id
 
 
 def roll_defaults(repo: Any, roll_id: str) -> Dict[str, Any]:
@@ -878,18 +921,33 @@ def restore_roll_fields(repo: Any, roll_id: str, snapshot: Dict[str, Any]) -> No
 def copy_roll_settings(repo: Any, from_id: str, to_id: str, file_hashes: Collection[str]) -> None:
     """Give roll *to_id* the roll-level settings of *from_id* (its defaults and frame seed) and the
     card locks of *file_hashes* (unforked), in one write. A lock keeps a frame's own value against
-    the copied defaults. Scenes, forks and the baseline stay behind. No-op for an unknown id."""
+    the copied defaults. Scenes, forks and the baseline stay behind. A folder roll keeps its
+    FALLBACK_CARDS: a virtual roll's frame reads them from its folder roll, so a copy goes stale.
+    No-op for an unknown id."""
     store = _read(repo)
     source, target = store.get(from_id), store.get(to_id)
     if source is None or target is None:
         return
-    for key in ("defaults", "frame_seed"):
-        if source.get(key):
-            target[key] = copy.deepcopy(source[key])
-    locks = {h: list(cards) for h, cards in source.get("frame_overrides", {}).items() if h in file_hashes and cards}
+    kept = set(FALLBACK_CARDS) if source.get("kind") == "folder" and target.get("kind") == "virtual" else set()
+    kept_fields = {name for card in kept for name in card_fields(card)}
+    defaults = {k: v for k, v in source.get("defaults", {}).items() if k not in kept_fields}
+    if defaults:
+        target["defaults"] = copy.deepcopy(defaults)
+    if source.get("frame_seed"):
+        target["frame_seed"] = copy.deepcopy(source["frame_seed"])
+    locks = {
+        h: [c for c in cards if c not in kept]
+        for h, cards in source.get("frame_overrides", {}).items()
+        if h in file_hashes and any(c not in kept for c in cards)
+    }
     if locks:
         target["frame_overrides"] = locks
-        baselines = {h: copy.deepcopy(b) for h, b in source.get("frame_baselines", {}).items() if h in locks}
+        baselines = {
+            h: {c: copy.deepcopy(b) for c, b in held.items() if c not in kept}
+            for h, held in source.get("frame_baselines", {}).items()
+            if h in locks
+        }
+        baselines = {h: held for h, held in baselines.items() if held}
         if baselines:
             target["frame_baselines"] = baselines
     _write(repo, store)
@@ -1022,12 +1080,14 @@ def settle_card_lock(
     before: Optional[Dict[str, Any]] = None,
     *,
     process: Any = None,
+    path: str = "",
 ) -> None:
     """Locks *card_key* on the frame (unforked hash) where *values* differ from the roll, and unlocks it where
     they match again. A field the roll has no value for matches the frame's value from before the lock:
     *before* for a new lock, the stored baseline for a held one. With neither it cannot match, or a card's
-    first edit would hide from Apply. A camera RAW frame's own white (*process*) never locks a card."""
-    defaults = frame_roll_defaults(roll_defaults(repo, roll_id), process)
+    first edit would hide from Apply. A camera RAW frame's own white (*process*) never locks a card.
+    *path* is the frame's file, which a virtual roll needs to reach its folder roll (frame_defaults)."""
+    defaults = frame_roll_defaults(frame_defaults(repo, roll_id, file_hash, path), process)
     if getattr(process, "fade_white_space", ""):
         values = {k: v for k, v in values.items() if k not in DECODE_WHITE_FIELDS}
     locked = card_key in frame_override_cards(repo, roll_id, file_hash)
@@ -1050,13 +1110,13 @@ def frame_baseline(repo: Any, roll_id: str, file_hash: str, card_key: str) -> Di
     return {n: config_value(v) for n, v in entry.get("frame_baselines", {}).get(file_hash, {}).get(card_key, {}).items()}
 
 
-def resolve_roll_config(repo: Any, roll_id: Optional[str], file_hash: str, config: "WorkspaceConfig") -> "WorkspaceConfig":
-    """Overlay this roll's defaults onto *config* for every card the frame has not
-    locked to its own value. No roll, no defaults set yet, or every relevant card
-    locked leaves *config* unchanged."""
+def resolve_roll_config(repo: Any, roll_id: Optional[str], file_hash: str, config: "WorkspaceConfig", path: str = "") -> "WorkspaceConfig":
+    """Overlay this roll's defaults (frame_defaults, for the frame's file *path*) onto *config* for every
+    card the frame has not locked to its own value. No roll, no defaults set yet, or every relevant
+    card locked leaves *config* unchanged."""
     if roll_id is None:
         return config
-    defaults = frame_roll_defaults(roll_defaults(repo, roll_id), config.process)
+    defaults = frame_roll_defaults(frame_defaults(repo, roll_id, file_hash, path), config.process)
     if not defaults:
         return config
     locked_cards = frame_override_cards(repo, roll_id, file_hash)

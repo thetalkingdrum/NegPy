@@ -53,10 +53,10 @@ def carry_edit(
     # A never-opened composite needs this row too, or it hydrates with the rig's flat field back on.
     if owns_new:
         roll_id = next(iter(member_rolls), None)
-        resolved = config if roll_id is None else rolls.resolve_roll_config(repo, roll_id, old_hash, config)
+        resolved = config if roll_id is None else rolls.resolve_roll_config(repo, roll_id, old_hash, config, new_path)
         repo.save_file_settings(new_hash, merged_edit(resolved, kind), file_path=new_path)
     for roll_id in member_rolls:
-        defaults = rolls.roll_defaults(repo, roll_id)
+        defaults = rolls.frame_defaults(repo, roll_id, new_hash, new_path)
         for card in _BAKED_CARDS.get(kind, ()):
             if _roll_would_reapply(defaults, card):
                 rolls.set_frame_override(repo, roll_id, new_hash, card, True)

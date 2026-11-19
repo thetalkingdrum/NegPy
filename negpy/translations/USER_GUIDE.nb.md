@@ -2,21 +2,21 @@
 
 NegPy gjør skanninger av filmnegativer og dias til ferdige bilder. Originalfilene dine endres aldri. NegPy lagrer redigeringene dine i en lokal database. Velg språk under Innstillinger → Grensesnitt → Språk, og start NegPy på nytt. Systemstandard følger systemspråket og bruker engelsk når NegPy ikke har det språket. Når et panel mangler oversettelse, viser NegPy den engelske teksten.
 
-<!-- panel:library src:401ca42f -->
+<!-- panel:library src:1a28b958 -->
 ### Bibliotek
 
 Fanen **Bibliotek** (`Ctrl+L`) viser **rullene** dine. En rull er en navngitt gruppe bilder, vanligvis én film: en **mapperull** eller en **virtuell rull**. Importen husker mappen. NegPy flytter, gir nytt navn til eller sletter aldri filene dine.
 
 *   **+**: **Importer mappe som rull…** gjør en mappe til én rull og åpner den. **Importer undermapper som ruller…** gjør hver undermappe med bilder til en rull. Mapper du slipper på Biblioteket, importeres også.
 *   **Dobbeltklikk** en rull (eller trykk Enter) for å åpne den.
-*   **⋮** eller høyreklikk en rull: **Åpne**, **Last ut alle…** (den åpne rullen), **Rullanalyse**, **Gi nytt navn…**, **Finn mappe…**, **Fjern manglende bilder…**, **Lagre i mapperull**, **Gjenopprett fjernede bilder…**, **Tilbakestill rull…** (med bildene i den) og **Slett…**. Gjenopprett fjernede bilder henter tilbake bilder som Fjern fra rull tok ut. Slett beholder filene og de delte redigeringene deres. Rullens innstillinger, grunnlag, filmbase, scener, kortlåser og redigeringene som bare ble gjort i den rullen, går tapt. Oppdater legger ikke til en slettet mapperull igjen.
+*   **⋮** eller høyreklikk en rull: **Åpne**, **Last ut alle…** (den åpne rullen), **Rullanalyse**, **Gi nytt navn…**, **Finn mappe…**, **Fjern manglende bilder…**, **Lagre i mapperull**, **Gjenopprett fjernede bilder…**, **Tilbakestill rull…** (med bildene i den) og **Slett…**. Gjenopprett fjernede bilder henter tilbake bilder som Fjern fra rull tok ut. Slett beholder filene og de delte redigeringene deres og glemmer resten. Oppdater legger ikke til en slettet mapperull igjen.
 *   **Filtrer ruller…** og **Sorter** hjelper deg å finne en rull. **⋮ → Oppdater** finner nye undermapper og teller bildene på nytt. **⋮ → Søkefiltre…** viser mappenavn som hoppes over (først `export`).
 
 En rull der mappen eller bildene er flyttet utenfor NegPy, viser **mappen mangler** eller **filer mangler**. **Finn mappe…** finner den nye mappen. Et mappenavn som samsvarer med utstyret ditt ("penf" for "Pen F"), åpner Rullinnstillinger ferdig utfylt.
 
 En mapperull inneholder bare filene i sin egen mappe. En fil du legger til fra en annen mappe, blir værende bare i denne økten.
 
-Bruk filmstripen for å lagre bildene i filmstripen som en rull. **Lagre i mapperull** gjør bilder som alle kommer fra én mappe, til rullen for den mappen. De andre filene i mappen vises som fjernet. **Lagre som virtuell rull…** beholder nøyaktig disse bildene, fra hvilke som helst mapper. Lagre i mapperull gjør også en virtuell rull fra én mappe til rullen for den mappen. Den nye rullen starter med den åpne rullens innstillinger, kortlåser og redigeringene som bare ble gjort i den rullen. Et bilde har én redigering i hver rull som inneholder det. Høyreklikk → **Rediger uavhengig i denne rullen** gir det en egen redigering i én rull.
+Bruk filmstripen for å lagre bildene i filmstripen som en rull. **Lagre i mapperull** gjør bilder som alle kommer fra én mappe, til rullen for den mappen. De andre filene i mappen vises som fjernet. **Lagre som virtuell rull…** beholder nøyaktig disse bildene, fra hvilke som helst mapper. Lagre i mapperull gjør også en virtuell rull fra én mappe til rullen for den mappen. Den nye rullen beholder redigeringene som bare ble gjort i den åpne rullen. En virtuell rull tar hvert kort i fanen Rull fra mapperullen til hvert bilde, til du setter det kortet. Et bilde har én redigering i hver rull som inneholder det. Høyreklikk → **Rediger uavhengig i denne rullen** gir det en egen redigering i én rull.
 
 <!-- panel:frames src:c1f54a29 -->
 ### Filmstripe

@@ -8256,9 +8256,11 @@ class TestLibrarySearch(unittest.TestCase):
         roll_id = self.controller.create_roll_from_session("Portra picks")
 
         entry = rolls.roll_for_id(repo, roll_id)
-        self.assertEqual(entry["defaults"], {"film_stock_id": "portra400"})
+        # The film card stays with the folder roll, which the virtual roll's frames fall back to.
+        self.assertNotIn("defaults", entry)
+        self.assertEqual(rolls.frame_defaults(repo, roll_id, "h13", "/photos/portra/13.tif"), {"film_stock_id": "portra400"})
         self.assertEqual(entry["frame_seed"], {"cast_removal_strength": 0.5})
-        self.assertEqual(entry["frame_overrides"], {"h12": ["film"]})
+        self.assertNotIn("frame_overrides", entry)
         self.assertNotIn("normalization", entry)
         self.assertNotIn("scenes", entry)
         self.assertTrue(self.controller.half_frame_mode_for_roll(roll_id))
